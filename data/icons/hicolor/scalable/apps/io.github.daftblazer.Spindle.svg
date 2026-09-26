@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="disc" x1="14" y1="10" x2="112" y2="108" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f6f5f4"/>
+      <stop offset="0.35" stop-color="#c0bfbc"/>
+      <stop offset="0.5" stop-color="#99c1f1"/>
+      <stop offset="0.62" stop-color="#dc8add"/>
+      <stop offset="0.78" stop-color="#deddda"/>
+      <stop offset="1" stop-color="#9a9996"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="62" x2="0" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1c71d8"/>
+      <stop offset="1" stop-color="#1a5fb4"/>
+    </linearGradient>
+  </defs>
+  <!-- disc edge -->
+  <circle cx="58" cy="60" r="50" fill="#77767b"/>
+  <!-- disc face -->
+  <circle cx="58" cy="56" r="50" fill="url(#disc)"/>
+  <circle cx="58" cy="56" r="49" fill="none" stroke="#ffffff" stroke-opacity="0.5" stroke-width="2"/>
+  <!-- hub -->
+  <circle cx="58" cy="56" r="17" fill="#f6f5f4"/>
+  <circle cx="58" cy="56" r="17" fill="none" stroke="#9a9996" stroke-width="2"/>
+  <circle cx="58" cy="56" r="7" fill="#5e5c64"/>
+  <!-- menu screen -->
+  <rect x="56" y="66" width="66" height="50" rx="8" fill="#0d3a73"/>
+  <rect x="56" y="62" width="66" height="50" rx="8" fill="url(#screen)"/>
+  <rect x="64" y="70" width="22" height="15" rx="3" fill="#99c1f1"/>
+  <rect x="92" y="70" width="22" height="15" rx="3" fill="#99c1f1"/>
+  <rect x="64" y="90" width="22" height="15" rx="3" fill="#99c1f1"/>
+  <rect x="92" y="90" width="22" height="15" rx="3" fill="#99c1f1"/>
+  <!-- selected button -->
+  <rect x="90" y="88" width="26" height="19" rx="4.5" fill="none" stroke="#f6d32d" stroke-width="3"/>
+  <path d="M100 93.5 L108 97.5 L100 101.5 Z" fill="#1a5fb4"/>
+</svg>

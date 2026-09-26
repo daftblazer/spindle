@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-spindle-project">
+    <comment>Spindle Blu-ray project</comment>
+    <sub-class-of type="application/json"/>
+    <glob pattern="*.spindle"/>
+    <icon name="io.github.daftblazer.Spindle"/>
+  </mime-type>
+</mime-info>

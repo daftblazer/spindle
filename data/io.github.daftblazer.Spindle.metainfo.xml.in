@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.daftblazer.Spindle</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>Spindle</name>
+  <summary>Author Blu-ray discs with menus</summary>
+  <description>
+    <p>
+      Spindle turns your videos into a Blu-ray disc with interactive menus.
+      Import videos, drag them onto a menu to create buttons, arrange text,
+      images and thumbnails, and build a disc that plays on standalone
+      players and in VLC.
+    </p>
+    <ul>
+      <li>Drag-and-drop menu editor with snapping and undo</li>
+      <li>Still and motion menus with music</li>
+      <li>Chapters and chapter selection menus</li>
+      <li>Native HDMV interactive graphics, compatible with every player</li>
+    </ul>
+  </description>
+
+  <developer id="io.github.daftblazer">
+    <name>daftblazer</name>
+  </developer>
+
+  <url type="homepage">https://github.com/daftblazer/Spindle</url>
+  <url type="vcs-browser">https://github.com/daftblazer/Spindle</url>
+  <url type="bugtracker">https://github.com/daftblazer/Spindle/issues</url>
+
+  <translation type="gettext">spindle</translation>
+  <launchable type="desktop-id">io.github.daftblazer.Spindle.desktop</launchable>
+  <content_rating type="oars-1.1" />
+  <provides>
+    <mediatype>application/x-spindle-project</mediatype>
+  </provides>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#8fb4e3</color>
+    <color type="primary" scheme_preference="dark">#1c3a5e</color>
+  </branding>
+
+  <releases>
+    <release version="0.1.0" date="2026-09-26">
+      <description translate="no">
+        <p>First preview release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

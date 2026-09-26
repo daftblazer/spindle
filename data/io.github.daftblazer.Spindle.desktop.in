@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Spindle
+Comment=Author Blu-ray discs with interactive menus
+Exec=spindle %F
+Icon=io.github.daftblazer.Spindle
+Terminal=false
+Type=Application
+Categories=AudioVideo;Video;DiscBurning;GTK;GNOME;
+# Translators: Search terms to find this application. Do NOT translate or localize the semicolons! The list MUST also end with a semicolon!
+Keywords=Blu-ray;Bluray;BD;Disc;Authoring;Menu;DVD;BDMV;
+MimeType=application/x-spindle-project;
+StartupNotify=true
+DBusActivatable=true

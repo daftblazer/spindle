@@ -1,0 +1,29 @@
+[package]
+name = "spindle"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gettext-rs = { version = "0.7", features = ["gettext-system"] }
+gtk = { version = "0.11", package = "gtk4", features = ["v4_18"] }
+pangocairo = "0.22"
+cairo-rs = { version = "0.22", features = ["png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+async-channel = "2"
+imagequant = { version = "4", default-features = false }
+uuid = { version = "1", features = ["v4", "serde"] }
+log = "0.4"
+env_logger = "0.11"
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[dependencies.adw]
+package = "libadwaita"
+version = "0.9"
+features = ["v1_7"]
+
+[profile.dev.package."*"]
+opt-level = 2

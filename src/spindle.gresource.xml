@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/io/github/daftblazer/Spindle">
+    <file preprocess="xml-stripblanks">window.ui</file>
+    <file preprocess="xml-stripblanks">shortcuts-dialog.ui</file>
+    <file>style.css</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/spindle-safe-area-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/spindle-align-left-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/spindle-align-hcenter-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/spindle-align-right-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/spindle-align-top-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/spindle-align-vcenter-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/spindle-align-bottom-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/spindle-distribute-h-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/spindle-distribute-v-symbolic.svg</file>
+  </gresource>
+</gresources>

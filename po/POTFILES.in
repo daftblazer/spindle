@@ -1,0 +1,22 @@
+# List of source files containing translatable strings.
+# Please keep this file sorted alphabetically.
+data/io.github.daftblazer.Spindle.desktop.in
+data/io.github.daftblazer.Spindle.gschema.xml
+data/io.github.daftblazer.Spindle.metainfo.xml.in
+src/application.rs
+src/build.rs
+src/document.rs
+src/shortcuts-dialog.ui
+src/ui/build_dialog.rs
+src/ui/canvas.rs
+src/ui/inspector.rs
+src/ui/media_bin.rs
+src/ui/settings.rs
+src/ui/sidebar.rs
+src/ui/title_view.rs
+src/window.rs
+src/window.ui
+src/templates.rs
+src/ui/templates.rs
+src/preview.rs
+src/ui/preview_dialog.rs
