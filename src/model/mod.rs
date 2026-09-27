@@ -52,6 +52,9 @@ pub struct DiscSettings {
     /// Menu opened by the remote's Top Menu key (the first when unset).
     #[serde(default)]
     pub top_menu: Option<Id>,
+    /// Video encoder; hardware ones are for test discs.
+    #[serde(default)]
+    pub encoder: crate::media::hwenc::VideoEncoder,
 }
 
 impl Default for DiscSettings {
@@ -67,6 +70,7 @@ impl Default for DiscSettings {
             default_language: None,
             popup_menu: None,
             top_menu: None,
+            encoder: Default::default(),
         }
     }
 }

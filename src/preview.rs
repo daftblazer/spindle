@@ -58,6 +58,7 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
         video_bitrate: project.disc.video_bitrate,
         audio: project.disc.audio,
         audio_bitrate: project.disc.audio_bitrate,
+        encoder: project.disc.encoder,
     };
 
     let work = preview_dir().join(format!("work-{}", crate::model::new_id()));

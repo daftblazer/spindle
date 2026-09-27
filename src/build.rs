@@ -139,6 +139,7 @@ impl<'a> Builder<'a> {
             video_bitrate: project.disc.video_bitrate,
             audio: project.disc.audio,
             audio_bitrate: project.disc.audio_bitrate,
+            encoder: project.disc.encoder,
         };
         Builder {
             project,
@@ -198,6 +199,13 @@ impl<'a> Builder<'a> {
         let problems = check(self.project);
         if !problems.is_empty() {
             bail!("{}", problems.join("\n"));
+        }
+        let encoder = self.settings.effective_encoder();
+        if encoder.is_hardware() {
+            if !crate::media::hwenc::available().contains(&encoder) {
+                bail!("The {} video encoder doesn't work on this computer. Choose Software in Disc Settings.", encoder.label());
+            }
+            (self.emit)(BuildEvent::Log(format!("Using {} video encoding: for test discs only, the quality is lower than Software", encoder.label())));
         }
         let p = self.project;
         // Work units: seconds of media to encode, plus 10% for remuxing.
@@ -623,7 +631,8 @@ impl<'a> Builder<'a> {
             self.encode(args, duration)?;
             format
         } else {
-            self.stage(format!("Encoding title “{}”", t.name));
+            let how = if self.settings.effective_encoder().is_hardware() { " (hardware, for testing)" } else { "" };
+            self.stage(format!("Encoding title “{}”{how}", t.name));
             let args = transcode::title_args(&asset.path, &asset.info, &self.settings, &chapters, &inputs, None, &tmp);
             self.encode(args, duration)?;
             self.settings.video

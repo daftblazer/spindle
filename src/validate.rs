@@ -378,6 +378,24 @@ pub fn check(p: &Project) -> Vec<Issue> {
         }
     }
 
+    // --- encoder
+    let encoder = p.disc.encoder;
+    if encoder.is_hardware() {
+        if crate::media::hwenc::known_available().is_some_and(|a| !a.contains(&encoder)) {
+            error(
+                gettext("The {} video encoder doesn't work on this computer. Choose Software in Disc Settings.").replace("{}", &encoder.label()),
+                Some(Target::Settings),
+            );
+        } else if p.disc.video.fake_interlaced() {
+            warn(gettext("The 1080i formats can't be encoded in hardware; this disc will use Software encoding."), Some(Target::Settings));
+        } else {
+            warn(
+                gettext("Hardware video encoding is on. It's faster, but the picture is noticeably worse than Software: use it for test discs only."),
+                Some(Target::Settings),
+            );
+        }
+    }
+
     // --- size
     if let Some((disc, _)) = disc_for(bytes) {
         if disc == "BD-100" {

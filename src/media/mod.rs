@@ -4,6 +4,7 @@
 
 pub mod compat;
 pub mod ffmpeg;
+pub mod hwenc;
 pub mod portal;
 pub mod probe;
 pub mod thumbnail;

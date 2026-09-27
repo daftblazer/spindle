@@ -2,6 +2,7 @@
 
 //! ffmpeg argument construction for BD-compliant H.264/AC-3 streams.
 
+use super::hwenc::{self, VideoEncoder};
 use super::probe::MediaInfo;
 use crate::bluray::{AudioCodec, VideoFormat};
 use std::path::{Path, PathBuf};
@@ -12,6 +13,43 @@ pub struct EncodeSettings {
     pub video_bitrate: u32,
     pub audio: AudioCodec,
     pub audio_bitrate: u32,
+    pub encoder: VideoEncoder,
+}
+
+impl EncodeSettings {
+    /// The encoder actually used: hardware encoders can't make the
+    /// fake-interlaced streams of 1080i formats, so those use x264.
+    pub fn effective_encoder(&self) -> VideoEncoder {
+        if self.video.fake_interlaced() {
+            VideoEncoder::Software
+        } else {
+            self.encoder
+        }
+    }
+
+    /// The same settings with x264 (for menus: short, and quality matters).
+    fn software(&self) -> Self {
+        EncodeSettings { encoder: VideoEncoder::Software, ..*self }
+    }
+}
+
+/// Options that go before the inputs (hardware device).
+fn device_args(set: &EncodeSettings) -> Vec<String> {
+    match set.effective_encoder() {
+        VideoEncoder::Vaapi => match hwenc::render_node() {
+            Some(node) => vec![s("-vaapi_device"), path(&node)],
+            None => vec![],
+        },
+        _ => vec![],
+    }
+}
+
+/// Scaling to the disc format, plus the upload to the GPU for VA-API.
+fn video_filter(set: &EncodeSettings) -> String {
+    match set.effective_encoder() {
+        VideoEncoder::Vaapi => format!("{},format=nv12,hwupload", scale_filter(set.video)),
+        _ => scale_filter(set.video),
+    }
 }
 
 fn s(v: impl ToString) -> String {
@@ -46,6 +84,45 @@ fn video_args(set: &EncodeSettings, bitrate: u32) -> Vec<String> {
     let (n, d) = set.video.fps();
     // GOP length at most one second.
     let keyint = n / d;
+    // Blu-ray limits for hardware encoders: High@4.1, closed GOPs of at
+    // most a second, BT.709 and access unit delimiters.
+    let common = |a: &mut Vec<String>| {
+        a.extend([
+            s("-b:v"),
+            format!("{bitrate}k"),
+            s("-maxrate"),
+            s("38000k"),
+            s("-bufsize"),
+            s("30000k"),
+            s("-g"),
+            s(keyint),
+            s("-color_primaries"),
+            s("bt709"),
+            s("-color_trc"),
+            s("bt709"),
+            s("-colorspace"),
+            s("bt709"),
+            // Delimiters and BT.709 colour in the stream headers.
+            s("-bsf:v"),
+            s("h264_metadata=aud=insert:video_full_range_flag=0:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"),
+        ]);
+    };
+    match set.effective_encoder() {
+        VideoEncoder::Vaapi => {
+            let mut a = vec![s("-c:v"), s("h264_vaapi"), s("-profile:v"), s("high"), s("-level"), s("41"), s("-rc_mode"), s("VBR")];
+            a.extend([s("-bf"), s("2"), s("-slices"), s("4")]);
+            common(&mut a);
+            return a;
+        }
+        VideoEncoder::Nvenc => {
+            let mut a = vec![s("-c:v"), s("h264_nvenc"), s("-preset"), s("p6"), s("-tune"), s("hq"), s("-profile:v"), s("high")];
+            a.extend([s("-level"), s("4.1"), s("-rc"), s("vbr"), s("-pix_fmt"), s("yuv420p")]);
+            a.extend([s("-bf"), s("3"), s("-b_ref_mode"), s("disabled"), s("-forced-idr"), s("1"), s("-strict_gop"), s("1")]);
+            common(&mut a);
+            return a;
+        }
+        VideoEncoder::Software => {}
+    }
     let mut x264 = format!(
         "bluray-compat=1:keyint={keyint}:min-keyint=1:open-gop=0:slices=4:aud=1:nal-hrd=vbr:\
          b-pyramid=strict:bframes=3:colorprim=bt709:transfer=bt709:colormatrix=bt709"
@@ -141,6 +218,9 @@ fn title_common(
 ) -> Vec<String> {
     let start = range.map_or(0.0, |(start, _)| start);
     let mut a = Vec::new();
+    if matches!(video, VideoMode::Encode { .. }) {
+        a.extend(device_args(set));
+    }
     if start > 0.0 {
         a.extend([s("-ss"), format!("{start:.3}")]);
     }
@@ -175,7 +255,7 @@ fn title_common(
     a.extend([s("-sn"), s("-dn"), s("-map_chapters"), s("-1")]);
     match video {
         VideoMode::Encode { keyframes } => {
-            a.extend([s("-vf"), scale_filter(set.video)]);
+            a.extend([s("-vf"), video_filter(set)]);
             a.extend(video_args(set, set.video_bitrate));
             if !keyframes.is_empty() {
                 let list: Vec<String> = keyframes.iter().map(|t| format!("{t:.3}")).collect();
@@ -244,6 +324,7 @@ pub fn menu_args(
     set: &EncodeSettings,
     output: &Path,
 ) -> Vec<String> {
+    let set = &set.software();
     let (n, d) = set.video.fps();
     let (w, h) = set.video.size();
     let mut a = Vec::new();
@@ -283,4 +364,49 @@ pub fn menu_args(
     // Leave room before the first frame for the IG stream to be decoded.
     a.extend(mux_args(output, 2.0));
     a
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings(video: VideoFormat, encoder: VideoEncoder) -> EncodeSettings {
+        EncodeSettings { video, video_bitrate: 18_000, audio: AudioCodec::Ac3, audio_bitrate: 448, encoder }
+    }
+
+    fn arg_after<'a>(a: &'a [String], key: &str) -> Option<&'a str> {
+        a.iter().position(|x| x == key).and_then(|i| a.get(i + 1)).map(|s| s.as_str())
+    }
+
+    #[test]
+    fn hardware_encoders_for_titles_only() {
+        let info = MediaInfo { duration: 60.0, video_codec: Some("h264".into()), ..Default::default() };
+        let out = Path::new("/tmp/out.ts");
+        let vaapi = settings(VideoFormat::P1080_23976, VideoEncoder::Vaapi);
+        let a = title_args(Path::new("/tmp/in.mkv"), &info, &vaapi, &[10.0], &[], None, out);
+        assert_eq!(arg_after(&a, "-c:v"), Some("h264_vaapi"));
+        assert_eq!(arg_after(&a, "-g"), Some("23"));
+        assert!(arg_after(&a, "-vf").unwrap().ends_with("hwupload"));
+        assert!(arg_after(&a, "-bsf:v").unwrap().contains("aud=insert"));
+        assert_eq!(arg_after(&a, "-force_key_frames"), Some("10.000"));
+        if hwenc::render_node().is_some() {
+            // The device comes before the input.
+            let dev = a.iter().position(|x| x == "-vaapi_device").unwrap();
+            assert!(dev < a.iter().position(|x| x == "-i").unwrap());
+        }
+
+        let nvenc = settings(VideoFormat::P720_5994, VideoEncoder::Nvenc);
+        let a = title_args(Path::new("/tmp/in.mkv"), &info, &nvenc, &[], &[], None, out);
+        assert_eq!(arg_after(&a, "-c:v"), Some("h264_nvenc"));
+        assert_eq!(arg_after(&a, "-g"), Some("59"));
+        assert!(!a.iter().any(|x| x == "-vaapi_device"));
+
+        // 1080i can't be made in hardware; menus are always x264.
+        let interlaced = settings(VideoFormat::I1080_25, VideoEncoder::Vaapi);
+        let a = title_args(Path::new("/tmp/in.mkv"), &info, &interlaced, &[], &[], None, out);
+        assert_eq!(arg_after(&a, "-c:v"), Some("libx264"));
+        let a = menu_args(Path::new("/tmp/still.png"), None, None, 1.0, &vaapi, out);
+        assert_eq!(arg_after(&a, "-c:v"), Some("libx264"));
+        assert!(!a.iter().any(|x| x == "-vaapi_device"));
+    }
 }
