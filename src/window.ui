@@ -301,6 +301,15 @@
                                           </object>
                                         </child>
                                         <child>
+                                          <object class="GtkToggleButton" id="grid_button">
+                                            <property name="icon-name">view-grid-symbolic</property>
+                                            <property name="tooltip-text" translatable="yes">Snap to Grid</property>
+                                            <style>
+                                              <class name="flat"/>
+                                            </style>
+                                          </object>
+                                        </child>
+                                        <child>
                                           <object class="GtkToggleButton" id="safe_area_button">
                                             <property name="icon-name">spindle-safe-area-symbolic</property>
                                             <property name="tooltip-text" translatable="yes">Show Safe Area</property>

@@ -60,6 +60,8 @@ mod imp {
         #[template_child]
         pub safe_area_button: TemplateChild<gtk::ToggleButton>,
         #[template_child]
+        pub grid_button: TemplateChild<gtk::ToggleButton>,
+        #[template_child]
         pub inspector_button: TemplateChild<gtk::ToggleButton>,
         #[template_child]
         pub missing_banner: TemplateChild<adw::Banner>,
@@ -203,9 +205,9 @@ impl SpindleWindow {
         let title_view = ui::title_view::TitleView::new(doc.clone(), &imp.title_box);
 
         let c = canvas.clone();
-        let _ = c;
-        let c = canvas.clone();
         imp.safe_area_button.connect_toggled(move |b| c.set_show_safe_area(b.is_active()));
+        let c = canvas.clone();
+        imp.grid_button.connect_toggled(move |b| c.set_grid(b.is_active()));
 
         let win = self.downgrade();
         canvas.connect_message(move |msg| {
@@ -282,6 +284,14 @@ impl SpindleWindow {
                     .collect();
                 doc.set_selection(ids);
             }
+            if std::env::var("SPINDLE_SCREENSHOT_GRID").is_ok() {
+                win.imp().grid_button.set_active(true);
+            }
+            if let Some(z) = std::env::var("SPINDLE_SCREENSHOT_ZOOM").ok().and_then(|z| z.parse::<f64>().ok()) {
+                let c = win.state().canvas.clone();
+                // After the first layout, so the zoom centres on the page.
+                glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || c.zoom_by(z, None));
+            }
             if let Ok(keys) = std::env::var("SPINDLE_SCREENSHOT_KEYS") {
                 win.state().canvas.debug_keys(&keys);
             }
@@ -326,6 +336,7 @@ impl SpindleWindow {
     fn restore_window_state(&self) {
         let Some(settings) = self.state().settings.clone() else { return };
         settings.bind("show-safe-area", &*self.imp().safe_area_button, "active").build();
+        settings.bind("snap-to-grid", &*self.imp().grid_button, "active").build();
         let (w, h) = (settings.int("window-width"), settings.int("window-height"));
         if w > 0 && h > 0 {
             self.set_default_size(w, h);

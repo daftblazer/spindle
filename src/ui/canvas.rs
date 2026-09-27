@@ -15,6 +15,9 @@ use std::rc::Rc;
 
 const HANDLE: f64 = 9.0;
 const SNAP: f64 = 10.0;
+/// Grid spacing in design pixels.
+const GRID: f64 = 20.0;
+const MAX_ZOOM: f64 = 8.0;
 
 #[derive(Clone)]
 enum Drag {
@@ -52,6 +55,12 @@ struct Inner {
     preview_button: Cell<Option<Id>>,
     preview_activated: Cell<bool>,
     on_message: RefCell<Option<MessageHandler>>,
+    /// Zoom relative to fitting the whole menu (1.0), and the pan offset in
+    /// widget pixels.
+    zoom: Cell<f64>,
+    pan: Cell<(f64, f64)>,
+    /// Snap to a grid (and draw it).
+    grid: Cell<bool>,
 }
 
 #[derive(Clone)]
@@ -109,6 +118,9 @@ impl MenuCanvas {
             preview_button: Cell::new(None),
             preview_activated: Cell::new(false),
             on_message: RefCell::new(None),
+            zoom: Cell::new(1.0),
+            pan: Cell::new((0.0, 0.0)),
+            grid: Cell::new(false),
         });
         let canvas = MenuCanvas { inner };
         canvas.setup();
@@ -125,6 +137,45 @@ impl MenuCanvas {
 
     pub fn set_show_safe_area(&self, v: bool) {
         self.inner.show_safe_area.set(v);
+        self.queue_draw();
+    }
+
+    pub fn set_grid(&self, v: bool) {
+        self.inner.grid.set(v);
+        self.queue_draw();
+    }
+
+    /// Zoom by `factor` keeping the widget point (x, y) in place (the
+    /// centre when None).
+    pub fn zoom_by(&self, factor: f64, at: Option<(f64, f64)>) {
+        let a = &self.inner.area;
+        let (x, y) = at.unwrap_or((a.width() as f64 / 2.0, a.height() as f64 / 2.0));
+        let before = self.view();
+        let d = before.to_design(x, y);
+        let zoom = (self.inner.zoom.get() * factor).clamp(1.0, MAX_ZOOM);
+        self.inner.zoom.set(zoom);
+        if zoom <= 1.0 {
+            self.inner.pan.set((0.0, 0.0));
+        } else {
+            let after = self.view();
+            let (px, py) = self.inner.pan.get();
+            self.inner.pan.set((px + x - (after.ox + d.0 * after.scale), py + y - (after.oy + d.1 * after.scale)));
+        }
+        self.queue_draw();
+    }
+
+    pub fn zoom_fit(&self) {
+        self.inner.zoom.set(1.0);
+        self.inner.pan.set((0.0, 0.0));
+        self.queue_draw();
+    }
+
+    fn pan_by(&self, dx: f64, dy: f64) {
+        if self.inner.zoom.get() <= 1.0 {
+            return;
+        }
+        let (px, py) = self.inner.pan.get();
+        self.inner.pan.set((px + dx, py + dy));
         self.queue_draw();
     }
 
@@ -272,11 +323,13 @@ impl MenuCanvas {
         let a = &self.inner.area;
         let (w, h) = (a.width() as f64, a.height() as f64);
         let margin = 28.0;
-        let scale = ((w - 2.0 * margin) / DESIGN_WIDTH).min((h - 2.0 * margin) / DESIGN_HEIGHT).max(0.05);
+        let fit = ((w - 2.0 * margin) / DESIGN_WIDTH).min((h - 2.0 * margin) / DESIGN_HEIGHT).max(0.05);
+        let scale = fit * self.inner.zoom.get();
+        let (px, py) = self.inner.pan.get();
         View {
             scale,
-            ox: ((w - DESIGN_WIDTH * scale) / 2.0).round(),
-            oy: ((h - DESIGN_HEIGHT * scale) / 2.0).round(),
+            ox: ((w - DESIGN_WIDTH * scale) / 2.0 + px).round(),
+            oy: ((h - DESIGN_HEIGHT * scale) / 2.0 + py).round(),
         }
     }
 
@@ -325,6 +378,38 @@ impl MenuCanvas {
         let this = self.clone();
         drag.connect_drag_end(move |_, _, _| this.drag_end());
         area.add_controller(drag);
+
+        // Ctrl+scroll zooms; scrolling pans while zoomed in.
+        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::BOTH_AXES);
+        let this = self.clone();
+        scroll.connect_scroll(move |c, dx, dy| {
+            let state = c.current_event_state();
+            if state.contains(gdk::ModifierType::CONTROL_MASK) {
+                let at = c.current_event().and_then(|e| e.position());
+                this.zoom_by(if dy < 0.0 { 1.15 } else { 1.0 / 1.15 }, at);
+                return glib::Propagation::Stop;
+            }
+            if this.inner.zoom.get() > 1.0 {
+                let (dx, dy) = if state.contains(gdk::ModifierType::SHIFT_MASK) { (dy, dx) } else { (dx, dy) };
+                this.pan_by(-dx * 40.0, -dy * 40.0);
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        area.add_controller(scroll);
+        // Middle-button drag pans.
+        let pan = gtk::GestureDrag::new();
+        pan.set_button(gdk::BUTTON_MIDDLE);
+        let last: Rc<Cell<(f64, f64)>> = Rc::default();
+        let l = last.clone();
+        pan.connect_drag_begin(move |_, _, _| l.set((0.0, 0.0)));
+        let this = self.clone();
+        pan.connect_drag_update(move |_, dx, dy| {
+            let (lx, ly) = last.get();
+            this.pan_by(dx - lx, dy - ly);
+            last.set((dx, dy));
+        });
+        area.add_controller(pan);
 
         // Double click edits the label
         let dbl = gtk::GestureClick::new();
@@ -529,13 +614,22 @@ impl MenuCanvas {
                 let mut mx = ddx.clamp(-bb.x, DESIGN_WIDTH - bb.x - bb.w);
                 let mut my = ddy.clamp(-bb.y, DESIGN_HEIGHT - bb.y - bb.h);
                 let nb = Rect::new(bb.x + mx, bb.y + my, bb.w, bb.h);
-                if let Some((corr, t)) = Self::snap(&[nb.x, nb.x + nb.w / 2.0, nb.x + nb.w], &xs, threshold) {
-                    mx += corr;
-                    guides.push(Guide::V(t));
+                let grid = self.inner.grid.get();
+                match Self::snap(&[nb.x, nb.x + nb.w / 2.0, nb.x + nb.w], &xs, threshold) {
+                    Some((corr, t)) => {
+                        mx += corr;
+                        guides.push(Guide::V(t));
+                    }
+                    None if grid => mx = (nb.x / GRID).round() * GRID - bb.x,
+                    None => {}
                 }
-                if let Some((corr, t)) = Self::snap(&[nb.y, nb.y + nb.h / 2.0, nb.y + nb.h], &ys, threshold) {
-                    my += corr;
-                    guides.push(Guide::H(t));
+                match Self::snap(&[nb.y, nb.y + nb.h / 2.0, nb.y + nb.h], &ys, threshold) {
+                    Some((corr, t)) => {
+                        my += corr;
+                        guides.push(Guide::H(t));
+                    }
+                    None if grid => my = (nb.y / GRID).round() * GRID - bb.y,
+                    None => {}
                 }
                 let starts = starts.clone();
                 doc.edit_silent(Change::Content, |p| {
@@ -556,11 +650,14 @@ impl MenuCanvas {
                 let s = *start;
                 let h = *handle;
                 let (mut x0, mut y0, mut x1, mut y1) = (s.x, s.y, s.x + s.w, s.y + s.h);
-                let mut snap_edge = |v: &mut f64, targets: &[f64], vertical: bool| {
-                    if let Some((corr, t)) = Self::snap(&[*v], targets, threshold) {
+                let grid = self.inner.grid.get();
+                let mut snap_edge = |v: &mut f64, targets: &[f64], vertical: bool| match Self::snap(&[*v], targets, threshold) {
+                    Some((corr, t)) => {
                         *v += corr;
                         guides.push(if vertical { Guide::V(t) } else { Guide::H(t) });
                     }
+                    None if grid => *v = (*v / GRID).round() * GRID,
+                    None => {}
                 };
                 if matches!(h, 0 | 6 | 7) {
                     x0 = (s.x + ddx).min(x1 - 16.0);
@@ -736,6 +833,18 @@ impl MenuCanvas {
         };
         if ctrl {
             return match key.to_lower() {
+                gdk::Key::plus | gdk::Key::equal | gdk::Key::KP_Add => {
+                    self.zoom_by(1.25, None);
+                    return glib::Propagation::Stop;
+                }
+                gdk::Key::minus | gdk::Key::KP_Subtract => {
+                    self.zoom_by(0.8, None);
+                    return glib::Propagation::Stop;
+                }
+                gdk::Key::_0 | gdk::Key::KP_0 => {
+                    self.zoom_fit();
+                    return glib::Propagation::Stop;
+                }
                 gdk::Key::a => act("win.select-all"),
                 gdk::Key::c => act("win.copy"),
                 gdk::Key::x => act("win.cut"),
@@ -911,6 +1020,25 @@ impl MenuCanvas {
             return;
         }
 
+        if self.inner.grid.get() {
+            cr.set_line_width(1.0 / v.scale);
+            let mut x = GRID;
+            while x < DESIGN_WIDTH {
+                cr.set_source_rgba(1.0, 1.0, 1.0, if (x % (GRID * 5.0)).abs() < 0.5 { 0.14 } else { 0.06 });
+                cr.move_to(x, 0.0);
+                cr.line_to(x, DESIGN_HEIGHT);
+                cr.stroke().ok();
+                x += GRID;
+            }
+            let mut y = GRID;
+            while y < DESIGN_HEIGHT {
+                cr.set_source_rgba(1.0, 1.0, 1.0, if (y % (GRID * 5.0)).abs() < 0.5 { 0.14 } else { 0.06 });
+                cr.move_to(0.0, y);
+                cr.line_to(DESIGN_WIDTH, y);
+                cr.stroke().ok();
+                y += GRID;
+            }
+        }
         if self.inner.show_safe_area.get() {
             cr.set_source_rgba(1.0, 1.0, 1.0, 0.25);
             cr.set_line_width(1.5 / v.scale);
@@ -1080,6 +1208,22 @@ impl MenuCanvas {
         };
         if let Some(text) = hint {
             self.draw_hint(cr, w, h, &v, &text);
+        }
+
+        // Zoom level while zoomed in.
+        let zoom = self.inner.zoom.get();
+        if zoom > 1.0 {
+            let layout = pangocairo::functions::create_layout(cr);
+            layout.set_font_description(Some(&gtk::pango::FontDescription::from_string("Cantarell Bold 10")));
+            layout.set_text(&gettext("{} % · Ctrl+0 to fit").replace("{}", &format!("{:.0}", zoom * 100.0)));
+            let (_, ext) = layout.pixel_extents();
+            let (tw, th) = (ext.width() as f64 + 20.0, ext.height() as f64 + 10.0);
+            render::rounded_rect(cr, Rect::new(12.0, h - th - 12.0, tw, th), th / 2.0);
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.65);
+            cr.fill().ok();
+            cr.move_to(22.0, h - th - 7.0);
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
+            pangocairo::functions::show_layout(cr, &layout);
         }
 
         // Keyboard focus ring around the page

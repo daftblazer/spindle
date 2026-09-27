@@ -17,6 +17,10 @@
       <default>true</default>
       <summary>Show the title-safe area on the menu canvas</summary>
     </key>
+    <key name="snap-to-grid" type="b">
+      <default>false</default>
+      <summary>Snap menu items to a grid on the canvas</summary>
+    </key>
     <key name="recent-output" type="s">
       <default>''</default>
       <summary>Last folder a disc was built into</summary>
