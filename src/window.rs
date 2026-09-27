@@ -285,6 +285,11 @@ impl SpindleWindow {
             if let Ok(keys) = std::env::var("SPINDLE_SCREENSHOT_KEYS") {
                 win.state().canvas.debug_keys(&keys);
             }
+            if let Ok(keys) = std::env::var("SPINDLE_SCREENSHOT_TITLE_KEYS") {
+                let tv = win.state().title_view.clone();
+                // Give the player time to load before pressing keys.
+                glib::timeout_add_local_once(std::time::Duration::from_millis(2000), move || tv.debug_keys(&keys));
+            }
             if let Some(node) = std::env::var("SPINDLE_SCREENSHOT_TITLE").ok().and_then(|n| n.parse::<usize>().ok()) {
                 let t = doc.project().titles.get(node).map(|t| t.id);
                 if let Some(t) = t {

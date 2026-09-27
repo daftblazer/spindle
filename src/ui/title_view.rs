@@ -21,7 +21,13 @@ pub struct TitleView {
     chips: gtk::Box,
     current: Cell<Option<Id>>,
     current_path: RefCell<Option<PathBuf>>,
+    /// Target of the last seek and when it was requested; the stream's
+    /// timestamp lags behind a seek, so repeated skips build on this.
+    pending_seek: Cell<Option<(f64, std::time::Instant)>>,
 }
+
+/// How long a seek target is trusted over the reported position.
+const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_millis(800);
 
 impl TitleView {
     pub fn new(doc: Rc<Document>, container: &gtk::Box) -> Rc<Self> {
@@ -111,7 +117,28 @@ impl TitleView {
             chips,
             current: Cell::new(None),
             current_path: RefCell::new(None),
+            pending_seek: Cell::new(None),
         });
+
+        // Keyboard control of the player while focus is in the title view.
+        // Captured so keys never reach toolbar buttons or the seek bar.
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(&tv);
+        keys.connect_key_pressed(move |_, key, _, state| {
+            let Some(tv) = weak.upgrade() else { return glib::Propagation::Proceed };
+            tv.handle_key(key, state)
+        });
+        container.add_controller(keys);
+        // Clicking the picture gives the player keyboard focus.
+        tv.video.set_focusable(true);
+        let click = gtk::GestureClick::new();
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let v = tv.video.clone();
+        click.connect_pressed(move |_, _, _, _| {
+            v.grab_focus();
+        });
+        tv.video.add_controller(click);
 
         let weak = Rc::downgrade(&tv);
         add.connect_clicked(move |_| {
@@ -143,7 +170,7 @@ impl TitleView {
     }
 
     fn add_chapter(&self) {
-        let (Some(id), Some(pos)) = (self.current.get(), self.position()) else { return };
+        let (Some(id), Some(pos)) = (self.current.get(), self.playhead()) else { return };
         if pos <= 0.5 {
             return;
         }
@@ -161,7 +188,7 @@ impl TitleView {
     pub fn preview(&self, parent: &impl IsA<gtk::Widget>) {
         let Some(id) = self.current.get() else { return };
         let playing = self.stack.visible_child_name().as_deref() == Some("video");
-        let start = self.position().filter(|t| *t > 0.05 && playing).unwrap_or(0.0);
+        let start = self.playhead().filter(|t| *t > 0.05 && playing).unwrap_or(0.0);
         if let Some(s) = self.video.media_stream() {
             s.pause();
         }
@@ -177,7 +204,7 @@ impl TitleView {
             (a.clone(), p.title_poster(id), t.chapters.clone())
         };
         // Start at the playhead when the preview has been moved.
-        let start = self.position().filter(|t| *t > 0.05 && self.stack.visible_child_name().as_deref() == Some("video")).unwrap_or(poster);
+        let start = self.playhead().filter(|t| *t > 0.05 && self.stack.visible_child_name().as_deref() == Some("video")).unwrap_or(poster);
         if let Some(s) = self.video.media_stream() {
             s.pause();
         }
@@ -195,10 +222,86 @@ impl TitleView {
         );
     }
 
+    fn duration(&self) -> Option<f64> {
+        let s = self.video.media_stream()?;
+        (s.duration() > 0).then(|| s.duration() as f64 / 1e6)
+    }
+
     fn seek(&self, secs: f64) {
-        if let Some(s) = self.video.media_stream() {
-            s.seek((secs * 1e6) as i64);
+        let Some(s) = self.video.media_stream() else { return };
+        if !s.is_seekable() {
+            return;
         }
+        let max = self.duration().map_or(f64::MAX, |d| (d - 0.1).max(0.0));
+        let target = secs.clamp(0.0, max);
+        s.seek((target * 1e6) as i64);
+        self.pending_seek.set(Some((target, std::time::Instant::now())));
+    }
+
+    /// Current position, preferring a just-requested seek target.
+    fn playhead(&self) -> Option<f64> {
+        let seeking = self.video.media_stream().is_some_and(|s| s.is_seeking());
+        match self.pending_seek.get() {
+            Some((t, at)) if seeking || at.elapsed() < SEEK_SETTLE => Some(t),
+            _ => self.position(),
+        }
+    }
+
+    pub fn skip(&self, delta: f64) {
+        if let Some(pos) = self.playhead() {
+            self.seek(pos + delta);
+        }
+    }
+
+    fn toggle_play(&self) {
+        if let Some(s) = self.video.media_stream() {
+            s.set_playing(!s.is_playing());
+        }
+    }
+
+    /// Development aid: press keys (by name) as if typed, then report the
+    /// position after they settle.
+    #[cfg(debug_assertions)]
+    pub fn debug_keys(self: &Rc<Self>, names: &str) {
+        for name in names.split(',') {
+            if let Some(key) = gtk::gdk::Key::from_name(name.trim()) {
+                let _ = self.handle_key(key, gtk::gdk::ModifierType::empty());
+            }
+        }
+        let this = self.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
+            let playing = this.video.media_stream().is_some_and(|s| s.is_playing());
+            println!("title view: position {:.2}s playing={playing} visible={:?}", this.position().unwrap_or(-1.0), this.stack.visible_child_name());
+        });
+    }
+
+    fn handle_key(&self, key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> glib::Propagation {
+        use gtk::gdk::{Key, ModifierType};
+        if self.current.get().is_none() || self.stack.visible_child_name().as_deref() != Some("video") {
+            return glib::Propagation::Proceed;
+        }
+        // Leave shortcuts like Ctrl+P alone.
+        if state.intersects(ModifierType::CONTROL_MASK | ModifierType::ALT_MASK | ModifierType::SUPER_MASK) {
+            return glib::Propagation::Proceed;
+        }
+        let small = state.contains(ModifierType::SHIFT_MASK);
+        match key {
+            Key::Left | Key::KP_Left => self.skip(if small { -1.0 } else { -5.0 }),
+            Key::Right | Key::KP_Right => self.skip(if small { 1.0 } else { 5.0 }),
+            Key::j | Key::J => self.skip(-10.0),
+            Key::l | Key::L => self.skip(10.0),
+            Key::space | Key::k | Key::K => self.toggle_play(),
+            Key::Home => self.seek(0.0),
+            Key::End => {
+                if let Some(d) = self.duration() {
+                    self.seek(d - 1.0);
+                }
+            }
+            // Swallow so they don't move the volume or focus unexpectedly.
+            Key::Up | Key::Down | Key::KP_Up | Key::KP_Down => {}
+            _ => return glib::Propagation::Proceed,
+        }
+        glib::Propagation::Stop
     }
 
     fn show_poster(self: &Rc<Self>) {
