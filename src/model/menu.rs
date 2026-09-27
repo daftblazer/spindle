@@ -83,6 +83,14 @@ pub enum Align {
     Right,
 }
 
+fn one() -> f64 {
+    1.0
+}
+
+fn black() -> Rgba {
+    Rgba::new(0.0, 0.0, 0.0, 1.0)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TextStyle {
     /// Pango font description, e.g. "Cantarell Bold 40".
@@ -90,11 +98,31 @@ pub struct TextStyle {
     pub color: Rgba,
     pub align: Align,
     pub shadow: bool,
+    /// Outline width in design pixels (0 = none).
+    #[serde(default)]
+    pub outline: f64,
+    #[serde(default = "black")]
+    pub outline_color: Rgba,
+    /// Extra space between letters, in design pixels.
+    #[serde(default)]
+    pub letter_spacing: f64,
+    /// Line height as a multiple of the normal one.
+    #[serde(default = "one")]
+    pub line_spacing: f64,
 }
 
 impl Default for TextStyle {
     fn default() -> Self {
-        TextStyle { font: "Cantarell Bold 40".into(), color: Rgba::WHITE, align: Align::Center, shadow: true }
+        TextStyle {
+            font: "Cantarell Bold 40".into(),
+            color: Rgba::WHITE,
+            align: Align::Center,
+            shadow: true,
+            outline: 0.0,
+            outline_color: black(),
+            letter_spacing: 0.0,
+            line_spacing: 1.0,
+        }
     }
 }
 
@@ -107,6 +135,19 @@ pub enum Highlight {
     Text,
     /// Draw a bar under the label.
     Underline,
+    /// Fill the button with the highlight color.
+    Fill,
+    /// Draw a pointer before the label.
+    Arrow,
+}
+
+/// Pictures used as a button's graphics, per state (e.g. artwork exported
+/// from an image editor). A missing state uses the normal picture.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub struct StateImages {
+    pub normal: Option<Id>,
+    pub selected: Option<Id>,
+    pub activated: Option<Id>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -146,6 +187,12 @@ pub struct ButtonItem {
     pub thumbnail: Option<Id>,
     /// Thumbnail frame position in seconds.
     pub thumbnail_time: f64,
+    /// Label color when selected or activated (defaults to the highlight
+    /// color, or the normal color for Fill).
+    #[serde(default)]
+    pub highlight_text: Option<Rgba>,
+    #[serde(default)]
+    pub images: StateImages,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -160,16 +207,34 @@ pub struct ImageItem {
     /// Frame position when the asset is a video.
     #[serde(default)]
     pub time: f64,
+    #[serde(default = "one")]
+    pub opacity: f64,
+    /// Corner radius in design pixels.
+    #[serde(default)]
+    pub radius: f64,
 }
 
-/// A decorative filled (rounded) rectangle, e.g. a panel behind buttons.
+/// A decorative filled (rounded) rectangle or ellipse, e.g. a panel
+/// behind buttons, or a thin one as a line.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ShapeItem {
     pub fill: Rgba,
     pub radius: f64,
+    /// Bottom color of a vertical gradient from `fill`.
+    #[serde(default)]
+    pub gradient: Option<Rgba>,
+    /// Border width (0 = none).
+    #[serde(default)]
+    pub stroke: f64,
+    #[serde(default = "black")]
+    pub stroke_color: Rgba,
+    #[serde(default)]
+    pub ellipse: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+// Menus hold at most a few hundred items; boxing buttons isn't worth it.
+#[allow(clippy::large_enum_variant)]
 pub enum ItemKind {
     Button(ButtonItem),
     Text(TextItem),
@@ -182,14 +247,34 @@ pub struct MenuItem {
     pub id: Id,
     pub rect: Rect,
     pub kind: ItemKind,
+    /// Left out of the menu (kept for later).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+    /// Can't be selected or moved on the canvas.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
+}
+
+impl ImageItem {
+    pub fn new(asset: Id) -> Self {
+        ImageItem { asset, time: 0.0, opacity: 1.0, radius: 0.0 }
+    }
+}
+
+impl ShapeItem {
+    pub fn new(fill: Rgba, radius: f64) -> Self {
+        ShapeItem { fill, radius, gradient: None, stroke: 0.0, stroke_color: black(), ellipse: false }
+    }
 }
 
 impl MenuItem {
+    pub fn new(kind: ItemKind, rect: Rect) -> Self {
+        MenuItem { id: new_id(), rect, kind, hidden: false, locked: false }
+    }
+
     pub fn new_button(label: &str, action: Action, rect: Rect) -> Self {
-        MenuItem {
-            id: new_id(),
-            rect,
-            kind: ItemKind::Button(ButtonItem {
+        MenuItem::new(
+            ItemKind::Button(ButtonItem {
                 label: label.into(),
                 text: TextStyle::default(),
                 selected_color: Rgba::HIGHLIGHT,
@@ -200,27 +285,26 @@ impl MenuItem {
                 nav: NavOverride::default(),
                 thumbnail: None,
                 thumbnail_time: 10.0,
+                highlight_text: None,
+                images: StateImages::default(),
             }),
-        }
+            rect,
+        )
     }
 
     pub fn new_text(text: &str, rect: Rect) -> Self {
-        MenuItem {
-            id: new_id(),
+        MenuItem::new(
+            ItemKind::Text(TextItem { text: text.into(), style: TextStyle { font: "Cantarell Bold 64".into(), ..Default::default() } }),
             rect,
-            kind: ItemKind::Text(TextItem {
-                text: text.into(),
-                style: TextStyle { font: "Cantarell Bold 64".into(), ..Default::default() },
-            }),
-        }
+        )
     }
 
     pub fn new_image(asset: Id, rect: Rect) -> Self {
-        MenuItem { id: new_id(), rect, kind: ItemKind::Image(ImageItem { asset, time: 0.0 }) }
+        MenuItem::new(ItemKind::Image(ImageItem::new(asset)), rect)
     }
 
     pub fn new_shape(fill: Rgba, radius: f64, rect: Rect) -> Self {
-        MenuItem { id: new_id(), rect, kind: ItemKind::Shape(ShapeItem { fill, radius }) }
+        MenuItem::new(ItemKind::Shape(ShapeItem::new(fill, radius)), rect)
     }
 
     pub fn button(&self) -> Option<&ButtonItem> {
@@ -344,8 +428,9 @@ impl Menu {
         self.items.iter_mut().find(|i| i.id == id)
     }
 
+    /// Buttons that are part of the menu (not hidden).
     pub fn buttons(&self) -> impl Iterator<Item = &MenuItem> {
-        self.items.iter().filter(|i| i.button().is_some())
+        self.items.iter().filter(|i| i.button().is_some() && !i.hidden)
     }
 
     /// Align or distribute `ids`. A single item is aligned to the safe

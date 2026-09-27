@@ -268,6 +268,12 @@ impl SpindleWindow {
         let win = self.clone();
         glib::idle_add_local_once(move || {
             let doc = win.doc();
+            if let Some(n) = std::env::var("SPINDLE_SCREENSHOT_MENU").ok().and_then(|n| n.parse::<usize>().ok()) {
+                let m = doc.project().menus.get(n).map(|m| m.id);
+                if let Some(m) = m {
+                    doc.select(Node::Menu(m), None);
+                }
+            }
             if let Ok(list) = std::env::var("SPINDLE_SCREENSHOT_ITEM") {
                 let ids: Vec<Id> = list
                     .split(',')
@@ -275,12 +281,6 @@ impl SpindleWindow {
                     .filter_map(|n| doc.current_menu().and_then(|m| doc.project().menu(m).and_then(|m| m.items.get(n).map(|i| i.id))))
                     .collect();
                 doc.set_selection(ids);
-            }
-            if let Some(n) = std::env::var("SPINDLE_SCREENSHOT_MENU").ok().and_then(|n| n.parse::<usize>().ok()) {
-                let m = doc.project().menus.get(n).map(|m| m.id);
-                if let Some(m) = m {
-                    doc.select(Node::Menu(m), None);
-                }
             }
             if let Ok(keys) = std::env::var("SPINDLE_SCREENSHOT_KEYS") {
                 win.state().canvas.debug_keys(&keys);
@@ -400,7 +400,7 @@ impl SpindleWindow {
         self.action_enabled("undo", doc.can_undo());
         self.action_enabled("redo", doc.can_redo());
         for a in [
-            "delete-item", "duplicate-item", "raise-item", "lower-item", "copy", "cut", "align-left", "align-hcenter",
+            "delete-item", "duplicate-item", "raise-item", "lower-item", "forward-item", "backward-item", "lock-item", "hide-item", "copy", "cut", "align-left", "align-hcenter",
             "align-right", "align-top", "align-vcenter", "align-bottom",
         ] {
             self.action_enabled(a, has_item);
@@ -629,6 +629,41 @@ impl SpindleWindow {
                 let (sel, rest): (Vec<MenuItem>, Vec<MenuItem>) = m.items.drain(..).partition(|i| ids.contains(&i.id));
                 m.items = sel.into_iter().chain(rest).collect();
             })
+        });
+        // One step up/down the stacking order, keeping the selection's order.
+        add("forward-item", |w| {
+            w.edit_selection(|m, ids| {
+                for i in (0..m.items.len().saturating_sub(1)).rev() {
+                    if ids.contains(&m.items[i].id) && !ids.contains(&m.items[i + 1].id) {
+                        m.items.swap(i, i + 1);
+                    }
+                }
+            })
+        });
+        add("backward-item", |w| {
+            w.edit_selection(|m, ids| {
+                for i in 1..m.items.len() {
+                    if ids.contains(&m.items[i].id) && !ids.contains(&m.items[i - 1].id) {
+                        m.items.swap(i, i - 1);
+                    }
+                }
+            })
+        });
+        add("lock-item", |w| {
+            w.edit_selection(|m, ids| m.items.iter_mut().filter(|i| ids.contains(&i.id)).for_each(|i| i.locked = true));
+            w.doc().select_item(None);
+        });
+        add("hide-item", |w| w.edit_selection(|m, ids| m.items.iter_mut().filter(|i| ids.contains(&i.id)).for_each(|i| i.hidden = true)));
+        add("unlock-all", |w| {
+            let Some(menu) = w.doc().current_menu() else { return };
+            w.doc().edit(Change::Structure, |p| {
+                if let Some(m) = p.menu_mut(menu) {
+                    for i in &mut m.items {
+                        i.locked = false;
+                        i.hidden = false;
+                    }
+                }
+            });
         });
         add("default-button", |w| w.edit_item(|m, id| m.default_button = Some(id)));
         for (name, op) in [
@@ -1136,7 +1171,7 @@ impl SpindleWindow {
                         _ => Align::Center,
                     };
                     it.rect = it.rect.fit(aspect, align);
-                    it.kind = ItemKind::Image(ImageItem { asset, time: 0.0 });
+                    it.kind = ItemKind::Image(ImageItem::new(asset));
                 }
             });
             doc.select_item(Some(item));

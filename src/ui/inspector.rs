@@ -398,6 +398,30 @@ impl Inspector {
                 s.shadow = v;
             }
         }));
+        let outline = rows::spin(doc, &gettext("Outline"), style.outline, 0.0, 20.0, 0.5, 1, Change::Structure, move |p, v| {
+            if let Some(s) = style_mut(p, menu, item) {
+                s.outline = v;
+            }
+        });
+        outline.set_subtitle(&gettext("Width in pixels; helps text stand out on busy backgrounds"));
+        g.add(&outline);
+        if style.outline > 0.0 {
+            g.add(&rows::color(doc, &gettext("Outline Color"), style.outline_color, Change::Content, move |p, c| {
+                if let Some(s) = style_mut(p, menu, item) {
+                    s.outline_color = c;
+                }
+            }));
+        }
+        g.add(&rows::spin(doc, &gettext("Letter Spacing"), style.letter_spacing, -10.0, 60.0, 0.5, 1, Change::Content, move |p, v| {
+            if let Some(s) = style_mut(p, menu, item) {
+                s.letter_spacing = v;
+            }
+        }));
+        g.add(&rows::spin(doc, &gettext("Line Spacing"), style.line_spacing, 0.6, 3.0, 0.05, 2, Change::Content, move |p, v| {
+            if let Some(s) = style_mut(p, menu, item) {
+                s.line_spacing = v;
+            }
+        }));
     }
 
     fn item_page(&self, page: &adw::PreferencesPage, menu: Id, item: Id) {
@@ -494,17 +518,28 @@ impl Inspector {
 
                 let g = group(&gettext("Appearance"));
                 self.text_style_rows(&g, &b.text, menu, item, true);
-                let highlights = [gettext("Frame"), gettext("Text Color"), gettext("Underline")];
-                let sel = match b.highlight {
-                    Highlight::Frame => 0,
-                    Highlight::Text => 1,
-                    Highlight::Underline => 2,
-                };
+                const STYLES: [Highlight; 5] = [Highlight::Frame, Highlight::Text, Highlight::Underline, Highlight::Fill, Highlight::Arrow];
+                let highlights = [gettext("Frame"), gettext("Text Color"), gettext("Underline"), gettext("Filled"), gettext("Arrow")];
+                let sel = STYLES.iter().position(|h| *h == b.highlight).unwrap_or(0);
                 g.add(&rows::combo(doc, &gettext("Highlight Style"), &highlights, sel, Change::Content, move |p, i| {
                     if let Some(b) = button_mut(p, menu, item) {
-                        b.highlight = [Highlight::Frame, Highlight::Text, Highlight::Underline][i.min(2)];
+                        b.highlight = STYLES[i.min(STYLES.len() - 1)];
                     }
                 }));
+                let ht = rows::switch(doc, &gettext("Own Highlighted Text Color"), b.highlight_text.is_some(), Change::Structure, move |p, v| {
+                    if let Some(b) = button_mut(p, menu, item) {
+                        b.highlight_text = v.then_some(Rgba::WHITE);
+                    }
+                });
+                ht.set_subtitle(&gettext("Otherwise the label takes the highlight color (or keeps its color when filled)"));
+                g.add(&ht);
+                if let Some(c) = b.highlight_text {
+                    g.add(&rows::color(doc, &gettext("Highlighted Text Color"), c, Change::Content, move |p, c| {
+                        if let Some(b) = button_mut(p, menu, item) {
+                            b.highlight_text = Some(c);
+                        }
+                    }));
+                }
                 g.add(&rows::color(doc, &gettext("Selected Color"), b.selected_color, Change::Content, move |p, c| {
                     if let Some(b) = button_mut(p, menu, item) {
                         b.selected_color = c;
@@ -525,6 +560,26 @@ impl Inspector {
                     g.add(&rows::color(doc, &gettext("Fill Color"), fill, Change::Content, move |p, c| {
                         if let Some(b) = button_mut(p, menu, item) {
                             b.fill = Some(c);
+                        }
+                    }));
+                }
+                page.add(&g);
+
+                let g = group(&gettext("Pictures"));
+                g.set_description(Some(&gettext("Artwork for the button in each state, e.g. exported from an image editor. Import pictures into Media first.")));
+                let pictures = assets_of(&p, &[AssetKind::Image]);
+                type Slot = fn(&mut StateImages) -> &mut Option<Id>;
+                let slots: [(String, Option<Id>, Slot); 3] = [
+                    (gettext("Normal"), b.images.normal, |s| &mut s.normal),
+                    (gettext("Selected"), b.images.selected, |s| &mut s.selected),
+                    (gettext("Activated"), b.images.activated, |s| &mut s.activated),
+                ];
+                for (title, current, slot) in slots {
+                    let pictures = pictures.clone();
+                    let (labels, sel) = optional_choice(&gettext("None"), &pictures, current);
+                    g.add(&rows::combo(doc, &title, &labels, sel, Change::Content, move |p, i| {
+                        if let Some(b) = button_mut(p, menu, item) {
+                            *slot(&mut b.images) = pick(&pictures, i);
                         }
                     }));
                 }
@@ -625,6 +680,24 @@ impl Inspector {
                         }
                     }));
                 }
+                fn image_mut(p: &mut Project, menu: Id, item: Id) -> Option<&mut ImageItem> {
+                    match &mut p.menu_mut(menu)?.item_mut(item)?.kind {
+                        ItemKind::Image(i) => Some(i),
+                        _ => None,
+                    }
+                }
+                let op = rows::spin(doc, &gettext("Opacity"), img.opacity * 100.0, 0.0, 100.0, 5.0, 0, Change::Content, move |p, v| {
+                    if let Some(i) = image_mut(p, menu, item) {
+                        i.opacity = v / 100.0;
+                    }
+                });
+                op.set_subtitle(&gettext("Percent"));
+                g.add(&op);
+                g.add(&rows::spin(doc, &gettext("Corner Radius"), img.radius, 0.0, 400.0, 2.0, 0, Change::Content, move |p, v| {
+                    if let Some(i) = image_mut(p, menu, item) {
+                        i.radius = v;
+                    }
+                }));
                 page.add(&g);
             }
             ItemKind::Shape(sh) => {
@@ -640,15 +713,75 @@ impl Inspector {
                         s.fill = c;
                     }
                 }));
-                g.add(&rows::spin(doc, &gettext("Corner Radius"), sh.radius, 0.0, 200.0, 2.0, 0, Change::Content, move |p, v| {
+                g.add(&rows::switch(doc, &gettext("Gradient"), sh.gradient.is_some(), Change::Structure, move |p, v| {
                     if let Some(s) = shape_mut(p, menu, item) {
-                        s.radius = v;
+                        let c = s.fill;
+                        s.gradient = v.then(|| Rgba::new(c.r * 0.4, c.g * 0.4, c.b * 0.4, c.a));
                     }
                 }));
+                if let Some(bottom) = sh.gradient {
+                    g.add(&rows::color(doc, &gettext("Bottom Color"), bottom, Change::Content, move |p, c| {
+                        if let Some(s) = shape_mut(p, menu, item) {
+                            s.gradient = Some(c);
+                        }
+                    }));
+                }
+                g.add(&rows::switch(doc, &gettext("Ellipse"), sh.ellipse, Change::Structure, move |p, v| {
+                    if let Some(s) = shape_mut(p, menu, item) {
+                        s.ellipse = v;
+                    }
+                }));
+                if !sh.ellipse {
+                    g.add(&rows::spin(doc, &gettext("Corner Radius"), sh.radius, 0.0, 540.0, 2.0, 0, Change::Content, move |p, v| {
+                        if let Some(s) = shape_mut(p, menu, item) {
+                            s.radius = v;
+                        }
+                    }));
+                }
+                g.add(&rows::spin(doc, &gettext("Border"), sh.stroke, 0.0, 40.0, 0.5, 1, Change::Structure, move |p, v| {
+                    if let Some(s) = shape_mut(p, menu, item) {
+                        s.stroke = v;
+                    }
+                }));
+                if sh.stroke > 0.0 {
+                    g.add(&rows::color(doc, &gettext("Border Color"), sh.stroke_color, Change::Content, move |p, c| {
+                        if let Some(s) = shape_mut(p, menu, item) {
+                            s.stroke_color = c;
+                        }
+                    }));
+                }
                 page.add(&g);
             }
         }
         self.geometry_group(page, menu, item, it.rect);
+        let g = group(&gettext("Layer"));
+        let hidden = rows::switch(doc, &gettext("Hidden"), it.hidden, Change::Structure, move |p, v| {
+            if let Some(i) = p.menu_mut(menu).and_then(|m| m.item_mut(item)) {
+                i.hidden = v;
+            }
+        });
+        hidden.set_subtitle(&gettext("Left out of the menu, but kept for later"));
+        g.add(&hidden);
+        let locked = rows::switch(doc, &gettext("Locked"), it.locked, Change::Structure, move |p, v| {
+            if let Some(i) = p.menu_mut(menu).and_then(|m| m.item_mut(item)) {
+                i.locked = v;
+            }
+        });
+        locked.set_subtitle(&gettext("Can't be clicked or moved on the canvas"));
+        g.add(&locked);
+        let order = gtk::Box::builder().spacing(6).halign(gtk::Align::Center).margin_top(6).build();
+        for (icon, tip, action) in [
+            ("go-bottom-symbolic", gettext("Send to Back"), "win.lower-item"),
+            ("go-down-symbolic", gettext("Send Backward"), "win.backward-item"),
+            ("go-up-symbolic", gettext("Bring Forward"), "win.forward-item"),
+            ("go-top-symbolic", gettext("Bring to Front"), "win.raise-item"),
+        ] {
+            let b = gtk::Button::builder().icon_name(icon).tooltip_text(tip.as_str()).action_name(action).css_classes(["flat"]).build();
+            b.update_property(&[gtk::accessible::Property::Label(&tip)]);
+            order.append(&b);
+        }
+        g.add(&order);
+        page.add(&g);
         page.add(&delete_button(&gettext("Delete"), "win.delete-item"));
     }
 

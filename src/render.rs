@@ -177,6 +177,14 @@ fn layout(cr: &cairo::Context, text: &str, style: &TextStyle, width: f64) -> pan
         Align::Center => pango::Alignment::Center,
         Align::Right => pango::Alignment::Right,
     });
+    if style.line_spacing > 0.0 && (style.line_spacing - 1.0).abs() > 1e-3 {
+        layout.set_line_spacing(style.line_spacing as f32);
+    }
+    if style.letter_spacing != 0.0 {
+        let attrs = pango::AttrList::new();
+        attrs.insert(pango::AttrInt::new_letter_spacing((style.letter_spacing * pango::SCALE as f64) as i32));
+        layout.set_attributes(Some(&attrs));
+    }
     layout.set_text(text);
     layout
 }
@@ -185,7 +193,7 @@ fn layout(cr: &cairo::Context, text: &str, style: &TextStyle, width: f64) -> pan
 pub fn line_height(style: &TextStyle) -> f64 {
     let fd = pango::FontDescription::from_string(&style.font);
     let size = if fd.size() > 0 { fd.size() as f64 / pango::SCALE as f64 } else { 40.0 };
-    size * 1.35
+    size * 1.35 * if style.line_spacing > 0.0 { style.line_spacing } else { 1.0 }
 }
 
 fn draw_text(cr: &cairo::Context, text: &str, style: &TextStyle, color: Rgba, r: Rect, shadow: bool) {
@@ -197,6 +205,14 @@ fn draw_text(cr: &cairo::Context, text: &str, style: &TextStyle, color: Rgba, r:
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.6 * color.a as f64);
         pangocairo::functions::show_layout(cr, &l);
     }
+    if style.outline > 0.0 {
+        cr.move_to(r.x, y);
+        pangocairo::functions::layout_path(cr, &l);
+        set_color(cr, style.outline_color);
+        cr.set_line_width(style.outline * 2.0);
+        cr.set_line_join(cairo::LineJoin::Round);
+        cr.stroke().ok();
+    }
     cr.move_to(r.x, y);
     set_color(cr, color);
     pangocairo::functions::show_layout(cr, &l);
@@ -207,7 +223,9 @@ fn button_areas(item: &MenuItem, b: &ButtonItem) -> (Option<Rect>, Rect) {
     let r = item.rect;
     // Keep labels clear of the highlight frame.
     let pad = (r.w * 0.06).min(24.0);
-    let inset = |a: Rect| Rect::new(a.x + pad, a.y, (a.w - 2.0 * pad).max(1.0), a.h);
+    // Room for the pointer of the Arrow style, in every state.
+    let arrow = if b.highlight == Highlight::Arrow { line_height(&b.text) * 0.6 } else { 0.0 };
+    let inset = |a: Rect| Rect::new(a.x + pad + arrow, a.y, (a.w - 2.0 * pad - arrow).max(1.0), a.h);
     if b.thumbnail.is_none() {
         return (None, inset(r));
     }
@@ -216,6 +234,49 @@ fn button_areas(item: &MenuItem, b: &ButtonItem) -> (Option<Rect>, Rect) {
     }
     let lh = line_height(&b.text).min(r.h / 2.0);
     (Some(Rect::new(r.x, r.y, r.w, r.h - lh)), inset(Rect::new(r.x, r.y + r.h - lh, r.w, lh)))
+}
+
+/// Where an image is drawn when fitted into `r`.
+fn fitted_rect(p: &cairo::ImageSurface, r: Rect) -> Rect {
+    let (pw, ph) = (p.width() as f64, p.height() as f64);
+    let s = (r.w / pw).min(r.h / ph);
+    Rect::new(r.x + (r.w - pw * s) / 2.0, r.y + (r.h - ph * s) / 2.0, pw * s, ph * s)
+}
+
+fn shape_path(cr: &cairo::Context, sh: &ShapeItem, r: Rect) {
+    if sh.ellipse {
+        cr.save().ok();
+        cr.translate(r.x + r.w / 2.0, r.y + r.h / 2.0);
+        cr.scale(r.w / 2.0, r.h / 2.0);
+        cr.arc(0.0, 0.0, 1.0, 0.0, std::f64::consts::TAU);
+        cr.restore().ok();
+    } else {
+        rounded_rect(cr, r, sh.radius.min(r.w / 2.0).min(r.h / 2.0));
+    }
+}
+
+pub fn draw_shape(cr: &cairo::Context, sh: &ShapeItem, r: Rect) {
+    shape_path(cr, sh, r);
+    match sh.gradient {
+        Some(bottom) => {
+            let g = cairo::LinearGradient::new(0.0, r.y, 0.0, r.y + r.h);
+            g.add_color_stop_rgba(0.0, sh.fill.r as f64, sh.fill.g as f64, sh.fill.b as f64, sh.fill.a as f64);
+            g.add_color_stop_rgba(1.0, bottom.r as f64, bottom.g as f64, bottom.b as f64, bottom.a as f64);
+            cr.set_source(&g).ok();
+        }
+        None => set_color(cr, sh.fill),
+    }
+    cr.fill().ok();
+    if sh.stroke > 0.0 {
+        // Keep the border inside the shape's rectangle.
+        let h = sh.stroke / 2.0;
+        let inner = Rect::new(r.x + h, r.y + h, (r.w - sh.stroke).max(1.0), (r.h - sh.stroke).max(1.0));
+        let sh2 = ShapeItem { radius: (sh.radius - h).max(0.0), ..sh.clone() };
+        shape_path(cr, &sh2, inner);
+        set_color(cr, sh.stroke_color);
+        cr.set_line_width(sh.stroke);
+        cr.stroke().ok();
+    }
 }
 
 /// Everything that is not part of the IG button graphics: background,
@@ -245,19 +306,23 @@ pub fn draw_static(cr: &cairo::Context, project: &Project, menu: &Menu, images: 
             }
         }
     }
-    for item in &menu.items {
+    for item in menu.items.iter().filter(|i| !i.hidden) {
         match &item.kind {
             ItemKind::Text(t) => draw_text(cr, &t.text, &t.style, t.style.color, item.rect, t.style.shadow),
             ItemKind::Image(i) => {
                 if let Some(p) = images.get(project, i.asset, i.time) {
+                    cr.push_group();
+                    if i.radius > 0.0 {
+                        let fitted = fitted_rect(&p, item.rect);
+                        rounded_rect(cr, fitted, i.radius.min(fitted.w / 2.0).min(fitted.h / 2.0));
+                        cr.clip();
+                    }
                     draw_pixbuf(cr, &p, item.rect, false);
+                    cr.pop_group_to_source().ok();
+                    cr.paint_with_alpha(i.opacity.clamp(0.0, 1.0)).ok();
                 }
             }
-            ItemKind::Shape(sh) => {
-                rounded_rect(cr, item.rect, sh.radius);
-                set_color(cr, sh.fill);
-                cr.fill().ok();
-            }
+            ItemKind::Shape(sh) => draw_shape(cr, sh, item.rect),
             ItemKind::Button(b) => {
                 if let (Some(area), Some(asset)) = (button_areas(item, b).0, b.thumbnail) {
                     match images.get(project, asset, b.thumbnail_time) {
@@ -285,26 +350,52 @@ pub fn draw_static(cr: &cairo::Context, project: &Project, menu: &Menu, images: 
 }
 
 /// The IG graphics of one button in the given state.
-pub fn draw_button(cr: &cairo::Context, item: &MenuItem, b: &ButtonItem, state: ButtonState) {
+pub fn draw_button(cr: &cairo::Context, project: &Project, images: &ImageCache, item: &MenuItem, b: &ButtonItem, state: ButtonState) {
+    if item.hidden {
+        return;
+    }
     let (thumb, label_area) = button_areas(item, b);
     let accent = match state {
         ButtonState::Normal => None,
         ButtonState::Selected => Some(b.selected_color),
         ButtonState::Activated => Some(b.activated_color),
     };
+    // Artwork for this state (falling back to the normal picture).
+    let art = match state {
+        ButtonState::Normal => b.images.normal,
+        ButtonState::Selected => b.images.selected.or(b.images.normal),
+        ButtonState::Activated => b.images.activated.or(b.images.selected).or(b.images.normal),
+    };
+    let has_art_state = match state {
+        ButtonState::Normal => b.images.normal.is_some(),
+        ButtonState::Selected => b.images.selected.is_some(),
+        ButtonState::Activated => b.images.activated.is_some() || b.images.selected.is_some(),
+    };
+    if let Some(p) = art.and_then(|a| images.get(project, a, 0.0)) {
+        draw_pixbuf(cr, &p, item.rect, false);
+    }
     if let Some(fill) = b.fill {
         rounded_rect(cr, item.rect, 12.0);
         set_color(cr, fill);
         cr.fill().ok();
     }
+    // Pictures made for the state are the highlight; no drawn one on top.
+    let accent_drawn = accent.filter(|_| !has_art_state);
+    if let (Some(c), Highlight::Fill) = (accent_drawn, b.highlight) {
+        rounded_rect(cr, item.rect, 12.0);
+        set_color(cr, c);
+        cr.fill().ok();
+    }
     let text_color = match (b.highlight, accent) {
-        (Highlight::Frame | Highlight::Text, Some(c)) => c,
+        (_, None) => b.text.color,
+        (_, Some(_)) if b.highlight_text.is_some() => b.highlight_text.unwrap_or(b.text.color),
+        (Highlight::Frame | Highlight::Text | Highlight::Arrow, Some(c)) if !has_art_state => c,
         _ => b.text.color,
     };
     if !b.label.is_empty() {
         draw_text(cr, &b.label, &b.text, text_color, label_area, b.text.shadow);
     }
-    if let Some(c) = accent {
+    if let Some(c) = accent_drawn {
         set_color(cr, c);
         match b.highlight {
             Highlight::Frame => {
@@ -319,7 +410,19 @@ pub fn draw_button(cr: &cairo::Context, item: &MenuItem, b: &ButtonItem, state: 
                 cr.rectangle(r.x + r.w * 0.1, r.y + r.h - 8.0, r.w * 0.8, 6.0);
                 cr.fill().ok();
             }
-            Highlight::Text => {}
+            Highlight::Arrow => {
+                // A triangle before the label, level with it.
+                let lh = line_height(&b.text);
+                let size = (lh * 0.4).min(item.rect.h * 0.5);
+                let cy = label_area.y + label_area.h / 2.0;
+                let x = label_area.x - lh * 0.55;
+                cr.move_to(x, cy - size / 2.0);
+                cr.line_to(x + size * 0.85, cy);
+                cr.line_to(x, cy + size / 2.0);
+                cr.close_path();
+                cr.fill().ok();
+            }
+            Highlight::Text | Highlight::Fill => {}
         }
     }
 }
@@ -365,7 +468,7 @@ fn surface_to_bitmap(surface: &mut cairo::ImageSurface) -> Bitmap {
 }
 
 /// Render one button state as an IG bitmap at disc resolution.
-pub fn render_button_bitmap(item: &MenuItem, b: &ButtonItem, state: ButtonState, disc_w: u32, disc_h: u32) -> Bitmap {
+pub fn render_button_bitmap(project: &Project, images: &ImageCache, item: &MenuItem, b: &ButtonItem, state: ButtonState, disc_w: u32, disc_h: u32) -> Bitmap {
     let (x, y, w, h) = button_geometry(item, disc_w, disc_h);
     let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w as i32, h as i32).expect("surface");
     {
@@ -373,7 +476,7 @@ pub fn render_button_bitmap(item: &MenuItem, b: &ButtonItem, state: ButtonState,
         let s = disc_scale(disc_w);
         cr.translate(-(x as f64), -(y as f64));
         cr.scale(s, s);
-        draw_button(&cr, item, b, state);
+        draw_button(&cr, project, images, item, b, state);
     }
     surface_to_bitmap(&mut surface)
 }
@@ -460,7 +563,7 @@ pub fn menu_thumbnail(project: &Project, menu: &Menu, images: &ImageCache, width
         draw_static(&cr, project, menu, images, true);
         for item in &menu.items {
             if let Some(b) = item.button() {
-                draw_button(&cr, item, b, ButtonState::Normal);
+                draw_button(&cr, project, images, item, b, ButtonState::Normal);
             }
         }
     }

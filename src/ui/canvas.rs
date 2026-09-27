@@ -287,7 +287,7 @@ impl MenuCanvas {
     }
 
     fn hit(&self, dx: f64, dy: f64) -> Option<Id> {
-        self.with_menu(|m| m.items.iter().rev().find(|i| i.rect.contains(dx, dy)).map(|i| i.id)).flatten()
+        self.with_menu(|m| m.items.iter().rev().find(|i| !i.locked && i.rect.contains(dx, dy)).map(|i| i.id)).flatten()
     }
 
     fn hit_handle(&self, x: f64, y: f64) -> Option<(Id, u8)> {
@@ -599,7 +599,7 @@ impl MenuCanvas {
                 let band = Rect::new(x0.min(*x1), y0.min(*y1), (*x1 - *x0).abs(), (*y1 - *y0).abs());
                 let mut sel = base.clone();
                 if let Some(hits) = self.with_menu(|m| {
-                    m.items.iter().filter(|i| intersects(i.rect, band)).map(|i| i.id).collect::<Vec<_>>()
+                    m.items.iter().filter(|i| !i.locked && intersects(i.rect, band)).map(|i| i.id).collect::<Vec<_>>()
                 }) {
                     for h in hits {
                         if !sel.contains(&h) {
@@ -675,6 +675,9 @@ impl MenuCanvas {
             doc.select_item(None);
             menu.append_section(None, &section(&[("Add _Button", "win.add-button"), ("Add _Text", "win.add-text")]));
             menu.append_section(None, &section(&[("_Paste", "win.paste"), ("Select _All", "win.select-all")]));
+            if self.with_menu(|m| m.items.iter().any(|i| i.locked || i.hidden)).unwrap_or(false) {
+                menu.append_section(None, &section(&[("_Unlock and Show All", "win.unlock-all")]));
+            }
             self.popup(&menu, x, y);
             return;
         };
@@ -705,8 +708,11 @@ impl MenuCanvas {
         let arrange = gio::Menu::new();
         arrange.append_submenu(Some(&gettext("_Align")), &align);
         arrange.append(Some(&gettext("Bring to _Front")), Some("win.raise-item"));
+        arrange.append(Some(&gettext("Bring _Forward")), Some("win.forward-item"));
+        arrange.append(Some(&gettext("Send Back_ward")), Some("win.backward-item"));
         arrange.append(Some(&gettext("Send to _Back")), Some("win.lower-item"));
         menu.append_section(None, &arrange);
+        menu.append_section(None, &section(&[("_Lock", "win.lock-item"), ("_Hide", "win.hide-item")]));
         if is_button {
             menu.append_section(None, &section(&[("Make _Default Button", "win.default-button")]));
         } else if !multi {
@@ -876,6 +882,18 @@ impl MenuCanvas {
             render::popup_backdrop(cr, &p, &self.inner.images);
         }
         render::draw_static(cr, &p, menu, &self.inner.images, true);
+        // Hidden items: a dashed outline so they can still be found.
+        if !preview {
+            for item in menu.items.iter().filter(|i| i.hidden) {
+                let r = item.rect;
+                cr.set_source_rgba(1.0, 1.0, 1.0, 0.5);
+                cr.set_line_width(1.5 / v.scale);
+                cr.set_dash(&[4.0 / v.scale, 4.0 / v.scale], 0.0);
+                cr.rectangle(r.x, r.y, r.w, r.h);
+                cr.stroke().ok();
+                cr.set_dash(&[], 0.0);
+            }
+        }
         for item in &menu.items {
             if let Some(b) = item.button() {
                 let state = match (Some(item.id) == highlighted, self.inner.preview_activated.get()) {
@@ -883,7 +901,7 @@ impl MenuCanvas {
                     (true, false) => ButtonState::Selected,
                     _ => ButtonState::Normal,
                 };
-                render::draw_button(cr, item, b, state);
+                render::draw_button(cr, &p, &self.inner.images, item, b, state);
             }
         }
         if preview {

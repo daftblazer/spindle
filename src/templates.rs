@@ -153,6 +153,7 @@ impl Ctx {
                 color: if dim { self.theme.dim } else { self.theme.text },
                 align,
                 shadow: self.theme.shadow && !dim,
+                ..Default::default()
             };
         }
         it
@@ -161,7 +162,7 @@ impl Ctx {
     fn button(&self, label: &str, action: Action, rect: Rect, size: u32, align: Align, highlight: Highlight) -> MenuItem {
         let mut it = MenuItem::new_button(label, action, rect);
         let b = it.button_mut().unwrap();
-        b.text = TextStyle { font: format!("{FONT} Bold {size}"), color: self.theme.text, align, shadow: self.theme.shadow };
+        b.text = TextStyle { font: format!("{FONT} Bold {size}"), color: self.theme.text, align, shadow: self.theme.shadow, ..Default::default() };
         b.selected_color = self.theme.selected;
         b.activated_color = self.theme.activated;
         b.highlight = highlight;
@@ -621,7 +622,7 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
                     _ => Align::Center,
                 };
                 item.rect = item.rect.fit(aspect, align);
-                item.kind = ItemKind::Image(ImageItem { asset: logo_id, time: 0.0 });
+                item.kind = ItemKind::Image(ImageItem::new(logo_id));
             }
         }
     }
