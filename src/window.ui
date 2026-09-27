@@ -249,6 +249,21 @@
                                         </child>
                                         <child>
                                           <object class="GtkButton">
+                                            <property name="action-name">win.add-shape</property>
+                                            <property name="tooltip-text" translatable="yes">Add a Shape, such as a Panel Behind Buttons</property>
+                                            <style>
+                                              <class name="flat"/>
+                                            </style>
+                                            <property name="child">
+                                              <object class="AdwButtonContent">
+                                                <property name="icon-name">spindle-shape-symbolic</property>
+                                                <property name="label" translatable="yes">Shape</property>
+                                              </object>
+                                            </property>
+                                          </object>
+                                        </child>
+                                        <child>
+                                          <object class="GtkButton">
                                             <property name="action-name">win.add-button-grid</property>
                                             <property name="tooltip-text" translatable="yes">Add a button for every title</property>
                                             <style>

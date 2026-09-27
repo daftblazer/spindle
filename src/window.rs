@@ -449,7 +449,7 @@ impl SpindleWindow {
         self.action_enabled("replace-with-image", single_visual);
         self.action_enabled("menu-background-image", in_menu);
         self.action_enabled("menu-music", in_menu);
-        for a in ["add-button", "add-text", "add-image", "add-button-grid", "select-all"] {
+        for a in ["add-button", "add-text", "add-image", "add-shape", "add-button-grid", "select-all"] {
             self.action_enabled(a, editing);
         }
         self.action_enabled("paste", in_menu && !self.state().clipboard.borrow().is_empty());
@@ -585,6 +585,17 @@ impl SpindleWindow {
             })
         });
         add("add-text", |w| w.add_item(|_| MenuItem::new_text(&gettext("Title"), Rect::new(260.0, 90.0, 1400.0, 130.0))));
+        add("add-shape", |w| {
+            // A translucent rounded panel, the usual backdrop for buttons and
+            // text, so it starts behind everything else.
+            w.insert_item(
+                |_| {
+                    let r = Rect::new(DESIGN_WIDTH / 2.0 - 300.0, DESIGN_HEIGHT / 2.0 - 150.0, 600.0, 300.0);
+                    MenuItem::new_shape(Rgba::new(0.0, 0.0, 0.0, 0.5), 24.0, r)
+                },
+                true,
+            )
+        });
         add("add-image", |w| {
             let win = w.clone();
             w.pick_image(move |asset| {
@@ -843,13 +854,22 @@ impl SpindleWindow {
     }
 
     fn add_item(&self, make: impl FnOnce(&Project) -> MenuItem) {
+        self.insert_item(make, false);
+    }
+
+    /// Add an item on top of the others, or `behind` all of them.
+    fn insert_item(&self, make: impl FnOnce(&Project) -> MenuItem, behind: bool) {
         let doc = self.doc();
         let Some(menu) = doc.current_menu() else { return };
         let id = doc.edit(Change::Structure, |p| {
             let item = make(p);
             let id = item.id;
             if let Some(m) = p.menu_mut(menu) {
-                m.items.push(item);
+                if behind {
+                    m.items.insert(0, item);
+                } else {
+                    m.items.push(item);
+                }
             }
             id
         });

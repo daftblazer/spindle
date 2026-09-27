@@ -830,7 +830,10 @@ impl MenuCanvas {
         let menu = gio::Menu::new();
         let Some(item) = self.hit(dx, dy) else {
             doc.select_item(None);
-            menu.append_section(None, &section(&[("Add _Button", "win.add-button"), ("Add _Text", "win.add-text")]));
+            menu.append_section(
+                None,
+                &section(&[("Add _Button", "win.add-button"), ("Add _Text", "win.add-text"), ("Add _Image…", "win.add-image"), ("Add _Shape", "win.add-shape")]),
+            );
             menu.append_section(None, &section(&[("_Paste", "win.paste"), ("Select _All", "win.select-all")]));
             if self.with_menu(|m| m.items.iter().any(|i| i.locked || i.hidden)).unwrap_or(false) {
                 menu.append_section(None, &section(&[("_Unlock and Show All", "win.unlock-all")]));
