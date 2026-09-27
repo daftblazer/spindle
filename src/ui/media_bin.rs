@@ -230,15 +230,7 @@ impl MediaBin {
             let s2 = gio::Menu::new();
             add(&gettext("_Remove from Project"), "win.asset-remove", &s2);
             menu.append_section(None, &s2);
-            let pop = gtk::PopoverMenu::from_model(Some(&menu));
-            pop.set_parent(&vv);
-            pop.set_has_arrow(false);
-            pop.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-            pop.connect_closed(|p| {
-                let p = p.clone();
-                glib::idle_add_local_once(move || p.unparent());
-            });
-            pop.popup();
+            super::context_menu(&vv, &menu, x, y);
         });
         v.add_controller(ctx);
         // Cap the card width; pictures would otherwise request their

@@ -222,15 +222,7 @@ impl Sidebar {
             menu.append(Some(&gettext("Move _Up")), Some("win.move-node-up"));
             menu.append(Some(&gettext("Move _Down")), Some("win.move-node-down"));
             menu.append(Some(&gettext("_Delete")), Some("win.delete-node"));
-            let pop = gtk::PopoverMenu::from_model(Some(&menu));
-            pop.set_parent(&r);
-            pop.set_has_arrow(false);
-            pop.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-            pop.connect_closed(|p| {
-                let p = p.clone();
-                glib::idle_add_local_once(move || p.unparent());
-            });
-            pop.popup();
+            super::context_menu(&r, &menu, x, y);
         });
         row.add_controller(click);
         self.rows.borrow_mut().push(Row { node, row: row.clone(), title: t, subtitle: st, preview, badge });
