@@ -860,19 +860,7 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
     let main_id = main.id;
     let setup = (p.disc.languages.len() >= 2).then(|| cx.setup_page(&p.disc.languages, p.default_language().map(|l| l.id), main_id));
 
-    let episodes: Vec<Episode> = p
-        .titles
-        .iter()
-        .enumerate()
-        .map(|(i, t)| Episode {
-            title: t.id,
-            asset: t.asset,
-            number: i + 1,
-            name: episode_name(&t.name),
-            poster: p.title_poster(t.id),
-            duration: p.asset(t.asset).map_or(0.0, |a| a.info.duration),
-        })
-        .collect();
+    let episodes = episodes(p);
     let input = Input {
         p,
         cx,
@@ -889,6 +877,7 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
         Category::Collection => collection(input),
     };
     let cx = Ctx::new(opts.style, opts.theme);
+    let page_ids: Vec<Id> = out.menus.iter().skip(1).map(|m| m.id).collect();
     let mut menus = out.menus;
 
     // Use the logo in place of the name on the main menu.
@@ -920,7 +909,123 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
         t.return_menu = out.return_to.iter().find(|(id, _)| *id == t.id).map(|(_, m)| *m);
     }
     p.first_play = FirstPlay::FirstMenu;
+    p.template = Some(TemplateInfo {
+        style: opts.style.id().into(),
+        theme: opts.theme,
+        title: opts.title.clone(),
+        season: opts.season.clone(),
+        disc: opts.disc.clone(),
+        main: main_id,
+        pages: page_ids,
+    });
     main_id
+}
+
+fn episodes(p: &Project) -> Vec<Episode> {
+    p.titles
+        .iter()
+        .enumerate()
+        .map(|(i, t)| Episode {
+            title: t.id,
+            asset: t.asset,
+            number: i + 1,
+            name: episode_name(&t.name),
+            poster: p.title_poster(t.id),
+            duration: p.asset(t.asset).map_or(0.0, |a| a.info.duration),
+        })
+        .collect()
+}
+
+/// The episode pages of the project: those the last template made, or
+/// menus named like them.
+pub fn episode_pages(p: &Project) -> Vec<Id> {
+    if let Some(t) = p.template.as_ref().filter(|t| Style::from_id(&t.style).is_some_and(|s| s.category() == Category::TvShow)) {
+        let ids: Vec<Id> = t.pages.iter().copied().filter(|id| p.menu(*id).is_some()).collect();
+        if !ids.is_empty() {
+            return ids;
+        }
+    }
+    let heading = gettext("Episodes");
+    p.menus
+        .iter()
+        .filter(|m| !m.popup && (m.name == heading || m.name.strip_prefix(&heading).is_some_and(|rest| rest.trim().parse::<u32>().is_ok())))
+        .map(|m| m.id)
+        .collect()
+}
+
+/// The options of the last template applied, or a guess from the menus.
+pub fn last_options(p: &Project) -> Options {
+    match &p.template {
+        Some(t) => Options {
+            style: Style::from_id(&t.style).filter(|s| s.category() == Category::TvShow).unwrap_or(Style::Showcase),
+            theme: t.theme.min(THEMES.len() - 1),
+            title: t.title.clone(),
+            season: t.season.clone(),
+            disc: t.disc.clone(),
+            logo: None,
+        },
+        None => Options { theme: detect_theme(p), ..Options::new(Style::Classic, &p.disc.name) },
+    }
+}
+
+/// Make the episode pages again in `opts`' style, replacing menus `old`
+/// (keeping their place in the list). Links from other menus, titles'
+/// return menus and the Top Menu setting move to the new pages. Returns
+/// the new pages.
+pub fn regenerate_pages(p: &mut Project, opts: &Options, old: &[Id]) -> Vec<Id> {
+    let main = p
+        .template
+        .as_ref()
+        .map(|t| t.main)
+        .filter(|m| p.menu(*m).is_some() && !old.contains(m))
+        .or_else(|| p.menus.iter().find(|m| !m.popup && !old.contains(&m.id)).map(|m| m.id));
+    let cx = Ctx::new(opts.style, opts.theme);
+    let temp_main = cx.menu(&gettext("Main Menu"));
+    let temp_id = temp_main.id;
+    let name = if opts.title.trim().is_empty() { p.disc.name.clone() } else { opts.title.clone() };
+    let input = Input { p, cx, name, season: opts.season.clone(), disc: opts.disc.clone(), episodes: episodes(p), main: temp_main, setup: None };
+    let out = show::build(opts.style, input);
+    // The main menu comes first; the rest are the pages.
+    let mut pages: Vec<Menu> = out.menus.into_iter().skip(1).collect();
+    let home = |id: Id| (id == temp_id).then_some(main).flatten();
+    for m in &mut pages {
+        m.relink(&home);
+    }
+    let new_ids: Vec<Id> = pages.iter().map(|m| m.id).collect();
+    // Old page n becomes new page n (or the first when there are fewer).
+    let map = |id: Id| old.iter().position(|o| *o == id).and_then(|i| new_ids.get(i).or(new_ids.first()).copied());
+
+    let at = p.menus.iter().take_while(|m| !old.contains(&m.id)).count();
+    p.menus.retain(|m| !old.contains(&m.id));
+    let at = at.min(p.menus.len());
+    p.menus.splice(at..at, pages);
+    for m in &mut p.menus {
+        m.relink(&map);
+    }
+    if let Some(top) = p.disc.top_menu {
+        p.disc.top_menu = map(top).or(Some(top));
+    }
+    for t in &mut p.titles {
+        let from_template = t.return_menu.is_none_or(|m| old.contains(&m));
+        if from_template {
+            t.return_menu = out.return_to.iter().find(|(id, _)| *id == t.id).map(|(_, m)| *m).or(t.return_menu.and_then(map));
+        }
+    }
+    let info = p.template.get_or_insert(TemplateInfo {
+        style: String::new(),
+        theme: 0,
+        title: opts.title.clone(),
+        season: opts.season.clone(),
+        disc: opts.disc.clone(),
+        main: main.unwrap_or(temp_id),
+        pages: vec![],
+    });
+    info.style = opts.style.id().into();
+    info.theme = opts.theme;
+    info.season = opts.season.clone();
+    info.disc = opts.disc.clone();
+    info.pages = new_ids.clone();
+    new_ids
 }
 
 /// A simple list of every title; its first page is the main menu.
@@ -998,6 +1103,63 @@ mod tests {
 
     fn opts(style: Style, theme: usize) -> Options {
         Options { theme, ..Options::new(style, "My Show") }
+    }
+
+    #[test]
+    fn regenerating_keeps_other_menus() {
+        let mut p = project(12);
+        let main = apply(&mut p, &opts(Style::Showcase, 3));
+        let old = episode_pages(&p);
+        assert_eq!(old.len(), 2);
+        // Work on the main menu, and a menu of the user's own linking to
+        // the second episode page.
+        let note = MenuItem::new_text("My own note", Rect::new(1200.0, 100.0, 500.0, 80.0));
+        let note_id = note.id;
+        p.menu_mut(main).unwrap().items.push(note);
+        let mut extras = Menu::new("Extras");
+        extras.items.push(MenuItem::new_button("More episodes", Action::ShowMenu(old[1]), Rect::new(200.0, 200.0, 600.0, 90.0)));
+        let extras_id = extras.id;
+        p.menus.insert(1, extras);
+        // Six more episodes arrive.
+        for i in 12..18 {
+            let id = new_id();
+            p.assets.push(Asset { id, path: format!("/tmp/ep{i}.mkv").into(), kind: AssetKind::Video, info: MediaInfo { duration: 1200.0, video_codec: Some("h264".into()), ..Default::default() } });
+            p.ensure_title_for(id);
+        }
+
+        let o = last_options(&p);
+        assert_eq!((o.style, o.theme), (Style::Showcase, 3));
+        let new = regenerate_pages(&mut p, &Options { style: Style::ShowcaseList, ..o }, &old);
+        assert_eq!(new.len(), 3);
+        assert!(old.iter().all(|id| p.menu(*id).is_none()));
+        assert!(p.menu(main).unwrap().item(note_id).is_some(), "main menu edits are kept");
+        let extras = p.menu(extras_id).unwrap();
+        assert_eq!(extras.buttons().next().unwrap().button().unwrap().action, Action::ShowMenu(new[1]));
+        // The main menu's Episodes button and the pop-up link follow.
+        assert!(p.menus.iter().flat_map(|m| m.buttons()).any(|b| b.button().unwrap().action == Action::ShowMenu(new[0])));
+        // Pages link home to the real main menu, and every title returns to its page.
+        assert!(p.menu(new[2]).unwrap().buttons().any(|b| b.button().unwrap().action == Action::ShowMenu(main)));
+        assert_eq!(p.titles[17].return_menu, Some(new[2]));
+        assert_eq!(episode_pages(&p), new);
+        // No link is left pointing at a removed page.
+        for m in &p.menus {
+            for b in m.buttons() {
+                if let Some(target) = b.button().unwrap().action.menu() {
+                    assert!(p.menu(target).is_some(), "{} links to a missing menu", m.name);
+                }
+            }
+        }
+        assert!(p.titles.iter().all(|t| t.return_menu.is_some_and(|m| p.menu(m).is_some())));
+    }
+
+    #[test]
+    fn finds_episode_pages_by_name() {
+        let mut p = project(3);
+        apply(&mut p, &opts(Style::Classic, 0));
+        p.template = None;
+        let found = episode_pages(&p);
+        assert_eq!(found.len(), 1);
+        assert_eq!(p.menu(found[0]).unwrap().name, "Episodes");
     }
 
     /// Every link points at an existing menu/title and every item is on screen.

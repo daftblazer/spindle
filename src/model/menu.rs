@@ -446,7 +446,41 @@ pub struct MenuTimeout {
     pub action: Action,
 }
 
+impl Action {
+    /// The menu this leads to, if any.
+    pub fn menu(&self) -> Option<Id> {
+        match self {
+            Action::ShowMenu(m) | Action::SetLanguage { menu: Some(m), .. } => Some(*m),
+            _ => None,
+        }
+    }
+
+    /// Point a link to menu `from` at `to` instead.
+    pub fn relink(&mut self, map: &impl Fn(Id) -> Option<Id>) {
+        match self {
+            Action::ShowMenu(m) | Action::SetLanguage { menu: Some(m), .. } => {
+                if let Some(to) = map(*m) {
+                    *m = to;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Menu {
+    /// Point every link (buttons and the timeout) through `map`.
+    pub fn relink(&mut self, map: &impl Fn(Id) -> Option<Id>) {
+        for it in &mut self.items {
+            if let Some(b) = it.button_mut() {
+                b.action.relink(map);
+            }
+        }
+        if let Some(t) = &mut self.timeout {
+            t.action.relink(map);
+        }
+    }
+
     pub fn new(name: &str) -> Self {
         Menu {
             id: new_id(),

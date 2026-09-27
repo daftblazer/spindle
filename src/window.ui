@@ -444,6 +444,10 @@
         <attribute name="action">win.templates</attribute>
       </item>
       <item>
+        <attribute name="label" translatable="yes">_Regenerate Episode Menus…</attribute>
+        <attribute name="action">win.regenerate-episodes</attribute>
+      </item>
+      <item>
         <attribute name="label" translatable="yes">_Disc Settings</attribute>
         <attribute name="action">win.disc-settings</attribute>
       </item>

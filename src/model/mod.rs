@@ -309,6 +309,24 @@ pub struct Project {
     /// project folder can be moved or copied to another machine.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub relative_paths: std::collections::BTreeMap<Id, PathBuf>,
+    /// The menu template last applied, so its episode pages can be made
+    /// again without touching the other menus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<TemplateInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TemplateInfo {
+    /// Style id (see `templates::Style::id`).
+    pub style: String,
+    pub theme: usize,
+    pub title: String,
+    pub season: String,
+    pub disc: String,
+    /// The main menu the episode pages link back to.
+    pub main: Id,
+    /// The episode pages.
+    pub pages: Vec<Id>,
 }
 
 /// `path` relative to `base`, when they share more than the root.
@@ -339,6 +357,7 @@ impl Default for Project {
             menus: vec![Menu::new("Main Menu")],
             first_play: FirstPlay::FirstMenu,
             relative_paths: Default::default(),
+            template: None,
         }
     }
 }

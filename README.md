@@ -48,7 +48,9 @@ colour palettes, with optional **Season** and **Disc** lines:
 - **Collection**: a simple list of every title
 
 Templates also create the Setup menu and pop-up menus, and can use an
-imported logo instead of the title text.
+imported logo instead of the title text. **Regenerate Episode Menus**
+makes the episode pages again (after adding episodes, or in another style)
+while keeping every other menu and relinking the buttons that led to them.
 
 ### Titles
 
