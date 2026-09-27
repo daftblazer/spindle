@@ -490,6 +490,21 @@ impl SpindleWindow {
             });
             doc.select(Node::Menu(id), None);
         });
+        add("add-popup-menu", |w| {
+            let doc = w.doc();
+            let n = doc.project().popup_menus().count() + 1;
+            let id = doc.edit(Change::Structure, |p| {
+                let m = Menu::new_popup(&format!("{} {n}", gettext("Pop-up Menu")));
+                let id = m.id;
+                p.menus.push(m);
+                // The first pop-up menu applies to every title.
+                if p.disc.popup_menu.is_none() {
+                    p.disc.popup_menu = Some(id);
+                }
+                id
+            });
+            doc.select(Node::Menu(id), None);
+        });
         add("add-chapter-menu", |w| w.add_chapter_menu());
         add("choose-thumbnail", |w| w.state().title_view.choose_thumbnail(w));
         add("add-subtitle", |w| w.add_subtitle_dialog());
@@ -840,7 +855,7 @@ impl SpindleWindow {
         let Node::Title(tid) = doc.node() else { return };
         let menu_id = doc.edit(Change::Structure, |p| {
             let t = p.title(tid)?.clone();
-            let back_to = p.menus.first().map(|m| m.id);
+            let back_to = p.first_menu().map(|m| m.id);
             let mut m = Menu::new(&format!("{} – {}", t.name, gettext("Chapters")));
             m.items.push(MenuItem::new_text(&t.name, Rect::new(160.0, 70.0, 1600.0, 130.0)));
             let starts: Vec<f64> = std::iter::once(0.0).chain(t.chapters.iter().copied()).collect();

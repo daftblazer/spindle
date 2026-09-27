@@ -52,6 +52,9 @@ pub enum BuildEvent {
 
 pub struct Builder<'a> {
     project: &'a Project,
+    /// Menus with their own clip and movie object (pop-up menus are part
+    /// of the titles instead).
+    menus: Vec<&'a Menu>,
     out: PathBuf,
     work: PathBuf,
     cancel: &'a AtomicBool,
@@ -106,6 +109,19 @@ pub fn check(project: &Project) -> Vec<String> {
         .collect()
 }
 
+/// Stream selection for `preset` in `t`, if it changes anything.
+fn language_streams(t: &Title, preset: &LanguagePreset) -> Option<Command> {
+    let audio: Vec<Id> = t.disc_audio().map(|a| a.id).collect();
+    let subs: Vec<Id> = t.disc_subtitles().map(|s| s.id).collect();
+    let r = t.resolve_language(preset);
+    let a = r.audio.and_then(|id| audio.iter().position(|x| *x == id)).map(|i| i as u16 + 1);
+    let pg = r.subtitle.and_then(|id| subs.iter().position(|x| *x == id)).map(|i| i as u16 + 1);
+    (a.is_some() || !subs.is_empty()).then_some(Command::SetStream { audio: a, pg, display: pg.is_some() })
+}
+
+/// Pop-up menus close after this long without input.
+const POPUP_TIMEOUT_SECONDS: u32 = 30;
+
 fn object_for_menu(i: usize) -> u32 {
     1 + i as u32
 }
@@ -120,6 +136,7 @@ impl<'a> Builder<'a> {
         };
         Builder {
             project,
+            menus: project.disc_menus().collect(),
             out: out.to_path_buf(),
             work: out.join(".spindle-work"),
             cancel,
@@ -130,8 +147,13 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Position of a disc menu (not a pop-up) among the menu clips.
+    fn menu_index(&self, id: Id) -> Option<usize> {
+        self.menus.iter().position(|m| m.id == id)
+    }
+
     fn object_for_title(&self, i: usize) -> u32 {
-        1 + self.project.menus.len() as u32 + i as u32
+        1 + self.menus.len() as u32 + i as u32
     }
 
     fn check_cancel(&self) -> Result<()> {
@@ -170,7 +192,7 @@ impl<'a> Builder<'a> {
             .iter()
             .filter_map(|t| p.asset(t.asset))
             .map(|a| a.info.duration.max(1.0))
-            .chain(p.menus.iter().map(|m| self.menu_duration(m)))
+            .chain(self.menus.iter().map(|m| self.menu_duration(m)))
             .sum::<f64>()
             * 1.1;
 
@@ -184,7 +206,7 @@ impl<'a> Builder<'a> {
         let mut playlists = Vec::new();
         let mut clips = Vec::new();
 
-        for (i, m) in p.menus.iter().enumerate() {
+        for (i, m) in self.menus.clone().into_iter().enumerate() {
             self.check_cancel()?;
             let n = 1 + i as u32;
             let (pl, ci) = self.build_menu(m, n)?;
@@ -193,7 +215,7 @@ impl<'a> Builder<'a> {
         }
         for (i, t) in p.titles.iter().enumerate() {
             self.check_cancel()?;
-            let n = 1 + (p.menus.len() + i) as u32;
+            let n = 1 + (self.menus.len() + i) as u32;
             let (pl, ci) = self.build_title(t, n)?;
             playlists.push((n, pl));
             clips.push((n, ci));
@@ -209,7 +231,7 @@ impl<'a> Builder<'a> {
 
     fn navigation(&self) -> (Index, Vec<MovieObject>) {
         let p = self.project;
-        let m_count = p.menus.len();
+        let m_count = self.menus.len();
         let first_menu = (m_count > 0).then(|| object_for_menu(0));
 
         let mut objects = Vec::new();
@@ -242,7 +264,7 @@ impl<'a> Builder<'a> {
             let pl = Operand::Imm(1 + (m_count + i) as u32);
             let menu_obj = t
                 .return_menu
-                .and_then(|id| p.menus.iter().position(|m| m.id == id))
+                .and_then(|id| self.menu_index(id))
                 .map(object_for_menu)
                 .or(first_menu);
             // Stream selection: the title's default subtitles, then the
@@ -256,16 +278,11 @@ impl<'a> Builder<'a> {
                     None => Command::SetPgStream { number: 1, display: false },
                 });
             }
-            let audio: Vec<Id> = t.disc_audio().map(|a| a.id).collect();
             for (k, preset) in p.disc.languages.iter().enumerate() {
-                let r = t.resolve_language(preset);
-                let a = r.audio.and_then(|id| audio.iter().position(|x| *x == id)).map(|i| i as u16 + 1);
-                let pg = r.subtitle.and_then(|id| subs.iter().position(|s| s.id == id)).map(|i| i as u16 + 1);
-                if a.is_none() && subs.is_empty() {
-                    continue;
+                if let Some(c) = language_streams(t, preset) {
+                    commands.push(Command::Compare(Cmp::Eq, Operand::Gpr(GPR_LANGUAGE), Operand::Imm(k as u32 + 1)));
+                    commands.push(c);
                 }
-                commands.push(Command::Compare(Cmp::Eq, Operand::Gpr(GPR_LANGUAGE), Operand::Imm(k as u32 + 1)));
-                commands.push(Command::SetStream { audio: a, pg, display: pg.is_some() });
             }
             let end = match t.end_action {
                 // Loop past the stream selection so a viewer's choice sticks.
@@ -323,6 +340,101 @@ impl<'a> Builder<'a> {
         (index, objects)
     }
 
+    /// HDMV commands for a button on pop-up page of title `title` (index),
+    /// whose pages are `pages`; `marks` is the number of playlist marks.
+    fn popup_commands(&self, action: Action, title: usize, pages: &[Id], marks: usize) -> Vec<Command> {
+        let p = self.project;
+        let t = &p.titles[title];
+        let page_of = |id: Id| pages.iter().position(|x| *x == id);
+        match action {
+            // Chapters of the playing title: jump within the playlist.
+            Action::PlayTitle { title: id, chapter } if id == t.id => {
+                vec![Command::LinkMark(Operand::Imm((chapter as usize).min(marks.saturating_sub(1)) as u32))]
+            }
+            Action::PlayChapter(chapter) => vec![Command::LinkMark(Operand::Imm((chapter as usize).min(marks.saturating_sub(1)) as u32))],
+            Action::ShowMenu(id) if page_of(id).is_some() => {
+                vec![Command::SetButtonPage { button: None, page: page_of(id).map(|i| i as u8) }]
+            }
+            Action::SetLanguage { preset, menu } => {
+                let Some(k) = p.disc.languages.iter().position(|l| l.id == preset) else { return vec![] };
+                let mut c = vec![Command::Move(GPR_LANGUAGE, Operand::Imm(k as u32 + 1))];
+                c.extend(language_streams(t, &p.disc.languages[k]));
+                match menu {
+                    Some(m) if page_of(m).is_some() => c.push(Command::SetButtonPage { button: None, page: page_of(m).map(|i| i as u8) }),
+                    Some(m) => c.extend(self.button_commands(Action::ShowMenu(m), 0)),
+                    None => {}
+                }
+                c
+            }
+            // Everything else leaves the title as a menu button would.
+            other => self.button_commands(other, 0),
+        }
+    }
+
+    /// Interactive graphics of a title's pop-up menu, if it has one.
+    fn popup_menu(&self, t: &Title, title: usize, marks: usize) -> Option<ig::Menu> {
+        let p = self.project;
+        let popup = p.title_popup(t)?;
+        let pages = p.popup_pages(popup);
+        let page_ids: Vec<Id> = pages.iter().map(|m| m.id).collect();
+        let (w, h) = self.settings.video.size();
+        let images = ImageCache::new_sync();
+        let mut ig_pages = Vec::new();
+        for (pi, m) in pages.iter().enumerate() {
+            // Chapter buttons for chapters this title doesn't have are left out.
+            let mut m = (*m).clone();
+            m.items.retain(|i| !matches!(i.button().map(|b| b.action), Some(Action::PlayChapter(c)) if c as usize >= marks));
+            let m = &m;
+            let base = (pi as u16) << 8;
+            let items: Vec<&MenuItem> = m.buttons().take(254).collect();
+            let nav = m.navigation();
+            let id_of = |id: Id| base + items.iter().position(|i| i.id == id).unwrap_or(0) as u16;
+            let mut buttons = Vec::new();
+            // Everything that isn't a button, as one button nothing leads to.
+            if let Some((x, y, bmp)) = render::render_static_bitmap(p, m, &images, w, h) {
+                let id = base + 0xFF;
+                buttons.push(ig::Button {
+                    id,
+                    numeric: 0xFFFF,
+                    x,
+                    y,
+                    up: id,
+                    down: id,
+                    left: id,
+                    right: id,
+                    normal: bmp.clone(),
+                    selected: bmp.clone(),
+                    activated: bmp,
+                    commands: vec![],
+                    auto_action: false,
+                });
+            }
+            for (bi, item) in items.iter().enumerate() {
+                let b = item.button().unwrap();
+                let (x, y, _, _) = render::button_geometry(item, w, h);
+                buttons.push(ig::Button {
+                    id: base + bi as u16,
+                    numeric: bi as u16 + 1,
+                    x,
+                    y,
+                    up: id_of(nav[bi][0]),
+                    down: id_of(nav[bi][1]),
+                    left: id_of(nav[bi][2]),
+                    right: id_of(nav[bi][3]),
+                    normal: render::render_button_bitmap(item, b, ButtonState::Normal, w, h),
+                    selected: render::render_button_bitmap(item, b, ButtonState::Selected, w, h),
+                    activated: render::render_button_bitmap(item, b, ButtonState::Activated, w, h),
+                    commands: self.popup_commands(b.action, title, &page_ids, marks),
+                    auto_action: false,
+                });
+            }
+            let default = m.default_button.and_then(|d| items.iter().position(|i| i.id == d)).unwrap_or(0);
+            let default_button = if items.is_empty() { ig::NO_BUTTON } else { base + default as u16 };
+            ig_pages.push(ig::Page { buttons, default_button });
+        }
+        Some(ig::Menu { video: self.settings.video, pages: ig_pages, popup: true, user_timeout: POPUP_TIMEOUT_SECONDS * 90_000 })
+    }
+
     /// HDMV commands for a button on menu number `menu_index`.
     fn button_commands(&self, action: Action, menu_index: usize) -> Vec<Command> {
         let p = self.project;
@@ -343,14 +455,16 @@ impl<'a> Builder<'a> {
                 Command::JumpTitle(1),
             ],
             Action::PlayAll => vec![],
-            Action::ShowMenu(menu) => match p.menus.iter().position(|m| m.id == menu) {
+            // Only meaningful in pop-up menus.
+            Action::PlayChapter(_) => vec![],
+            Action::ShowMenu(menu) => match self.menu_index(menu) {
                 Some(i) => vec![Command::JumpObject(object_for_menu(i))],
                 None => vec![],
             },
             Action::SetLanguage { preset, menu } => match p.disc.languages.iter().position(|l| l.id == preset) {
                 Some(k) => {
                     let mut c = vec![Command::Move(GPR_LANGUAGE, Operand::Imm(k as u32 + 1))];
-                    if let Some(i) = menu.and_then(|m| p.menus.iter().position(|x| x.id == m)) {
+                    if let Some(i) = menu.and_then(|m| self.menu_index(m)) {
                         c.push(Command::JumpObject(object_for_menu(i)));
                     }
                     c
@@ -487,6 +601,17 @@ impl<'a> Builder<'a> {
             }
             self.stage(format!("Multiplexing title “{}”", t.name));
         }
+
+        // Pop-up menu: one display set at the start of the clip. (Players
+        // treat each repeat as a new menu, resetting it mid-use.)
+        let index = n as usize - 1 - self.menus.len();
+        if let Some(menu) = self.popup_menu(t, index, 1 + chapters.len()) {
+            self.stage(format!("Adding the pop-up menu to “{}”", t.name));
+            let first_pts = ts::first_video_pts(&tmp)?;
+            let ig_index = streams.len();
+            streams.push(EsInfo { pid: PID_IG_FIRST, kind: EsKind::Ig { lang: "und".into() } });
+            extra.extend(ig::encode(&menu, first_pts)?.into_iter().map(|p| (ig_index, p)));
+        }
         let stats = self.remux(&tmp, n, &streams, extra, duration)?;
         let (ci, in_t, out_t) = self.clip_info(&stats, streams.clone())?;
 
@@ -573,7 +698,7 @@ impl<'a> Builder<'a> {
         let mut extra = Vec::new();
         if !buttons.is_empty() {
             let first_pts = ts::first_video_pts(&tmp)?;
-            let ig_menu = ig::Menu { video: self.settings.video, buttons, default_button };
+            let ig_menu = ig::Menu::single(self.settings.video, buttons, default_button);
             let ig_index = streams.len();
             streams.push(EsInfo { pid: PID_IG_FIRST, kind: EsKind::Ig { lang: "und".into() } });
             extra = ig::encode(&ig_menu, first_pts)?.into_iter().map(|p| (ig_index, p)).collect();

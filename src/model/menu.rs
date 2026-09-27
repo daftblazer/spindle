@@ -119,6 +119,8 @@ pub enum Action {
     PlayAll,
     /// Choose a language preset, then show `menu` (or stay).
     SetLanguage { preset: Id, menu: Option<Id> },
+    /// Pop-up menus: go to a chapter (0-based) of the playing title.
+    PlayChapter(u32),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -306,6 +308,10 @@ pub struct Menu {
     pub duration: f64,
     pub items: Vec<MenuItem>,
     pub default_button: Option<Id>,
+    /// Shown over a title with the remote's Pop-up key instead of being a
+    /// menu screen of its own.
+    #[serde(default)]
+    pub popup: bool,
 }
 
 impl Menu {
@@ -318,7 +324,16 @@ impl Menu {
             duration: 30.0,
             items: Vec::new(),
             default_button: None,
+            popup: false,
         }
+    }
+
+    /// An empty pop-up menu.
+    pub fn new_popup(name: &str) -> Self {
+        let mut m = Menu::new(name);
+        m.popup = true;
+        m.background.color = Rgba::new(0.0, 0.0, 0.0, 0.0);
+        m
     }
 
     pub fn item(&self, id: Id) -> Option<&MenuItem> {

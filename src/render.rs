@@ -378,6 +378,52 @@ pub fn render_button_bitmap(item: &MenuItem, b: &ButtonItem, state: ButtonState,
     surface_to_bitmap(&mut surface)
 }
 
+/// Stand-in for the movie behind a pop-up menu while editing: the first
+/// title's thumbnail, darkened, or a neutral gradient.
+pub fn popup_backdrop(cr: &cairo::Context, project: &Project, images: &ImageCache) {
+    let full = Rect::new(0.0, 0.0, DESIGN_WIDTH, DESIGN_HEIGHT);
+    let g = cairo::LinearGradient::new(0.0, 0.0, 0.0, DESIGN_HEIGHT);
+    g.add_color_stop_rgb(0.0, 0.25, 0.27, 0.3);
+    g.add_color_stop_rgb(1.0, 0.1, 0.1, 0.12);
+    cr.set_source(&g).ok();
+    cr.rectangle(0.0, 0.0, DESIGN_WIDTH, DESIGN_HEIGHT);
+    cr.fill().ok();
+    if let Some(t) = project.titles.first() {
+        if let Some(p) = images.get(project, t.asset, project.title_poster(t.id)) {
+            draw_pixbuf(cr, &p, full, true);
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.35);
+            cr.rectangle(0.0, 0.0, DESIGN_WIDTH, DESIGN_HEIGHT);
+            cr.fill().ok();
+        }
+    }
+}
+
+/// Render everything but the buttons (pop-up menus have no background) as
+/// one IG bitmap, cropped to what is drawn: (x, y, bitmap).
+pub fn render_static_bitmap(project: &Project, menu: &Menu, images: &ImageCache, disc_w: u32, disc_h: u32) -> Option<(u16, u16, Bitmap)> {
+    let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, disc_w as i32, disc_h as i32).ok()?;
+    {
+        let cr = cairo::Context::new(&surface).ok()?;
+        cr.scale(disc_scale(disc_w), disc_h as f64 / DESIGN_HEIGHT);
+        draw_static(&cr, project, menu, images, false);
+    }
+    let full = surface_to_bitmap(&mut surface);
+    let (w, h) = (full.width as usize, full.height as usize);
+    let alpha = |x: usize, y: usize| full.rgba[(y * w + x) * 4 + 3] > 0;
+    let rows: Vec<usize> = (0..h).filter(|&y| (0..w).any(|x| alpha(x, y))).collect();
+    let (&y0, &y1) = (rows.first()?, rows.last()?);
+    let x0 = (0..w).find(|&x| (y0..=y1).any(|y| alpha(x, y)))?;
+    let x1 = (0..w).rev().find(|&x| (y0..=y1).any(|y| alpha(x, y)))?;
+    // IG objects are at least 8×8.
+    let (x1, y1) = ((x1 + 1).max(x0 + 8).min(w), (y1 + 1).max(y0 + 8).min(h));
+    let (x0, y0) = (x1.saturating_sub(8).min(x0), y1.saturating_sub(8).min(y0));
+    let mut rgba = Vec::with_capacity((x1 - x0) * (y1 - y0) * 4);
+    for y in y0..y1 {
+        rgba.extend_from_slice(&full.rgba[(y * w + x0) * 4..(y * w + x1) * 4]);
+    }
+    Some((x0 as u16, y0 as u16, Bitmap { width: (x1 - x0) as u16, height: (y1 - y0) as u16, rgba }))
+}
+
 /// Render the static layer as a PNG at disc resolution.
 pub fn render_static_png(
     project: &Project,
@@ -408,6 +454,9 @@ pub fn menu_thumbnail(project: &Project, menu: &Menu, images: &ImageCache, width
         let cr = cairo::Context::new(&surface).ok()?;
         let s = width as f64 / DESIGN_WIDTH;
         cr.scale(s, s);
+        if menu.popup {
+            popup_backdrop(&cr, project, images);
+        }
         draw_static(&cr, project, menu, images, true);
         for item in &menu.items {
             if let Some(b) = item.button() {

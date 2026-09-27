@@ -872,6 +872,9 @@ impl MenuCanvas {
         cr.clip();
         let preview = self.inner.preview.get();
         let highlighted = if preview { self.inner.preview_button.get() } else { None };
+        if menu.popup {
+            render::popup_backdrop(cr, &p, &self.inner.images);
+        }
         render::draw_static(cr, &p, menu, &self.inner.images, true);
         for item in &menu.items {
             if let Some(b) = item.button() {
@@ -921,6 +924,7 @@ impl MenuCanvas {
                 Action::ShowMenu(m) => format!("☰ {}", p.menu(m).map(|m| m.name.clone()).unwrap_or_default()),
                 Action::PlayAll => gettext("▶ Play all"),
                 Action::SetLanguage { preset, .. } => format!("🌐 {}", p.language(preset).map(|l| l.name.clone()).unwrap_or_default()),
+                Action::PlayChapter(c) => format!("⏭ {} {}", gettext("Chapter"), c + 1),
             };
             let is_default = menu.default_button == Some(item.id)
                 || (menu.default_button.is_none() && menu.buttons().next().map(|i| i.id) == Some(item.id));

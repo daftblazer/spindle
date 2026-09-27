@@ -31,6 +31,7 @@ pub struct Sidebar {
     doc: Rc<Document>,
     images: Rc<ImageCache>,
     menus: gtk::ListBox,
+    popups: gtk::ListBox,
     titles: gtk::ListBox,
     rows: RefCell<Vec<Row>>,
     syncing: Cell<bool>,
@@ -63,11 +64,13 @@ fn section_header(title: &str, action: Option<(&str, &str)>) -> gtk::Box {
 impl Sidebar {
     pub fn new(doc: Rc<Document>, container: gtk::Box, images: Rc<ImageCache>) -> Rc<Self> {
         let menus = gtk::ListBox::builder().css_classes(["navigation-sidebar"]).build();
+        let popups = gtk::ListBox::builder().css_classes(["navigation-sidebar"]).build();
         let titles = gtk::ListBox::builder().css_classes(["navigation-sidebar"]).build();
         let s = Rc::new(Sidebar {
             doc: doc.clone(),
             images: images.clone(),
             menus: menus.clone(),
+            popups: popups.clone(),
             titles: titles.clone(),
             rows: RefCell::new(Vec::new()),
             syncing: Cell::new(false),
@@ -85,12 +88,16 @@ impl Sidebar {
         mh.last_child().unwrap().set_tooltip_text(Some(&gettext("New Menu")));
         container.append(&mh);
         container.append(&menus);
+        let ph = section_header(&gettext("Pop-up Menus"), Some(("list-add-symbolic", "win.add-popup-menu")));
+        ph.last_child().unwrap().set_tooltip_text(Some(&gettext("New Pop-up Menu")));
+        container.append(&ph);
+        container.append(&popups);
         let th = section_header(&gettext("Titles"), Some(("list-add-symbolic", "win.import")));
         th.last_child().unwrap().set_tooltip_text(Some(&gettext("Import Media")));
         container.append(&th);
         container.append(&titles);
 
-        for list in [&menus, &titles] {
+        for list in [&menus, &popups, &titles] {
             let weak = Rc::downgrade(&s);
             list.connect_row_selected(move |list, row| {
                 let Some(s) = weak.upgrade() else { return };
@@ -101,9 +108,12 @@ impl Sidebar {
                 let node = s.rows.borrow().iter().find(|r| &r.row == row).map(|r| r.node);
                 if let Some(node) = node {
                     // Only one list has a selection at a time.
-                    let other = if list == &s.menus { &s.titles } else { &s.menus };
                     s.syncing.set(true);
-                    other.unselect_all();
+                    for other in [&s.menus, &s.popups, &s.titles] {
+                        if other != list {
+                            other.unselect_all();
+                        }
+                    }
                     s.syncing.set(false);
                     s.doc.select(node, None);
                 }
@@ -124,7 +134,7 @@ impl Sidebar {
         titles.add_controller(drop);
 
         // Delete removes the selected menu/title.
-        for list in [&menus, &titles] {
+        for list in [&menus, &popups, &titles] {
             let keys = gtk::EventControllerKey::new();
             keys.connect_key_pressed(|c, key, _, _| {
                 if key == gdk::Key::Delete {
@@ -251,13 +261,28 @@ impl Sidebar {
         self.syncing.set(true);
         self.rows.borrow_mut().clear();
         self.menus.remove_all();
+        self.popups.remove_all();
         self.titles.remove_all();
         let p = self.doc.project();
         for m in &p.menus {
             let node = Node::Menu(m.id);
             let (t, s) = Self::labels(&p, node);
             let row = self.make_row(node, &t, &s);
-            self.menus.append(&row);
+            if m.popup { &self.popups } else { &self.menus }.append(&row);
+        }
+        if p.popup_menus().next().is_none() {
+            let hint = gtk::Label::builder()
+                .label(gettext("Shown over titles with the remote's Pop-up key"))
+                .wrap(true)
+                .justify(gtk::Justification::Center)
+                .css_classes(["dim-label", "caption"])
+                .margin_top(6)
+                .margin_bottom(6)
+                .margin_start(12)
+                .margin_end(12)
+                .build();
+            let row = gtk::ListBoxRow::builder().child(&hint).selectable(false).activatable(false).build();
+            self.popups.append(&row);
         }
         for t in &p.titles {
             let node = Node::Title(t.id);
@@ -338,9 +363,10 @@ impl Sidebar {
     fn refresh_labels(&self) {
         let p = self.doc.project();
         let start = match p.first_play {
-            FirstPlay::FirstMenu if !p.menus.is_empty() => p.menus.first().map(|m| Node::Menu(m.id)),
+            FirstPlay::FirstMenu if p.first_menu().is_some() => p.first_menu().map(|m| Node::Menu(m.id)),
             _ => p.titles.first().map(|t| Node::Title(t.id)),
         };
+        let all_titles = p.disc.popup_menu.map(Node::Menu);
         for r in self.rows.borrow().iter() {
             let (tl, sl) = Self::labels(&p, r.node);
             if r.title.label() != tl {
@@ -349,7 +375,11 @@ impl Sidebar {
             if r.subtitle.label() != sl {
                 r.subtitle.set_label(&sl);
             }
-            r.badge.set_visible(Some(r.node) == start);
+            if Some(r.node) == all_titles {
+                r.badge.set_label(&gettext("All Titles"));
+                r.badge.set_tooltip_text(Some(&gettext("The pop-up menu of titles that don't choose their own")));
+            }
+            r.badge.set_visible(Some(r.node) == start || Some(r.node) == all_titles);
         }
     }
 
@@ -357,6 +387,7 @@ impl Sidebar {
         self.syncing.set(true);
         let node = self.doc.node();
         self.menus.unselect_all();
+        self.popups.unselect_all();
         self.titles.unselect_all();
         for r in self.rows.borrow().iter() {
             if r.node == node {

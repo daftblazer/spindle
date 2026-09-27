@@ -237,6 +237,25 @@ impl Inspector {
         g.add(&row);
         page.add(&g);
 
+        if m.popup {
+            let g = group(&gettext("Pop-up"));
+            g.set_description(Some(&gettext(
+                "Shown over the playing title with the remote's Pop-up key. Only the menu's items appear; the video stays visible behind them.",
+            )));
+            let all = rows::switch(doc, &gettext("Use for All Titles"), p.disc.popup_menu == Some(id), Change::Structure, move |p, v| {
+                if v {
+                    p.disc.popup_menu = Some(id);
+                } else if p.disc.popup_menu == Some(id) {
+                    p.disc.popup_menu = None;
+                }
+            });
+            all.set_subtitle(&gettext("Titles can choose a different pop-up menu in their settings"));
+            g.add(&all);
+            page.add(&g);
+            page.add(&delete_button(&gettext("Delete Pop-up Menu"), "win.delete-node"));
+            return;
+        }
+
         let g = group(&gettext("Background"));
         g.add(&rows::color(doc, &gettext("Color"), m.background.color, Change::Content, move |p, c| {
             if let Some(m) = p.menu_mut(id) {
@@ -403,16 +422,21 @@ impl Inspector {
                 g.add(&label);
 
                 // Action: none / play title / show menu
+                let in_popup = p.menu(menu).is_some_and(|m| m.popup);
                 let mut targets: Vec<(Action, String)> =
                     vec![(Action::None, gettext("Do Nothing")), (Action::PlayAll, gettext("Play All Titles"))];
+                if in_popup {
+                    targets.push((Action::PlayChapter(0), gettext("Go to Chapter")));
+                }
                 for t in &p.titles {
                     targets.push((Action::PlayTitle { title: t.id, chapter: 0 }, format!("{} {}", gettext("Play"), t.name)));
                 }
-                for mm in p.menus.iter().filter(|x| x.id != menu) {
+                // Pop-ups can only be opened from pop-ups.
+                for mm in p.menus.iter().filter(|x| x.id != menu && (in_popup || !x.popup)) {
                     targets.push((Action::ShowMenu(mm.id), format!("{} {}", gettext("Show"), mm.name)));
                 }
                 // Language choices return to the first menu by default.
-                let home = p.menus.first().map(|m| m.id).filter(|m| *m != menu);
+                let home = p.first_menu().map(|m| m.id).filter(|m| *m != menu);
                 for l in &p.disc.languages {
                     targets.push((Action::SetLanguage { preset: l.id, menu: home }, gettext("Set Language: {}").replace("{}", &l.name)));
                 }
@@ -421,6 +445,7 @@ impl Inspector {
                     .position(|(a, _)| match (a, b.action) {
                         (Action::PlayTitle { title: x, .. }, Action::PlayTitle { title: y, .. }) => *x == y,
                         (Action::SetLanguage { preset: x, .. }, Action::SetLanguage { preset: y, .. }) => *x == y,
+                        (Action::PlayChapter(_), Action::PlayChapter(_)) => true,
                         (a, b) => *a == b,
                     })
                     .unwrap_or(0);
@@ -431,8 +456,19 @@ impl Inspector {
                         b.action = actions.get(i).copied().unwrap_or(Action::None);
                     }
                 }));
+                if let Action::PlayChapter(chapter) = b.action {
+                    let max = p.titles.iter().map(|t| t.chapters.len() + 1).max().unwrap_or(1).max(chapter as usize + 1);
+                    let row = rows::spin(doc, &gettext("Chapter"), chapter as f64 + 1.0, 1.0, max.max(99) as f64, 1.0, 0, Change::Content, move |p, v| {
+                        if let Some(b) = button_mut(p, menu, item) {
+                            b.action = Action::PlayChapter((v as u32).saturating_sub(1));
+                        }
+                    });
+                    row.set_subtitle(&gettext("Of the playing title; hidden in titles with fewer chapters"));
+                    g.add(&row);
+                }
                 if let Action::SetLanguage { menu: then, .. } = b.action {
-                    let menus: Vec<(Id, String)> = p.menus.iter().filter(|m| m.id != menu).map(|m| (m.id, m.name.clone())).collect();
+                    let menus: Vec<(Id, String)> =
+                        p.menus.iter().filter(|m| m.id != menu && (in_popup || !m.popup)).map(|m| (m.id, m.name.clone())).collect();
                     let (labels, sel) = optional_choice(&gettext("Stay on This Menu"), &menus, then);
                     let row = rows::combo(doc, &gettext("Then Show"), &labels, sel, Change::Structure, move |p, i| {
                         if let Some(b) = button_mut(p, menu, item) {
@@ -1005,6 +1041,32 @@ impl Inspector {
         self.subtitles_group(page, id);
         self.languages_group(page, id);
 
+        // Pop-up menu during playback.
+        let popups: Vec<(Id, String)> = p.popup_menus().map(|m| (m.id, m.name.clone())).collect();
+        if !popups.is_empty() {
+            let g = group(&gettext("Pop-up Menu"));
+            let default = p.disc.popup_menu.and_then(|d| p.menu(d)).map_or_else(|| gettext("none"), |m| m.name.clone());
+            let mut labels = vec![gettext("Disc Default ({})").replace("{}", &default), gettext("None")];
+            labels.extend(popups.iter().map(|(_, n)| n.clone()));
+            let sel = match t.popup {
+                PopupChoice::Default => 0,
+                PopupChoice::None => 1,
+                PopupChoice::Menu(m) => popups.iter().position(|(id, _)| *id == m).map_or(0, |i| i + 2),
+            };
+            let row = rows::combo(doc, &gettext("Menu"), &labels, sel, Change::Structure, move |p, i| {
+                if let Some(t) = p.title_mut(id) {
+                    t.popup = match i {
+                        0 => PopupChoice::Default,
+                        1 => PopupChoice::None,
+                        i => popups.get(i - 2).map_or(PopupChoice::Default, |(m, _)| PopupChoice::Menu(*m)),
+                    };
+                }
+            });
+            row.set_subtitle(&gettext("Opens with the remote's Pop-up key"));
+            g.add(&row);
+            page.add(&g);
+        }
+
         let g = group(&gettext("When Finished"));
         let ends = [gettext("Return to Menu"), gettext("Play Next Title"), gettext("Loop")];
         let sel = match t.end_action {
@@ -1017,7 +1079,7 @@ impl Inspector {
                 t.end_action = [EndAction::ReturnToMenu, EndAction::PlayNextTitle, EndAction::Loop][i.min(2)];
             }
         }));
-        let menus: Vec<(Id, String)> = p.menus.iter().map(|m| (m.id, m.name.clone())).collect();
+        let menus: Vec<(Id, String)> = p.disc_menus().map(|m| (m.id, m.name.clone())).collect();
         let (labels, sel) = optional_choice(&gettext("First Menu"), &menus, t.return_menu);
         g.add(&rows::combo(doc, &gettext("Menu"), &labels, sel, Change::Content, move |p, i| {
             if let Some(t) = p.title_mut(id) {

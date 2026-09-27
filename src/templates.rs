@@ -262,6 +262,68 @@ impl Ctx {
         pages
     }
 
+    /// One row of pop-up buttons centred in the strip at the bottom.
+    fn popup_row(&self, m: &mut Menu, entries: &[(String, Action)]) -> Vec<Id> {
+        const Y: f64 = 872.0;
+        const GAP: f64 = 24.0;
+        let widths: Vec<f64> = entries.iter().map(|(l, _)| (56.0 + l.chars().count() as f64 * 19.0).max(88.0)).collect();
+        let total: f64 = widths.iter().sum::<f64>() + GAP * (entries.len().saturating_sub(1)) as f64;
+        let mut x = ((DESIGN_WIDTH - total) / 2.0).max(SAFE_AREA.x);
+        let mut ids = Vec::new();
+        for ((label, action), w) in entries.iter().zip(widths) {
+            let b = self.button(label, *action, Rect::new(x, Y, w, 80.0), 34, Align::Center, Highlight::Frame);
+            ids.push(b.id);
+            m.items.push(b);
+            x += w + GAP;
+        }
+        ids
+    }
+
+    fn popup_page(&self, name: &str, heading: &str) -> Menu {
+        let mut m = Menu::new_popup(name);
+        m.items.push(MenuItem::new_shape(alpha(self.theme.bottom, 0.82), 0.0, Rect::new(0.0, 800.0, DESIGN_WIDTH, 280.0)));
+        m.items.push(MenuItem::new_shape(self.theme.selected, 0.0, Rect::new(0.0, 800.0, DESIGN_WIDTH, 4.0)));
+        m.items.push(self.text(heading, Rect::new(SAFE_AREA.x, 812.0, 800.0, 50.0), 26, "Bold", Align::Left, true));
+        m
+    }
+
+    /// Pop-up menu with chapters, audio & subtitles and links out, plus
+    /// the pages it opens. The first menu is the pop-up itself.
+    fn popup_menus(&self, name: &str, max_chapters: usize, languages: &[LanguagePreset], links: &[(String, Action)]) -> Vec<Menu> {
+        let mut main = self.popup_page(&gettext("Pop-up Menu"), name);
+        let mut chapters = self.popup_page(&gettext("Pop-up · Chapters"), &gettext("Chapters"));
+        let mut audio = self.popup_page(&gettext("Pop-up · Audio & Subtitles"), &gettext("Audio & Subtitles"));
+        let mut entries = Vec::new();
+        if max_chapters > 1 {
+            entries.push((gettext("Chapters"), Action::ShowMenu(chapters.id)));
+        }
+        if languages.len() >= 2 {
+            entries.push((gettext("Audio & Subtitles"), Action::ShowMenu(audio.id)));
+        }
+        entries.extend(links.iter().cloned());
+        self.popup_row(&mut main, &entries);
+
+        let back = (gettext("‹ Back"), Action::ShowMenu(main.id));
+        let mut ch = vec![back.clone()];
+        ch.extend((0..max_chapters.min(12)).map(|i| ((i + 1).to_string(), Action::PlayChapter(i as u32))));
+        let ids = self.popup_row(&mut chapters, &ch);
+        chapters.default_button = ids.get(1).copied();
+
+        let mut au = vec![back];
+        au.extend(languages.iter().map(|l| (l.name.clone(), Action::SetLanguage { preset: l.id, menu: Some(main.id) })));
+        let ids = self.popup_row(&mut audio, &au);
+        audio.default_button = ids.get(1).copied();
+
+        let mut out = vec![main];
+        if max_chapters > 1 {
+            out.push(chapters);
+        }
+        if languages.len() >= 2 {
+            out.push(audio);
+        }
+        out
+    }
+
     /// Language choices, each returning to `home`.
     fn setup_page(&self, languages: &[LanguagePreset], default: Option<Id>, home: Id) -> Menu {
         let mut m = self.menu(&gettext("Setup"));
@@ -565,6 +627,27 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
     }
 
     menus.extend(setup);
+
+    // Pop-up menu for every title.
+    let max_chapters = p.titles.iter().map(|t| t.chapters.len() + 1).max().unwrap_or(0);
+    let mut links = Vec::new();
+    match opts.layout {
+        Layout::Show | Layout::ShowList => {
+            if let Some(episodes) = menus.get(1).filter(|_| !titles.is_empty()) {
+                links.push((gettext("Episodes"), Action::ShowMenu(episodes.id)));
+            }
+        }
+        Layout::Movie => {
+            if let Some(scenes) = menus.iter().find(|m| m.name.starts_with(&gettext("Scene Selection"))) {
+                links.push((gettext("Scene Selection"), Action::ShowMenu(scenes.id)));
+            }
+        }
+        Layout::List => {}
+    }
+    links.push((gettext("Top Menu"), Action::ShowMenu(main_id)));
+    let popups = cx.popup_menus(&name, max_chapters, &p.disc.languages, &links);
+    p.disc.popup_menu = popups.first().map(|m| m.id);
+    menus.extend(popups);
     p.menus = menus;
     for t in &mut p.titles {
         t.return_menu = return_to.iter().find(|(id, _)| *id == t.id).map(|(_, m)| *m);
@@ -654,11 +737,10 @@ mod tests {
         let main = apply(&mut p, &Options { layout: Layout::Show, theme: 0, title: "My Show".into(), logo: None });
         check(&p);
         // main + 2 episode pages
-        assert_eq!(p.menus.len(), 3);
+        assert_eq!(p.disc_menus().count(), 3);
         let m = p.menu(main).unwrap();
         assert!(m.buttons().any(|b| b.button().unwrap().action == Action::PlayAll));
-        let episode_buttons: usize = p.menus[1..]
-            .iter()
+        let episode_buttons: usize = p.disc_menus().skip(1)
             .map(|m| m.buttons().filter(|b| matches!(b.button().unwrap().action, Action::PlayTitle { .. })).count())
             .sum();
         assert_eq!(episode_buttons, 8);
@@ -692,8 +774,8 @@ mod tests {
         apply(&mut p, &Options { layout: Layout::ShowList, theme: 2, title: "My Show".into(), logo: None });
         check(&p);
         // main + 2 list pages (7 + 2)
-        assert_eq!(p.menus.len(), 3);
-        assert!(p.menus[1..].iter().all(|m| m.buttons().all(|b| b.button().unwrap().thumbnail.is_none())));
+        assert_eq!(p.disc_menus().count(), 3);
+        assert!(p.disc_menus().skip(1).all(|m| m.buttons().all(|b| b.button().unwrap().thumbnail.is_none())));
         assert_eq!(p.titles[8].return_menu, Some(p.menus[2].id));
     }
 

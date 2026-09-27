@@ -121,10 +121,10 @@ fn reachable(p: &Project) -> (HashSet<Id>, HashSet<Id>) {
     let mut todo_m: Vec<Id> = Vec::new();
     let mut todo_t: Vec<Id> = Vec::new();
     // The remote's Top Menu key always leads to the first menu.
-    if let Some(m) = p.menus.first() {
+    if let Some(m) = p.first_menu() {
         todo_m.push(m.id);
     }
-    if p.first_play == FirstPlay::FirstTitle || p.menus.is_empty() {
+    if p.first_play == FirstPlay::FirstTitle || p.first_menu().is_none() {
         todo_t.extend(p.titles.first().map(|t| t.id));
     }
     loop {
@@ -139,7 +139,7 @@ fn reachable(p: &Project) -> (HashSet<Id>, HashSet<Id>) {
                     Action::PlayTitle { title, .. } => todo_t.push(*title),
                     Action::PlayAll => todo_t.extend(p.titles.iter().map(|t| t.id)),
                     Action::SetLanguage { menu, .. } => todo_m.extend(*menu),
-                    Action::None => {}
+                    Action::PlayChapter(_) | Action::None => {}
                 }
             }
         } else if let Some(id) = todo_t.pop() {
@@ -148,11 +148,13 @@ fn reachable(p: &Project) -> (HashSet<Id>, HashSet<Id>) {
             }
             let Some(i) = p.titles.iter().position(|t| t.id == id) else { continue };
             let t = &p.titles[i];
+            // Its pop-up menu opens during playback.
+            todo_m.extend(p.title_popup(t).map(|m| m.id));
             let next = p.titles.get(i + 1).map(|t| t.id);
             match t.end_action {
                 EndAction::PlayNextTitle if next.is_some() => todo_t.extend(next),
                 EndAction::Loop => {}
-                _ => match t.return_menu.or(p.menus.first().map(|m| m.id)) {
+                _ => match t.return_menu.or(p.first_menu().map(|m| m.id)) {
                     Some(m) => todo_m.push(m),
                     None => todo_t.extend(next),
                 },
@@ -264,7 +266,8 @@ pub fn check(p: &Project) -> Vec<Issue> {
             warn(gettext("Menu “{}” has no buttons, so viewers can't leave it.").replace("{}", &m.name), Some(Target::Menu(m.id)));
         }
         if !menus.contains(&m.id) {
-            warn(gettext("No button leads to menu “{}”.").replace("{}", &m.name), Some(Target::Menu(m.id)));
+            let msg = if m.popup { gettext("Pop-up menu “{}” isn't used by any title.") } else { gettext("No button leads to menu “{}”.") };
+            warn(msg.replace("{}", &m.name), Some(Target::Menu(m.id)));
         }
         let buttons: Vec<_> = m.buttons().collect();
         for (i, item) in buttons.iter().enumerate() {
@@ -276,6 +279,14 @@ pub fn check(p: &Project) -> Vec<Issue> {
                 Action::ShowMenu(id) if p.menu(*id).is_none() => {
                     error(gettext("Button “{}” on “{}” links to a deleted menu.").replacen("{}", &name, 1).replacen("{}", &m.name, 1), target)
                 }
+                Action::ShowMenu(id) if !m.popup && p.menu(*id).is_some_and(|x| x.popup) => error(
+                    gettext("Button “{}” on “{}” opens a pop-up menu, which only appears during titles.").replacen("{}", &name, 1).replacen("{}", &m.name, 1),
+                    target,
+                ),
+                Action::PlayChapter(_) if !m.popup => error(
+                    gettext("Button “{}” on “{}” goes to a chapter, which only works in pop-up menus.").replacen("{}", &name, 1).replacen("{}", &m.name, 1),
+                    target,
+                ),
                 Action::SetLanguage { preset, .. } if p.language(*preset).is_none() => {
                     error(gettext("Button “{}” on “{}” sets a deleted language.").replacen("{}", &name, 1).replacen("{}", &m.name, 1), target)
                 }

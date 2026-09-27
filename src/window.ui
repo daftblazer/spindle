@@ -386,6 +386,10 @@
         <attribute name="action">win.add-menu</attribute>
       </item>
       <item>
+        <attribute name="label" translatable="yes">New _Pop-up Menu</attribute>
+        <attribute name="action">win.add-popup-menu</attribute>
+      </item>
+      <item>
         <attribute name="label" translatable="yes">_Chapter Menu for Selected Title</attribute>
         <attribute name="action">win.add-chapter-menu</attribute>
       </item>

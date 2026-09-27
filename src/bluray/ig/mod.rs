@@ -54,13 +54,33 @@ pub struct Button {
 }
 
 #[derive(Debug, Clone)]
-pub struct Menu {
-    pub video: VideoFormat,
+pub struct Page {
+    /// Drawn in order; a static decoration layer can be a button that no
+    /// other button navigates to.
     pub buttons: Vec<Button>,
-    /// Button selected when the menu appears; [`NO_BUTTON`] keeps the
+    /// Button selected when the page appears; [`NO_BUTTON`] keeps the
     /// player's last selection (PSR10) or falls back to the first button.
     pub default_button: u16,
 }
+
+#[derive(Debug, Clone)]
+pub struct Menu {
+    pub video: VideoFormat,
+    pub pages: Vec<Page>,
+    /// Pop-up menu shown over the movie with the remote's Pop-up key,
+    /// rather than an always-on menu.
+    pub popup: bool,
+    /// Hide the pop-up after this long without input (90 kHz ticks, 0 = never).
+    pub user_timeout: u32,
+}
+
+impl Menu {
+    /// A single always-on page.
+    pub fn single(video: VideoFormat, buttons: Vec<Button>, default_button: u16) -> Self {
+        Menu { video, pages: vec![Page { buttons, default_button }], popup: false, user_timeout: 0 }
+    }
+}
+
 
 pub(crate) fn segment(kind: u8, body: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(body.len() + 3);
@@ -71,8 +91,12 @@ pub(crate) fn segment(kind: u8, body: &[u8]) -> Vec<u8> {
 }
 
 pub(crate) fn pds(q: &Quantized) -> Vec<u8> {
+    pds_with_id(q, 0)
+}
+
+fn pds_with_id(q: &Quantized, id: u8) -> Vec<u8> {
     let mut w = BitWriter::new();
-    w.u8(0).u8(0); // palette id, version
+    w.u8(id).u8(0); // palette id, version
     for (i, e) in q.palette_ycrcb().iter().enumerate() {
         w.u8(i as u8).u8(e[0]).u8(e[1]).u8(e[2]).u8(e[3]);
     }
@@ -112,45 +136,46 @@ pub(crate) fn ods(id: u16, width: u16, height: u16, rle: &[u8]) -> Vec<Vec<u8>> 
         .collect()
 }
 
-fn ics(menu: &Menu, object_ids: &[[u16; 3]]) -> Result<Vec<u8>> {
+fn ics(menu: &Menu, object_ids: &[Vec<[u16; 3]>]) -> Result<Vec<u8>> {
     let (width, height) = menu.video.size();
 
     let mut comp = BitWriter::new();
     comp.flag(false) // stream_model: multiplexed
-        .flag(false) // ui_model: always on
+        .flag(menu.popup) // ui_model
         .zeros(6);
     comp.zeros(7).bits(33, 0); // composition_time_out_pts
     comp.zeros(7).bits(33, 0); // selection_time_out_pts
-    comp.u24(0); // user_time_out_duration
-    comp.u8(1); // one page
+    comp.u24(menu.user_timeout);
+    comp.u8(menu.pages.len() as u8);
 
-    // page 0
-    comp.u8(0).u8(0);
-    comp.bytes(&[0; 8]); // UO mask
-    comp.u8(0).u8(0); // in effects: no windows, no effects
-    comp.u8(0).u8(0); // out effects
-    comp.u8(0); // animation frame rate code
-    comp.u16(menu.default_button).u16(NO_BUTTON);
-    comp.u8(0); // palette id
-    comp.u8(menu.buttons.len() as u8); // one BOG per button
-    for (b, objs) in menu.buttons.iter().zip(object_ids) {
-        comp.u16(b.id).u8(1);
-        comp.u16(b.id)
-            .u16(b.numeric)
-            .flag(b.auto_action)
-            .zeros(7)
-            .u16(b.x)
-            .u16(b.y)
-            .u16(b.up)
-            .u16(b.down)
-            .u16(b.left)
-            .u16(b.right);
-        comp.u16(objs[0]).u16(objs[0]).flag(false).zeros(7);
-        comp.u8(0xFF).u16(objs[1]).u16(objs[1]).flag(false).zeros(7);
-        comp.u8(0xFF).u16(objs[2]).u16(objs[2]);
-        comp.u16(b.commands.len() as u16);
-        for c in &b.commands {
-            c.write(&mut comp);
+    for (pi, (page, ids)) in menu.pages.iter().zip(object_ids).enumerate() {
+        comp.u8(pi as u8).u8(0);
+        comp.bytes(&[0; 8]); // UO mask
+        comp.u8(0).u8(0); // in effects: no windows, no effects
+        comp.u8(0).u8(0); // out effects
+        comp.u8(0); // animation frame rate code
+        comp.u16(page.default_button).u16(NO_BUTTON);
+        comp.u8(pi as u8); // palette id
+        comp.u8(page.buttons.len() as u8); // one BOG per button
+        for (b, objs) in page.buttons.iter().zip(ids) {
+            comp.u16(b.id).u8(1);
+            comp.u16(b.id)
+                .u16(b.numeric)
+                .flag(b.auto_action)
+                .zeros(7)
+                .u16(b.x)
+                .u16(b.y)
+                .u16(b.up)
+                .u16(b.down)
+                .u16(b.left)
+                .u16(b.right);
+            comp.u16(objs[0]).u16(objs[0]).flag(false).zeros(7);
+            comp.u8(0xFF).u16(objs[1]).u16(objs[1]).flag(false).zeros(7);
+            comp.u8(0xFF).u16(objs[2]).u16(objs[2]);
+            comp.u16(b.commands.len() as u16);
+            for c in &b.commands {
+                c.write(&mut comp);
+            }
         }
     }
     let comp = comp.into_bytes();
@@ -174,39 +199,55 @@ fn decode_ticks(pixels: u64) -> u64 {
     (pixels * 8 * 90_000).div_ceil(RD)
 }
 
-/// Encode `menu` as a display set whose composition becomes valid at (or
-/// shortly after) `present_pts`. Returns the PES packets in decode order.
-pub fn encode(menu: &Menu, present_pts: u64) -> Result<Vec<Pes>> {
-    if menu.buttons.len() > 255 {
-        bail!("a menu page can have at most 255 buttons");
-    }
-    let bitmaps: Vec<&Bitmap> =
-        menu.buttons.iter().flat_map(|b| [&b.normal, &b.selected, &b.activated]).collect();
-    let q = palette::quantize(&bitmaps)?;
+/// Encoded segments of a menu, ready to be timed.
+pub struct DisplaySet {
+    /// (segment, decode duration in 90 kHz ticks), excluding the ICS.
+    segments: Vec<(Vec<u8>, u64)>,
+    object_ids: Vec<Vec<[u16; 3]>>,
+    decode: u64,
+    plane_clear: u64,
+}
 
+/// Quantize and compress `menu`'s bitmaps (one palette per page).
+pub fn prepare(menu: &Menu) -> Result<DisplaySet> {
+    if menu.pages.is_empty() || menu.pages.len() > 255 {
+        bail!("a menu needs 1–255 pages");
+    }
+    let mut segments: Vec<(Vec<u8>, u64)> = Vec::new();
     let mut object_ids = Vec::new();
     let mut objects: Vec<(u16, &Bitmap, Vec<u8>)> = Vec::new();
-    for (bi, _) in menu.buttons.iter().enumerate() {
-        let mut ids = [0u16; 3];
-        for si in 0..3 {
-            let idx = bi * 3 + si;
-            // Reuse identical bitmaps of the same button (e.g. activated == selected).
-            ids[si] = match (0..si).find(|&p| bitmaps[bi * 3 + p] == bitmaps[idx]) {
-                Some(p) => ids[p],
-                None => {
-                    let oid = objects.len() as u16;
-                    let bmp = bitmaps[idx];
-                    let rle = rle::encode(&q.indexes[idx], bmp.width as usize, bmp.height as usize);
-                    objects.push((oid, bmp, rle));
-                    oid
-                }
-            };
+    for (pi, page) in menu.pages.iter().enumerate() {
+        if page.buttons.len() > 255 {
+            bail!("a menu page can have at most 255 buttons");
         }
-        object_ids.push(ids);
+        let bitmaps: Vec<&Bitmap> = page.buttons.iter().flat_map(|b| [&b.normal, &b.selected, &b.activated]).collect();
+        if bitmaps.is_empty() {
+            object_ids.push(Vec::new());
+            continue;
+        }
+        let q = palette::quantize(&bitmaps)?;
+        segments.push((pds_with_id(&q, pi as u8), 0));
+        let mut page_ids = Vec::new();
+        for bi in 0..page.buttons.len() {
+            let mut ids = [0u16; 3];
+            for si in 0..3 {
+                let idx = bi * 3 + si;
+                // Reuse identical bitmaps of the same button (e.g. activated == selected).
+                ids[si] = match (0..si).find(|&p| bitmaps[bi * 3 + p] == bitmaps[idx]) {
+                    Some(p) => ids[p],
+                    None => {
+                        let oid = objects.len() as u16;
+                        let bmp = bitmaps[idx];
+                        let rle = rle::encode(&q.indexes[idx], bmp.width as usize, bmp.height as usize);
+                        objects.push((oid, bmp, rle));
+                        oid
+                    }
+                };
+            }
+            page_ids.push(ids);
+        }
+        object_ids.push(page_ids);
     }
-
-    let mut segments: Vec<(Vec<u8>, u64)> = Vec::new(); // (segment, decode duration)
-    segments.push((pds(&q), 0));
     for (id, bmp, rle) in &objects {
         let frags = ods(*id, bmp.width, bmp.height, rle);
         let dur = decode_ticks(bmp.width as u64 * bmp.height as u64);
@@ -215,31 +256,41 @@ pub fn encode(menu: &Menu, present_pts: u64) -> Result<Vec<Pes>> {
             segments.push((f, if i == n - 1 { dur } else { 0 }));
         }
     }
-
-    let total_decode: u64 = segments.iter().map(|s| s.1).sum();
+    let decode = segments.iter().map(|s| s.1).sum();
     let (w, h) = menu.video.size();
-    let plane_clear = decode_ticks(w as u64 * h as u64 / 2);
-    let margin = 9_000; // 100 ms
-    let start = present_pts.saturating_sub(total_decode + plane_clear + margin).max(margin);
-    let present = present_pts.max(start + total_decode + plane_clear);
+    Ok(DisplaySet { segments, object_ids, decode, plane_clear: decode_ticks(w as u64 * h as u64 / 2) })
+}
 
-    let mut out = Vec::new();
-    let pes = |seg: Vec<u8>, pts: u64, dts: u64| Pes {
-        stream: 0,
-        data: private_pes(&seg, pts, dts),
-        pts: Some(pts),
-        dts: Some(dts),
-        random_access: false,
-    };
-    out.push(pes(ics(menu, &object_ids)?, present, start));
-    let mut t = start;
-    for (seg, dur) in segments {
-        let dts = t;
-        t += dur;
-        out.push(pes(seg, t, dts));
+impl DisplaySet {
+    /// PES packets (in decode order) of a display set valid at (or
+    /// shortly after) `present_pts`.
+    pub fn packets(&self, menu: &Menu, present_pts: u64) -> Result<Vec<Pes>> {
+        let margin = 9_000; // 100 ms
+        let start = present_pts.saturating_sub(self.decode + self.plane_clear + margin).max(margin);
+        let present = present_pts.max(start + self.decode + self.plane_clear);
+        let pes = |seg: &[u8], pts: u64, dts: u64| Pes {
+            stream: 0,
+            data: private_pes(seg, pts, dts),
+            pts: Some(pts),
+            dts: Some(dts),
+            random_access: false,
+        };
+        let mut out = vec![pes(&ics(menu, &self.object_ids)?, present, start)];
+        let mut t = start;
+        for (seg, dur) in &self.segments {
+            let dts = t;
+            t += dur;
+            out.push(pes(seg, t, dts));
+        }
+        out.push(pes(&segment(SEG_END, &[]), t, t));
+        Ok(out)
     }
-    out.push(pes(segment(SEG_END, &[]), t, t));
-    Ok(out)
+}
+
+/// Encode `menu` as a display set whose composition becomes valid at (or
+/// shortly after) `present_pts`. Returns the PES packets in decode order.
+pub fn encode(menu: &Menu, present_pts: u64) -> Result<Vec<Pes>> {
+    prepare(menu)?.packets(menu, present_pts)
 }
 
 #[cfg(test)]
@@ -268,7 +319,7 @@ mod tests {
             commands: vec![Command::JumpTitle(1)],
             auto_action: false,
         };
-        let menu = Menu { video: VideoFormat::P1080_23976, buttons: vec![b], default_button: 0 };
+        let menu = Menu::single(VideoFormat::P1080_23976, vec![b], 0);
         let pes = encode(&menu, 90_000 * 2).unwrap();
         // ICS, PDS, 2 ODS (activated reuses selected), END
         assert_eq!(pes.len(), 5);

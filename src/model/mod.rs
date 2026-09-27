@@ -46,6 +46,9 @@ pub struct DiscSettings {
     /// Preset used until the viewer picks one (first when unset).
     #[serde(default)]
     pub default_language: Option<Id>,
+    /// Pop-up menu of titles that don't choose their own.
+    #[serde(default)]
+    pub popup_menu: Option<Id>,
 }
 
 impl Default for DiscSettings {
@@ -59,6 +62,7 @@ impl Default for DiscSettings {
             subtitle_style: SubtitleStyle::default(),
             languages: Vec::new(),
             default_language: None,
+            popup_menu: None,
         }
     }
 }
@@ -114,6 +118,9 @@ pub struct Title {
     /// Tracks chosen by hand for language presets.
     #[serde(default)]
     pub language_tracks: Vec<LanguageTracks>,
+    /// Pop-up menu shown during this title.
+    #[serde(default)]
+    pub popup: PopupChoice,
     /// Frame (seconds) used as this title's thumbnail; `None` picks one
     /// automatically.
     #[serde(default)]
@@ -141,6 +148,16 @@ impl Title {
     pub fn disc_subtitles(&self) -> impl Iterator<Item = &SubtitleTrack> {
         self.subtitles.iter().filter(|t| t.enabled && t.kind() != SubtitleKind::Unsupported).take(32)
     }
+}
+
+/// Which pop-up menu a title shows.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum PopupChoice {
+    /// The disc's default pop-up menu (Disc Settings).
+    #[default]
+    Default,
+    None,
+    Menu(Id),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -302,6 +319,49 @@ impl Project {
         self.titles.iter_mut().find(|t| t.id == id)
     }
 
+    /// Menus that are screens of their own (not pop-ups), in disc order.
+    pub fn disc_menus(&self) -> impl Iterator<Item = &Menu> {
+        self.menus.iter().filter(|m| !m.popup)
+    }
+
+    /// The top menu: first non-pop-up menu.
+    pub fn first_menu(&self) -> Option<&Menu> {
+        self.disc_menus().next()
+    }
+
+    pub fn popup_menus(&self) -> impl Iterator<Item = &Menu> {
+        self.menus.iter().filter(|m| m.popup)
+    }
+
+    /// Pop-up menu shown during `title`.
+    pub fn title_popup(&self, title: &Title) -> Option<&Menu> {
+        let id = match title.popup {
+            PopupChoice::Default => self.disc.popup_menu?,
+            PopupChoice::None => return None,
+            PopupChoice::Menu(id) => id,
+        };
+        self.menu(id).filter(|m| m.popup)
+    }
+
+    /// Pop-up pages reachable from `menu` (itself first).
+    pub fn popup_pages<'a>(&'a self, menu: &'a Menu) -> Vec<&'a Menu> {
+        let mut pages = vec![menu];
+        let mut i = 0;
+        while i < pages.len() {
+            for b in pages[i].buttons().filter_map(|b| b.button()) {
+                if let Action::ShowMenu(id) | Action::SetLanguage { menu: Some(id), .. } = b.action {
+                    if let Some(m) = self.menu(id).filter(|m| m.popup) {
+                        if !pages.iter().any(|p| p.id == m.id) {
+                            pages.push(m);
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+        pages
+    }
+
     pub fn menu(&self, id: Id) -> Option<&Menu> {
         self.menus.iter().find(|m| m.id == id)
     }
@@ -330,6 +390,7 @@ impl Project {
             audio_lang: String::new(),
             audio: embedded_tracks_audio(&a.info),
             language_tracks: Vec::new(),
+            popup: PopupChoice::default(),
             poster: None,
             subtitles: {
                 let mut subs = embedded_tracks(&a.info);
@@ -406,6 +467,12 @@ impl Project {
             if t.return_menu == Some(menu) {
                 t.return_menu = None;
             }
+            if t.popup == PopupChoice::Menu(menu) {
+                t.popup = PopupChoice::Default;
+            }
+        }
+        if self.disc.popup_menu == Some(menu) {
+            self.disc.popup_menu = None;
         }
     }
 }
