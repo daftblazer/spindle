@@ -48,6 +48,19 @@ fn with_image(path: &std::path::Path, image: bool) -> PathBuf {
     }
 }
 
+/// A short explanation of a build error, for the result page.
+fn summary(error: &str, stage: &str) -> String {
+    let first = error.lines().find(|l| !l.trim().is_empty()).unwrap_or(error).trim();
+    if first.starts_with("ffmpeg failed") {
+        // The real reason is in ffmpeg's log (see Details).
+        gettext("The encoder stopped with an error while: {}. See Details.").replace("{}", stage)
+    } else if error.lines().count() > 3 {
+        format!("{first}\n{}", gettext("See Details for more."))
+    } else {
+        error.trim().to_string()
+    }
+}
+
 pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     let dialog = adw::Dialog::builder().title(gettext("Build Disc")).content_width(560).content_height(620).build();
     let toolbar = adw::ToolbarView::new();
@@ -283,12 +296,30 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     // --- result page
     let result = adw::StatusPage::new();
     result.add_css_class("compact");
+    let rcol = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(12).margin_start(24).margin_end(24).build();
+    // On failure: the whole error and the build log.
+    let details_view = gtk::TextView::builder().editable(false).monospace(true).wrap_mode(gtk::WrapMode::WordChar).build();
+    let details = gtk::Expander::builder()
+        .label(gettext("Details"))
+        .child(&gtk::ScrolledWindow::builder().min_content_height(160).child(&details_view).build())
+        .visible(false)
+        .build();
+    rcol.append(&details);
     let rbox = gtk::Box::builder().spacing(12).halign(gtk::Align::Center).build();
     let open_btn = gtk::Button::builder().label(gettext("_Open Folder")).use_underline(true).css_classes(["pill", "suggested-action"]).build();
+    let copy_btn = gtk::Button::builder().label(gettext("Copy _Details")).use_underline(true).css_classes(["pill"]).visible(false).build();
     let close_btn = gtk::Button::builder().label(gettext("_Close")).use_underline(true).css_classes(["pill"]).build();
     rbox.append(&open_btn);
+    rbox.append(&copy_btn);
     rbox.append(&close_btn);
-    result.set_child(Some(&rbox));
+    rcol.append(&rbox);
+    result.set_child(Some(&rcol));
+    let dv = details_view.clone();
+    copy_btn.connect_clicked(move |b| {
+        let buf = dv.buffer();
+        b.clipboard().set_text(&buf.text(&buf.start_iter(), &buf.end_iter(), false));
+        b.set_label(&gettext("Copied"));
+    });
     stack.add_named(&result, Some("result"));
 
     // --- behaviour
@@ -353,6 +384,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         let start = {
             let (doc, output, cancel, stack, status, bar, log, result, open_btn) =
                 (doc.clone(), output.clone(), cancel.clone(), stack.clone(), status.clone(), bar.clone(), log.clone(), result.clone(), open_btn.clone());
+            let (details, details_view, copy_btn) = (details.clone(), details_view.clone(), copy_btn.clone());
             let target = target.clone();
             move || {
         let target = target.clone();
@@ -393,10 +425,26 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         });
         let (status, bar, log, result, stack, open_btn) =
             (status.clone(), bar.clone(), log.clone(), result.clone(), stack.clone(), open_btn.clone());
+        let (details, details_view, copy_btn) = (details.clone(), details_view.clone(), copy_btn.clone());
         glib::spawn_future_local(async move {
+            let mut stage = String::new();
+            // Full error and log for the Details section.
+            let explain = |e: &str, stage: &str| {
+                let buf = log.buffer();
+                let log_text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+                details_view.buffer().set_text(&format!(
+                    "Spindle {}\nFailed while: {stage}\n\n{e}\n\n--- Build log ---\n{log_text}",
+                    crate::config::VERSION
+                ));
+                details.set_visible(true);
+                copy_btn.set_visible(true);
+            };
             while let Ok(ev) = rx.recv().await {
                 match ev {
-                    BuildEvent::Stage(s) => status.set_description(Some(&s)),
+                    BuildEvent::Stage(s) => {
+                        status.set_description(Some(&s));
+                        stage = s;
+                    }
                     BuildEvent::Progress(p) => {
                         bar.set_fraction(p);
                         bar.set_text(Some(&format!("{:.0} %", p * 100.0)));
@@ -407,7 +455,12 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                         buf.insert(&mut end, &format!("{l}\n"));
                     }
                     BuildEvent::Finished(res) if target.is_some() => {
-                        super::burn::show_result(&result, res.map(|_| ()));
+                        if let Err(e) = &res {
+                            if !e.contains("cancelled") {
+                                explain(e, &stage);
+                            }
+                        }
+                        super::burn::show_result(&result, res.map(|_| ()).map_err(|e| summary(&e, &stage)));
                         open_btn.set_visible(false);
                         stack.set_visible_child_name("result");
                         break;
@@ -428,7 +481,10 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                                 let cancelled = e.contains("cancelled");
                                 result.set_icon_name(Some(if cancelled { "process-stop-symbolic" } else { "dialog-error-symbolic" }));
                                 result.set_title(&if cancelled { gettext("Build Cancelled") } else { gettext("Build Failed") });
-                                result.set_description(Some(&glib::markup_escape_text(if cancelled { "" } else { &e })));
+                                if !cancelled {
+                                    explain(&e, &stage);
+                                }
+                                result.set_description(Some(&glib::markup_escape_text(&if cancelled { String::new() } else { summary(&e, &stage) })));
                                 open_btn.set_visible(false);
                             }
                         }
@@ -447,8 +503,13 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     });
 
     #[cfg(debug_assertions)]
-    if std::env::var("SPINDLE_SCREENSHOT_BURN").is_ok() {
-        format_row.set_selected(2);
+    {
+        if std::env::var("SPINDLE_SCREENSHOT_BURN").is_ok() {
+            format_row.set_selected(2);
+        }
+        if std::env::var("SPINDLE_SCREENSHOT_BUILD_NOW").is_ok() {
+            build_btn.emit_clicked();
+        }
     }
     dialog.present(Some(parent));
 }
