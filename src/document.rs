@@ -121,6 +121,12 @@ impl Document {
         self.notify(Change::Structure);
     }
 
+    /// Mark as having unsaved changes (e.g. a recovered project).
+    pub fn mark_dirty(&self) {
+        self.dirty.set(true);
+        self.notify(Change::File);
+    }
+
     pub fn set_saved(&self, path: PathBuf) {
         *self.path.borrow_mut() = Some(path);
         self.dirty.set(false);

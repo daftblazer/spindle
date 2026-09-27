@@ -98,9 +98,13 @@ mod imp {
             let state = obj.state();
             if state.doc.is_dirty() {
                 let win = obj.clone();
-                obj.confirm_discard(move || win.destroy());
+                obj.confirm_discard(move || {
+                    crate::recovery::remove(win.state().session);
+                    win.destroy()
+                });
                 return glib::Propagation::Stop;
             }
+            crate::recovery::remove(state.session);
             glib::Propagation::Proceed
         }
     }
@@ -127,6 +131,10 @@ pub struct State {
     inspector: Rc<ui::inspector::Inspector>,
     _media: Rc<ui::media_bin::MediaBin>,
     title_view: Rc<ui::title_view::TitleView>,
+    /// Names this window's crash-recovery copy.
+    session: Id,
+    /// Hash of the last recovery copy written.
+    recovery_hash: std::cell::Cell<u64>,
 }
 
 impl std::fmt::Debug for State {
@@ -236,8 +244,11 @@ impl SpindleWindow {
             inspector,
             _media: media,
             title_view,
+            session: crate::model::new_id(),
+            recovery_hash: std::cell::Cell::new(0),
         });
         imp.state.set(state).unwrap();
+        self.setup_recovery();
 
         let win = self.downgrade();
         doc.connect(move |c| {
@@ -956,6 +967,112 @@ impl SpindleWindow {
     }
 
     // ---------------------------------------------------------------- files
+
+    /// Autosave a recovery copy while there are unsaved changes, and offer
+    /// to restore one left by a run that didn't close normally.
+    fn setup_recovery(&self) {
+        let win = self.downgrade();
+        glib::timeout_add_seconds_local(30, move || {
+            let Some(w) = win.upgrade() else { return glib::ControlFlow::Break };
+            w.autosave();
+            glib::ControlFlow::Continue
+        });
+        // Saving (or opening another project) makes the copy unnecessary.
+        let win = self.downgrade();
+        self.doc().connect(move |c| {
+            if matches!(c, Change::File | Change::Structure) {
+                if let Some(w) = win.upgrade().filter(|w| !w.doc().is_dirty()) {
+                    crate::recovery::remove(w.state().session);
+                    w.state().recovery_hash.set(0);
+                }
+            }
+        });
+        // Only the first window of a run looks for copies left behind (the
+        // app is single-instance, so any copy found belongs to no one).
+        static CHECKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let screenshot = std::env::var("SPINDLE_SCREENSHOT").is_ok() && std::env::var("SPINDLE_SCREENSHOT_RECOVERY").is_err();
+        if CHECKED.swap(true, std::sync::atomic::Ordering::Relaxed) || screenshot {
+            return;
+        }
+        let win = self.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(w) = win.upgrade() {
+                w.offer_recovery();
+            }
+        });
+    }
+
+    fn autosave(&self) {
+        let state = self.state();
+        let doc = &state.doc;
+        if !doc.is_dirty() {
+            return;
+        }
+        let project = doc.project().clone();
+        let json = serde_json::to_vec(&project).unwrap_or_default();
+        let hash = json.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3));
+        if hash == state.recovery_hash.get() {
+            return;
+        }
+        match crate::recovery::write(state.session, &project, doc.path().as_deref()) {
+            Ok(()) => state.recovery_hash.set(hash),
+            Err(e) => log::warn!("autosave failed: {e:#}"),
+        }
+    }
+
+    fn offer_recovery(&self) {
+        let found = crate::recovery::leftovers();
+        let Some(newest) = found.first().cloned() else { return };
+        // Older copies are superseded by the newest one.
+        for old in &found[1..] {
+            old.discard();
+        }
+        let ago = newest.saved.elapsed().map(|d| d.as_secs() / 60).unwrap_or(0);
+        let when = if ago < 1 {
+            gettext("less than a minute ago")
+        } else if ago < 120 {
+            gettextrs::ngettext("{} minute ago", "{} minutes ago", ago as u32).replace("{}", &ago.to_string())
+        } else {
+            gettextrs::ngettext("{} hour ago", "{} hours ago", (ago / 60) as u32).replace("{}", &(ago / 60).to_string())
+        };
+        let name = if newest.name.is_empty() { gettext("a project") } else { format!("“{}”", newest.name) };
+        let dialog = adw::AlertDialog::builder()
+            .heading(gettext("Recover Unsaved Changes?"))
+            .body(
+                gettext("Spindle didn't close normally while {name} had unsaved changes. A copy was saved {when}.")
+                    .replace("{name}", &name)
+                    .replace("{when}", &when),
+            )
+            // Dismissing keeps the copy, to be offered again next time.
+            .close_response("keep")
+            .default_response("recover")
+            .build();
+        dialog.add_responses(&[("discard", &gettext("_Discard")), ("recover", &gettext("_Recover"))]);
+        dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+        dialog.set_response_appearance("recover", adw::ResponseAppearance::Suggested);
+        let win = self.clone();
+        dialog.connect_response(None, move |_, r| {
+            if r == "recover" {
+                match newest.load() {
+                    Ok(project) => {
+                        let doc = win.doc();
+                        doc.replace(project, newest.original.clone());
+                        // Still unsaved: the user decides where it goes.
+                        doc.mark_dirty();
+                        win.autosave();
+                    }
+                    Err(e) => {
+                        win.toast(&format!("{}: {e}", gettext("Could not recover the project")));
+                        return;
+                    }
+                }
+            }
+            if r != "keep" {
+                newest.discard();
+            }
+        });
+        dialog.present(Some(self));
+    }
 
     /// Ask to save unsaved changes, then run `then`.
     pub fn confirm_discard(&self, then: impl Fn() + 'static) {

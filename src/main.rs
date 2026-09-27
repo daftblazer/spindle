@@ -28,6 +28,7 @@ mod encode_cache;
 mod media;
 mod model;
 mod preview;
+mod recovery;
 mod render;
 mod subtitles;
 mod templates;
