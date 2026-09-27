@@ -285,6 +285,9 @@ impl SpindleWindow {
             if let Ok(keys) = std::env::var("SPINDLE_SCREENSHOT_KEYS") {
                 win.state().canvas.debug_keys(&keys);
             }
+            if std::env::var("SPINDLE_SCREENSHOT_OSD").is_ok() {
+                win.state().title_view.debug_show_osd();
+            }
             if let Ok(keys) = std::env::var("SPINDLE_SCREENSHOT_TITLE_KEYS") {
                 let tv = win.state().title_view.clone();
                 // Give the player time to load before pressing keys.

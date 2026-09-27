@@ -74,3 +74,41 @@ button.small {
   border-radius: 6px;
   background-color: alpha(@view_fg_color, 0.1);
 }
+
+.player {
+  background-color: black;
+}
+
+.player-bottom {
+  padding: 36px 18px 10px;
+  color: white;
+  background-image: linear-gradient(to bottom, transparent, alpha(black, 0.75));
+}
+
+.player-center button {
+  color: white;
+  min-width: 48px;
+  min-height: 48px;
+  background-color: alpha(black, 0.45);
+}
+
+.player-center button:hover {
+  background-color: alpha(black, 0.6);
+}
+
+.player-center button.play {
+  min-width: 80px;
+  min-height: 80px;
+}
+
+.player-bottom button {
+  color: white;
+}
+
+.player-bottom scale trough highlight {
+  background-color: white;
+}
+
+.player-bottom scale trough {
+  background-color: alpha(white, 0.3);
+}

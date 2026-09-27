@@ -8,6 +8,7 @@ pub mod compat_dialog;
 pub mod frame_picker;
 pub mod inspector;
 pub mod media_bin;
+pub mod player;
 pub mod preview_dialog;
 pub mod rows;
 pub mod settings;

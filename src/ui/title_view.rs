@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 pub struct TitleView {
     doc: Rc<Document>,
-    video: gtk::Video,
+    player: Rc<super::player::Player>,
     stack: gtk::Stack,
     poster: gtk::Picture,
     add: gtk::Button,
@@ -31,8 +31,7 @@ const SEEK_SETTLE: std::time::Duration = std::time::Duration::from_millis(800);
 
 impl TitleView {
     pub fn new(doc: Rc<Document>, container: &gtk::Box) -> Rc<Self> {
-        let video = gtk::Video::builder().vexpand(true).hexpand(true).autoplay(false).build();
-        video.add_css_class("title-video");
+        let player = super::player::Player::new();
         // Shown when the system cannot play the file (missing GStreamer codecs).
         let poster = gtk::Picture::builder().content_fit(gtk::ContentFit::Contain).vexpand(true).build();
         let note = gtk::Label::builder()
@@ -47,7 +46,7 @@ impl TitleView {
         fallback.append(&poster);
         fallback.append(&note);
         let stack = gtk::Stack::builder().vexpand(true).build();
-        stack.add_named(&video, Some("video"));
+        stack.add_named(&player.widget, Some("video"));
         stack.add_named(&fallback, Some("poster"));
         container.append(&stack);
 
@@ -110,7 +109,7 @@ impl TitleView {
 
         let tv = Rc::new(TitleView {
             doc: doc.clone(),
-            video,
+            player,
             stack,
             poster,
             add: add.clone(),
@@ -130,20 +129,34 @@ impl TitleView {
             tv.handle_key(key, state)
         });
         container.add_controller(keys);
-        // Clicking the picture gives the player keyboard focus.
-        tv.video.set_focusable(true);
-        let click = gtk::GestureClick::new();
-        click.set_propagation_phase(gtk::PropagationPhase::Capture);
-        let v = tv.video.clone();
-        click.connect_pressed(move |_, _, _, _| {
-            v.grab_focus();
-        });
-        tv.video.add_controller(click);
-
         let weak = Rc::downgrade(&tv);
         add.connect_clicked(move |_| {
             if let Some(tv) = weak.upgrade() {
                 tv.add_chapter();
+            }
+        });
+        let weak = Rc::downgrade(&tv);
+        tv.player.connect_skip(move |secs| {
+            if let Some(tv) = weak.upgrade() {
+                tv.skip(secs);
+            }
+        });
+        let weak = Rc::downgrade(&tv);
+        tv.player.connect_chapter(move |dir| {
+            if let Some(tv) = weak.upgrade() {
+                tv.chapter_step(dir);
+            }
+        });
+        let weak = Rc::downgrade(&tv);
+        tv.player.connect_seek(move |secs| {
+            if let Some(tv) = weak.upgrade() {
+                tv.seek(secs);
+            }
+        });
+        let weak = Rc::downgrade(&tv);
+        tv.player.connect_error(move || {
+            if let Some(tv) = weak.upgrade() {
+                tv.show_poster();
             }
         });
         let weak = Rc::downgrade(&tv);
@@ -165,7 +178,7 @@ impl TitleView {
     }
 
     fn position(&self) -> Option<f64> {
-        let stream = self.video.media_stream()?;
+        let stream = self.player.stream()?;
         Some(stream.timestamp() as f64 / 1e6)
     }
 
@@ -189,9 +202,7 @@ impl TitleView {
         let Some(id) = self.current.get() else { return };
         let playing = self.stack.visible_child_name().as_deref() == Some("video");
         let start = self.playhead().filter(|t| *t > 0.05 && playing).unwrap_or(0.0);
-        if let Some(s) = self.video.media_stream() {
-            s.pause();
-        }
+        self.player.pause();
         super::preview_dialog::present(&self.doc, id, start, parent);
     }
 
@@ -205,9 +216,7 @@ impl TitleView {
         };
         // Start at the playhead when the preview has been moved.
         let start = self.playhead().filter(|t| *t > 0.05 && self.stack.visible_child_name().as_deref() == Some("video")).unwrap_or(poster);
-        if let Some(s) = self.video.media_stream() {
-            s.pause();
-        }
+        self.player.pause();
         let doc = self.doc.clone();
         let name = self.doc.project().title(id).map(|t| t.name.clone()).unwrap_or_default();
         super::frame_picker::present(
@@ -223,12 +232,12 @@ impl TitleView {
     }
 
     fn duration(&self) -> Option<f64> {
-        let s = self.video.media_stream()?;
+        let s = self.player.stream()?;
         (s.duration() > 0).then(|| s.duration() as f64 / 1e6)
     }
 
     fn seek(&self, secs: f64) {
-        let Some(s) = self.video.media_stream() else { return };
+        let Some(s) = self.player.stream() else { return };
         if !s.is_seekable() {
             return;
         }
@@ -240,7 +249,7 @@ impl TitleView {
 
     /// Current position, preferring a just-requested seek target.
     fn playhead(&self) -> Option<f64> {
-        let seeking = self.video.media_stream().is_some_and(|s| s.is_seeking());
+        let seeking = self.player.stream().is_some_and(|s| s.is_seeking());
         match self.pending_seek.get() {
             Some((t, at)) if seeking || at.elapsed() < SEEK_SETTLE => Some(t),
             _ => self.position(),
@@ -253,10 +262,35 @@ impl TitleView {
         }
     }
 
-    fn toggle_play(&self) {
-        if let Some(s) = self.video.media_stream() {
-            s.set_playing(!s.is_playing());
+    /// Jump to the next (`dir` > 0) or previous chapter start. Going back
+    /// from just after a chapter start goes to the one before it.
+    pub fn chapter_step(&self, dir: i32) {
+        let (Some(id), Some(pos)) = (self.current.get(), self.playhead()) else { return };
+        let starts: Vec<f64> = {
+            let p = self.doc.project();
+            let Some(t) = p.title(id) else { return };
+            let mut v: Vec<f64> = std::iter::once(0.0).chain(t.chapters.iter().copied()).collect();
+            v.sort_by(f64::total_cmp);
+            v
+        };
+        let target = if dir > 0 {
+            starts.iter().copied().find(|c| *c > pos + 0.5)
+        } else {
+            starts.iter().rev().copied().find(|c| *c < pos - 1.0).or(Some(0.0))
+        };
+        if let Some(t) = target {
+            self.seek(t);
         }
+    }
+
+    fn toggle_play(&self) {
+        self.player.toggle();
+    }
+
+    /// Development aid: show the player controls.
+    #[cfg(debug_assertions)]
+    pub fn debug_show_osd(&self) {
+        self.player.set_controls_visible(true);
     }
 
     /// Development aid: press keys (by name) as if typed, then report the
@@ -270,7 +304,7 @@ impl TitleView {
         }
         let this = self.clone();
         glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
-            let playing = this.video.media_stream().is_some_and(|s| s.is_playing());
+            let playing = this.player.is_playing();
             println!("title view: position {:.2}s playing={playing} visible={:?}", this.position().unwrap_or(-1.0), this.stack.visible_child_name());
         });
     }
@@ -292,6 +326,8 @@ impl TitleView {
             Key::l | Key::L => self.skip(10.0),
             Key::space | Key::k | Key::K => self.toggle_play(),
             Key::Home => self.seek(0.0),
+            Key::Page_Up | Key::KP_Page_Up => self.chapter_step(-1),
+            Key::Page_Down | Key::KP_Page_Down => self.chapter_step(1),
             Key::End => {
                 if let Some(d) = self.duration() {
                     self.seek(d - 1.0);
@@ -319,32 +355,21 @@ impl TitleView {
 
     fn refresh(self: &Rc<Self>) {
         let Node::Title(id) = self.doc.node() else {
-            if let Some(s) = self.video.media_stream() {
-                s.pause();
-            }
+            self.player.pause();
             self.current.set(None);
             return;
         };
-        let (path, chapters) = {
+        let (path, chapters, name) = {
             let p = self.doc.project();
             let Some(t) = p.title(id) else { return };
-            (p.asset(t.asset).map(|a| a.path.clone()), t.chapters.clone())
+            (p.asset(t.asset).map(|a| a.path.clone()), t.chapters.clone(), t.name.clone())
         };
+        self.player.set_title(&name);
         self.current.set(Some(id));
         if *self.current_path.borrow() != path {
             self.stack.set_visible_child_name("video");
             self.add.set_sensitive(true);
-            self.video.set_file(path.as_ref().map(gio::File::for_path).as_ref());
-            if let Some(stream) = self.video.media_stream() {
-                let weak = Rc::downgrade(self);
-                stream.connect_error_notify(move |s| {
-                    if s.error().is_some() {
-                        if let Some(tv) = weak.upgrade() {
-                            tv.show_poster();
-                        }
-                    }
-                });
-            }
+            self.player.set_file(path.as_deref());
             *self.current_path.borrow_mut() = path;
         }
 
