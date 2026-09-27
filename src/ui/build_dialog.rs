@@ -16,9 +16,16 @@ use std::sync::Arc;
 
 pub fn estimated_size_gb(doc: &Document) -> f64 {
     let p = doc.project();
-    let secs: f64 = p.titles.iter().filter_map(|t| p.asset(t.asset)).map(|a| a.info.duration).sum();
     let kbps = p.disc.video_bitrate as f64 + p.disc.audio_bitrate as f64 * 1.1 + 200.0;
-    secs * kbps * 1000.0 / 8.0 / 1e9
+    p.titles
+        .iter()
+        .filter_map(|t| p.asset(t.asset).map(|a| (t, a)))
+        .map(|(t, a)| match std::fs::metadata(&a.path) {
+            // Kept video is about the size of the source file.
+            Ok(m) if t.keep_video => m.len() as f64 * 1.03 / 1e9,
+            _ => a.info.duration * kbps * 1000.0 / 8.0 / 1e9,
+        })
+        .sum()
 }
 
 fn default_output(doc: &Document) -> PathBuf {
@@ -206,7 +213,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                     BuildEvent::Finished(res) => {
                         match res {
                             Ok(path) => {
-                                result.set_icon_name(Some("emblem-ok-symbolic"));
+                                result.set_icon_name(Some("object-select-symbolic"));
                                 result.set_title(&gettext("Disc Ready"));
                                 result.set_description(Some(&format!(
                                     "{}\n<small>{}</small>",

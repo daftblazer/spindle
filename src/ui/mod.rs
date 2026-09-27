@@ -4,6 +4,7 @@
 
 pub mod build_dialog;
 pub mod canvas;
+pub mod compat_dialog;
 pub mod frame_picker;
 pub mod inspector;
 pub mod media_bin;

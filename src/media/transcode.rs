@@ -132,6 +132,41 @@ pub fn title_args(
     a
 }
 
+/// Copy a compatible H.264 stream without re-encoding, adding the access
+/// unit delimiters Blu-ray requires. AC-3 audio is copied when possible,
+/// other audio is encoded per `set`.
+pub fn passthrough_args(
+    input: &Path,
+    info: &MediaInfo,
+    set: &EncodeSettings,
+    copy_audio: bool,
+    range: Option<(f64, f64)>,
+    output: &Path,
+) -> Vec<String> {
+    let mut a = Vec::new();
+    if let Some((start, _)) = range {
+        a.extend([s("-ss"), format!("{start:.3}")]);
+    }
+    a.extend([s("-i"), path(input), s("-map"), s("0:v:0")]);
+    if info.has_audio() {
+        a.extend([s("-map"), s("0:a:0")]);
+    }
+    if let Some((_, duration)) = range {
+        a.extend([s("-t"), format!("{duration:.3}")]);
+    }
+    a.extend([s("-sn"), s("-dn"), s("-map_chapters"), s("-1")]);
+    a.extend([s("-c:v"), s("copy"), s("-bsf:v"), s("h264_metadata=aud=insert")]);
+    if info.has_audio() {
+        if copy_audio {
+            a.extend([s("-c:a"), s("copy")]);
+        } else {
+            a.extend(audio_args(set, output_channels(info.audio_channels)));
+        }
+    }
+    a.extend(mux_args(output, 1.0));
+    a
+}
+
 /// Encode a menu background clip.
 ///
 /// * `still` – rendered PNG containing the whole static layer (background

@@ -39,7 +39,19 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
     let t = project.title(req.title).context("title not found")?;
     let asset = project.asset(t.asset).context("title has no video")?;
     let info = &asset.info;
-    let start = req.start.clamp(0.0, (info.duration - 1.0).max(0.0));
+    let mut start = req.start.clamp(0.0, (info.duration - 1.0).max(0.0));
+    // Kept (not re-encoded) video can only start on a keyframe.
+    let keep = if t.keep_video {
+        let report = crate::media::compat::analyze(&asset.path)?;
+        let Some(format) = report.format.filter(|_| report.compatible()) else {
+            bail!("the original video can't be kept ({})", report.summary());
+        };
+        let key = crate::media::compat::keyframe_before(&asset.path, start + info.start_time)?;
+        start = (key - info.start_time).max(0.0);
+        Some((format, report.copy_audio))
+    } else {
+        None
+    };
     let duration = req.duration.min(info.duration - start).max(1.0);
     let settings = EncodeSettings {
         video: project.disc.video,
@@ -53,18 +65,29 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
     let result = (|| -> Result<PathBuf> {
         let progress = |f: f64| emit(BuildEvent::Progress(f.clamp(0.0, 1.0)));
 
-        emit(BuildEvent::Stage(format!("Encoding {} seconds of “{}”", duration.round(), t.name)));
         let tmp = work.join("preview.ts");
-        let args = transcode::title_args(&asset.path, info, &settings, &[], Some((start, duration)), &tmp);
-        ffmpeg::run(&args, cancel, |secs| progress(secs / duration * 0.8))?;
+        let (vformat, copy_audio) = match keep {
+            Some((format, copy_audio)) => {
+                emit(BuildEvent::Stage(format!("Copying {} seconds of “{}” (original video)", duration.round(), t.name)));
+                let args = transcode::passthrough_args(&asset.path, info, &settings, copy_audio, Some((start, duration)), &tmp);
+                ffmpeg::run(&args, cancel, |secs| progress(secs / duration * 0.8))?;
+                (format, copy_audio)
+            }
+            None => {
+                emit(BuildEvent::Stage(format!("Encoding {} seconds of “{}”", duration.round(), t.name)));
+                let args = transcode::title_args(&asset.path, info, &settings, &[], Some((start, duration)), &tmp);
+                ffmpeg::run(&args, cancel, |secs| progress(secs / duration * 0.8))?;
+                (settings.video, false)
+            }
+        };
 
-        let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(settings.video) }];
+        let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(vformat) }];
         if info.has_audio() {
             streams.push(EsInfo {
                 pid: PID_AUDIO_FIRST,
                 kind: EsKind::Audio {
-                    codec: settings.audio,
-                    channels: transcode::output_channels(info.audio_channels),
+                    codec: if copy_audio { crate::bluray::AudioCodec::Ac3 } else { settings.audio },
+                    channels: if copy_audio { info.audio_channels.max(1) } else { transcode::output_channels(info.audio_channels) },
                     lang: t.audio_lang.clone(),
                 },
             });
@@ -77,7 +100,7 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
                 track,
                 &asset.path,
                 info,
-                settings.video,
+                vformat,
                 &project.disc.subtitle_style,
                 &work,
                 Some((start, start + duration)),
@@ -95,7 +118,7 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
                 })
                 .collect();
             emit(BuildEvent::Log(format!("{} subtitle images in range", shifted.len())));
-            let pes = subtitles::pgs::encode(&shifted, settings.video, |secs| {
+            let pes = subtitles::pgs::encode(&shifted, vformat, |secs| {
                 (secs >= 0.0).then(|| first_pts + (secs * 90_000.0).round() as u64)
             })?;
             let index = streams.len();

@@ -2,6 +2,7 @@
 
 //! ffmpeg/ffprobe integration.
 
+pub mod compat;
 pub mod ffmpeg;
 pub mod portal;
 pub mod probe;

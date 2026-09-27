@@ -426,6 +426,7 @@ impl SpindleWindow {
         self.action_enabled("choose-thumbnail", matches!(doc.node(), Node::Title(_)));
         self.action_enabled("add-subtitle", matches!(doc.node(), Node::Title(_)));
         self.action_enabled("preview-title", matches!(doc.node(), Node::Title(_)));
+        self.action_enabled("check-video", matches!(doc.node(), Node::Title(_)));
         self.action_enabled("delete-node", doc.node() != Node::None);
     }
 
@@ -490,6 +491,11 @@ impl SpindleWindow {
         add("add-subtitle", |w| w.add_subtitle_dialog());
         add("locate-media", |w| w.locate_media());
         add("preview-title", |w| w.state().title_view.preview(w));
+        add("check-video", |w| {
+            if let Node::Title(t) = w.doc().node() {
+                ui::compat_dialog::check(&w.doc(), t, w);
+            }
+        });
         add("add-button", |w| {
             w.add_item(|p| {
                 let action = p.titles.first().map_or(Action::None, |t| Action::PlayTitle { title: t.id, chapter: 0 });

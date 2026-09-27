@@ -598,6 +598,37 @@ impl Inspector {
         page.add(&delete_button(&gettext("Delete"), "win.delete-item"));
     }
 
+    /// Keep the original video (no re-encoding) when it's compatible.
+    fn video_group(&self, page: &adw::PreferencesPage, id: Id) {
+        let doc = &self.doc;
+        let p = doc.project();
+        let Some(t) = p.title(id) else { return };
+        let g = group(&gettext("Video"));
+        let compatible = t.video_check.as_ref().is_some_and(|r| r.compatible());
+        let keep = rows::switch(doc, &gettext("Keep Original Video"), t.keep_video, Change::Structure, move |p, v| {
+            if let Some(t) = p.title_mut(id) {
+                t.keep_video = v;
+            }
+        });
+        keep.set_sensitive(compatible || t.keep_video);
+        let status = match &t.video_check {
+            None => gettext("Check compatibility first. Otherwise the video is re-encoded using Disc Settings."),
+            Some(r) if r.compatible() && t.keep_video => {
+                format!("{} · {}", r.summary(), gettext("no re-encoding, Disc Settings video options don't apply"))
+            }
+            Some(r) => r.summary(),
+        };
+        keep.set_subtitle(&status);
+        g.add(&keep);
+        let check = adw::ButtonRow::builder()
+            .title(if t.video_check.is_some() { gettext("Check Again…") } else { gettext("Check Compatibility…") })
+            .start_icon_name("object-select-symbolic")
+            .action_name("win.check-video")
+            .build();
+        g.add(&check);
+        page.add(&g);
+    }
+
     fn subtitles_group(&self, page: &adw::PreferencesPage, id: Id) {
         let doc = &self.doc;
         let p = doc.project();
@@ -772,6 +803,7 @@ impl Inspector {
             page.add(&g);
         }
 
+        self.video_group(page, id);
         self.subtitles_group(page, id);
 
         let g = group(&gettext("When Finished"));

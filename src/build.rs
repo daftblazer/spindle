@@ -19,6 +19,8 @@ use crate::bluray::nav::mobj::MovieObject;
 use crate::bluray::nav::mpls::{Mark, PlayItem, Playlist, StillMode};
 use crate::bluray::ts::{self, demux::Pes};
 use crate::bluray::{EsInfo, EsKind, PID_AUDIO_FIRST, PID_IG_FIRST, PID_PG_FIRST, PID_VIDEO};
+use crate::bluray::AudioCodec;
+use crate::media::compat;
 use crate::subtitles;
 use crate::media::transcode::{self, EncodeSettings};
 use crate::media::ffmpeg;
@@ -339,7 +341,14 @@ impl<'a> Builder<'a> {
 
     fn clip_info(&self, stats: &ts::mux::MuxStats, streams: Vec<EsInfo>) -> Result<(ClipInfo, u32, u32)> {
         let first = stats.first_video_pts.context("clip has no video")?;
-        let last = stats.last_video_pts.unwrap_or(first) + self.settings.video.frame_ticks();
+        let video = streams
+            .iter()
+            .find_map(|s| match s.kind {
+                EsKind::Video(v) => Some(v),
+                _ => None,
+            })
+            .unwrap_or(self.settings.video);
+        let last = stats.last_video_pts.unwrap_or(first) + video.frame_ticks();
         let (in_t, out_t) = ((first / 2) as u32, (last / 2) as u32);
         let ci = ClipInfo {
             ts_recording_rate: (ts::mux::MUX_RATE / 8) as u32,
@@ -366,19 +375,46 @@ impl<'a> Builder<'a> {
     fn build_title(&mut self, t: &Title, n: u32) -> Result<(Playlist, ClipInfo)> {
         let p = self.project;
         let asset = p.asset(t.asset).context("title without video")?;
-        self.stage(format!("Encoding title “{}”", t.name));
         let tmp = self.work.join(format!("title-{}.ts", clip_name(n)));
         let mut chapters: Vec<f64> = t.chapters.iter().copied().filter(|&c| c > 0.0 && c < asset.info.duration).collect();
         chapters.sort_by(f64::total_cmp);
         chapters.dedup();
-        let args = transcode::title_args(&asset.path, &asset.info, &self.settings, &chapters, None, &tmp);
         let duration = asset.info.duration.max(1.0);
-        self.encode(args, duration)?;
+
+        // Either copy the original video or encode it in the disc format.
+        let (vformat, copy_audio) = if t.keep_video {
+            self.stage(format!("Checking the video of “{}”", t.name));
+            let report = compat::analyze(&asset.path)?;
+            let Some(format) = report.format.filter(|_| report.compatible()) else {
+                bail!(
+                    "“{}” can't keep its original video ({}). Turn off “Keep Original Video” to re-encode it.",
+                    t.name,
+                    report.summary()
+                );
+            };
+            self.stage(format!("Copying the video of “{}”", t.name));
+            let args = transcode::passthrough_args(&asset.path, &asset.info, &self.settings, report.copy_audio, None, &tmp);
+            self.encode(args, duration)?;
+            (format, report.copy_audio)
+        } else {
+            self.stage(format!("Encoding title “{}”", t.name));
+            let args = transcode::title_args(&asset.path, &asset.info, &self.settings, &chapters, None, &tmp);
+            self.encode(args, duration)?;
+            (self.settings.video, false)
+        };
 
         self.stage(format!("Multiplexing title “{}”", t.name));
-        let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(self.settings.video) }];
+        let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(vformat) }];
         if asset.info.has_audio() {
-            streams.push(self.audio_es(&asset.info, &t.audio_lang));
+            let mut audio = self.audio_es(&asset.info, &t.audio_lang);
+            if copy_audio {
+                audio.kind = EsKind::Audio {
+                    codec: AudioCodec::Ac3,
+                    channels: asset.info.audio_channels.max(1),
+                    lang: t.audio_lang.clone(),
+                };
+            }
+            streams.push(audio);
         }
 
         // Subtitles → PG streams, timed against the encoded video.
@@ -393,14 +429,14 @@ impl<'a> Builder<'a> {
                     track,
                     &asset.path,
                     &asset.info,
-                    self.settings.video,
+                    vformat,
                     &p.disc.subtitle_style,
                     &self.work.join("subtitles"),
                     None,
                     self.cancel,
                 )
                 .with_context(|| format!("subtitle track “{}” of “{}”", track.name, t.name))?;
-                let pes = subtitles::pgs::encode(&images, self.settings.video, |secs| {
+                let pes = subtitles::pgs::encode(&images, vformat, |secs| {
                     (secs >= 0.0).then(|| first_pts + (secs * 90_000.0).round() as u64)
                 })?;
                 (self.emit)(BuildEvent::Log(format!("  {} subtitle images", images.len())));

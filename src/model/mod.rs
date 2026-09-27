@@ -102,6 +102,12 @@ pub struct Title {
     /// Subtitle track shown when the title starts (viewers can still switch).
     #[serde(default)]
     pub default_subtitle: Option<Id>,
+    /// Put the original video on the disc instead of re-encoding it.
+    #[serde(default)]
+    pub keep_video: bool,
+    /// Last compatibility check of the video for `keep_video`.
+    #[serde(default)]
+    pub video_check: Option<crate::media::compat::Report>,
 }
 
 impl Title {
@@ -243,6 +249,8 @@ impl Project {
                 subs
             },
             default_subtitle: None,
+            keep_video: false,
+            video_check: None,
         };
         let id = t.id;
         self.titles.push(t);

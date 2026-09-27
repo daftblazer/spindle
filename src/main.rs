@@ -182,6 +182,21 @@ fn main() -> glib::ExitCode {
     if (6..=7).contains(&args.len()) && args[1] == "--preview" {
         return preview_cli(&args[2..]);
     }
+    if args.len() == 3 && args[1] == "--check-video" {
+        return match media::compat::analyze(std::path::Path::new(&args[2])) {
+            Ok(r) => {
+                for c in &r.checks {
+                    println!("{:?}\t{}\t{}", c.level, c.name, c.detail);
+                }
+                println!("=> {}", r.summary());
+                glib::ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                glib::ExitCode::FAILURE
+            }
+        };
+    }
     if args.len() == 5 && args[1] == "--apply-template" {
         return template_cli(&args[2], &args[3], &args[4]);
     }

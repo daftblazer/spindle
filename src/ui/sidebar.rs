@@ -239,7 +239,8 @@ impl Sidebar {
                     let dur = p.asset(t.asset).map_or(0.0, |a| a.info.duration);
                     let n = t.chapters.len() as u32 + 1;
                     let chapters = ngettext("{} chapter", "{} chapters", n).replace("{}", &n.to_string());
-                    (t.name.clone(), format!("{} · {chapters}", format_time(dur)))
+                    let kept = if t.keep_video { format!(" · {}", gettext("original video")) } else { String::new() };
+                    (t.name.clone(), format!("{} · {chapters}{kept}", format_time(dur)))
                 })
                 .unwrap_or_default(),
             Node::None => Default::default(),
