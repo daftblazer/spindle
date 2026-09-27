@@ -262,6 +262,26 @@ impl Ctx {
         pages
     }
 
+    /// Language choices, each returning to `home`.
+    fn setup_page(&self, languages: &[LanguagePreset], default: Option<Id>, home: Id) -> Menu {
+        let mut m = self.menu(&gettext("Setup"));
+        let n = languages.len().min(6);
+        let h = 190.0 + n as f64 * 100.0;
+        let top = ((DESIGN_HEIGHT - h) / 2.0).max(60.0);
+        m.items.push(self.panel(Rect::new(430.0, top, 1060.0, h), 36.0));
+        m.items.push(self.text(&gettext("Audio & Subtitles"), Rect::new(480.0, top + 30.0, 960.0, 110.0), 56, "ExtraBold", Align::Center, false));
+        for (k, l) in languages.iter().take(6).enumerate() {
+            let rect = Rect::new(530.0, top + 160.0 + k as f64 * 100.0, 860.0, 84.0);
+            let b = self.button(&l.name, Action::SetLanguage { preset: l.id, menu: Some(home) }, rect, 40, Align::Center, Highlight::Frame);
+            if default == Some(l.id) {
+                m.default_button = Some(b.id);
+            }
+            m.items.push(b);
+        }
+        self.nav_bar(&mut m, None, Some((home, gettext("Main Menu"))), None);
+        m
+    }
+
     /// Paginated vertical list of text buttons (with optional leading items
     /// on the first page).
     fn list_pages(&self, heading: &str, page_name: &str, entries: &[(String, Action)], home: Option<(Id, String)>) -> Vec<Menu> {
@@ -362,6 +382,13 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
     let mut menus = Vec::new();
     let mut return_to: Vec<(Id, Id)> = Vec::new(); // (title, menu)
 
+    // Setup menu for choosing audio and subtitles, when there is a choice.
+    if p.disc.languages.is_empty() {
+        p.disc.languages = p.suggest_languages();
+    }
+    let setup = (p.disc.languages.len() >= 2).then(|| cx.setup_page(&p.disc.languages, p.default_language().map(|l| l.id), main_id));
+    let setup_id = setup.as_ref().map(|m| m.id);
+
     match opts.layout {
         Layout::Show | Layout::ShowList => {
             let hint = gettext("Import your episodes, then apply the template again");
@@ -403,10 +430,15 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
             let episodes = gettextrs::ngettext("{} Episode", "{} Episodes", count).replace("{}", &count.to_string());
             main.items.push(MenuItem::new_shape(cx.theme.selected, 3.0, Rect::new(150.0, 455.0, 90.0, 6.0)));
             main.items.push(cx.text(&episodes, Rect::new(150.0, 475.0, 600.0, 60.0), 32, "", Align::Left, true));
-            let play_all = cx.button(&gettext("Play All"), Action::PlayAll, Rect::new(130.0, 590.0, 560.0, 96.0), 50, Align::Left, Highlight::Frame);
+            // Two or three buttons down the panel.
+            let (y, step) = if setup_id.is_some() { (566.0, 128.0) } else { (590.0, 146.0) };
+            let play_all = cx.button(&gettext("Play All"), Action::PlayAll, Rect::new(130.0, y, 560.0, 96.0), 50, Align::Left, Highlight::Frame);
             main.default_button = Some(play_all.id);
             main.items.push(play_all);
-            main.items.push(cx.button(&gettext("Episodes"), Action::ShowMenu(pages[0].id), Rect::new(130.0, 736.0, 560.0, 96.0), 50, Align::Left, Highlight::Frame));
+            main.items.push(cx.button(&gettext("Episodes"), Action::ShowMenu(pages[0].id), Rect::new(130.0, y + step, 560.0, 96.0), 50, Align::Left, Highlight::Frame));
+            if let Some(setup) = setup_id {
+                main.items.push(cx.button(&gettext("Setup"), Action::ShowMenu(setup), Rect::new(130.0, y + 2.0 * step, 560.0, 96.0), 50, Align::Left, Highlight::Frame));
+            }
             if let Some((tid, asset, _)) = titles.first() {
                 main.items.push(cx.panel(Rect::new(862.0, 262.0, 976.0, 556.0), 24.0));
                 let mut hero = MenuItem::new_image(*asset, Rect::new(870.0, 270.0, 960.0, 540.0));
@@ -463,10 +495,16 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
                         return_to.push((*t, pages[i / LIST_PAGE].id));
                     }
                     add(&mut main, gettext("Extras"), Action::ShowMenu(pages[0].id), 300.0);
+                    if let Some(setup) = setup_id {
+                        add(&mut main, gettext("Setup"), Action::ShowMenu(setup), 260.0);
+                    }
                     menus.push(main);
                     menus.extend(scenes);
                     menus.extend(pages);
                 } else {
+                    if let Some(setup) = setup_id {
+                        add(&mut main, gettext("Setup"), Action::ShowMenu(setup), 260.0);
+                    }
                     menus.push(main);
                     menus.extend(scenes);
                 }
@@ -481,6 +519,9 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
                 entries.push((gettext("Play All"), Action::PlayAll));
             }
             entries.extend(titles.iter().map(|(t, _, n)| (short(n, 36), Action::PlayTitle { title: *t, chapter: 0 })));
+            if let Some(setup) = setup_id {
+                entries.push((gettext("Setup"), Action::ShowMenu(setup)));
+            }
             let mut pages = cx.list_pages(&name, &gettext("More Titles"), &entries, None);
             // The first page is the main menu.
             let first = pages.remove(0);
@@ -523,6 +564,7 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
         }
     }
 
+    menus.extend(setup);
     p.menus = menus;
     for t in &mut p.titles {
         t.return_menu = return_to.iter().find(|(id, _)| *id == t.id).map(|(_, m)| *m);
@@ -571,6 +613,28 @@ mod tests {
         // only missing-file errors are expected).
         let warnings: Vec<_> = crate::validate::check(p).into_iter().filter(|i| i.severity == crate::validate::Severity::Warning).collect();
         assert!(warnings.is_empty(), "{warnings:#?}");
+    }
+
+    #[test]
+    fn setup_menu_for_two_languages() {
+        for layout in [Layout::Show, Layout::ShowList, Layout::Movie, Layout::List] {
+            let mut p = project(3);
+            for t in &mut p.titles {
+                t.audio = ["eng", "jpn"]
+                    .iter()
+                    .map(|l| AudioTrack { id: new_id(), source: AudioSource::Embedded { index: 0 }, lang: l.to_string(), name: l.to_string(), enabled: true })
+                    .collect();
+            }
+            let main = apply(&mut p, &Options { layout, theme: 1, title: "Show".into(), logo: None });
+            check(&p);
+            assert_eq!(p.disc.languages.len(), 2);
+            let setup = p.menus.iter().find(|m| m.name == "Setup").expect("setup menu");
+            let choices: Vec<Action> = setup.buttons().map(|b| b.button().unwrap().action).filter(|a| matches!(a, Action::SetLanguage { .. })).collect();
+            assert_eq!(choices.len(), 2);
+            assert!(choices.iter().all(|a| matches!(a, Action::SetLanguage { menu: Some(m), .. } if *m == main)));
+            let reaches_setup = p.menus.iter().any(|m| m.buttons().any(|b| b.button().unwrap().action == Action::ShowMenu(setup.id)));
+            assert!(reaches_setup, "{layout:?}");
+        }
     }
 
     #[test]

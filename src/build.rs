@@ -39,6 +39,8 @@ const GPR_TMP: u16 = 1;
 const GPR_PLAY_ALL: u16 = 2;
 /// Index of the menu "Play All" was started from.
 const GPR_PLAY_ALL_MENU: u16 = 3;
+/// Chosen language preset (1-based; 0 when the disc has none).
+const GPR_LANGUAGE: u16 = 4;
 
 #[derive(Debug, Clone)]
 pub enum BuildEvent {
@@ -216,10 +218,15 @@ impl<'a> Builder<'a> {
             (FirstPlay::FirstMenu, Some(o)) => vec![Command::JumpObject(o)],
             _ => vec![Command::JumpTitle(1)],
         };
-        let first = [Command::Move(GPR_CHAPTER, Operand::Imm(0)), Command::Move(GPR_PLAY_ALL, Operand::Imm(0))]
-            .into_iter()
-            .chain(first)
-            .collect();
+        let default_language = p.default_language().and_then(|d| p.disc.languages.iter().position(|l| l.id == d.id));
+        let first = [
+            Command::Move(GPR_CHAPTER, Operand::Imm(0)),
+            Command::Move(GPR_PLAY_ALL, Operand::Imm(0)),
+            Command::Move(GPR_LANGUAGE, Operand::Imm(default_language.map_or(0, |i| i as u32 + 1))),
+        ]
+        .into_iter()
+        .chain(first)
+        .collect();
         objects.push(MovieObject { commands: first, ..Default::default() });
 
         for i in 0..m_count {
@@ -238,16 +245,8 @@ impl<'a> Builder<'a> {
                 .and_then(|id| p.menus.iter().position(|m| m.id == id))
                 .map(object_for_menu)
                 .or(first_menu);
-            let end = match t.end_action {
-                // Loop past the subtitle selection so a viewer's choice sticks.
-                EndAction::Loop => Command::Goto(u32::from(t.disc_subtitles().next().is_some())),
-                EndAction::PlayNextTitle if i + 1 < p.titles.len() => Command::JumpTitle(i as u32 + 2),
-                _ => match menu_obj {
-                    Some(o) => Command::JumpObject(o),
-                    None if i + 1 < p.titles.len() => Command::JumpTitle(i as u32 + 2),
-                    None => Command::Break,
-                },
-            };
+            // Stream selection: the title's default subtitles, then the
+            // viewer's language preset.
             let mut commands = Vec::new();
             let subs: Vec<&SubtitleTrack> = t.disc_subtitles().collect();
             if !subs.is_empty() {
@@ -257,6 +256,27 @@ impl<'a> Builder<'a> {
                     None => Command::SetPgStream { number: 1, display: false },
                 });
             }
+            let audio: Vec<Id> = t.disc_audio().map(|a| a.id).collect();
+            for (k, preset) in p.disc.languages.iter().enumerate() {
+                let r = t.resolve_language(preset);
+                let a = r.audio.and_then(|id| audio.iter().position(|x| *x == id)).map(|i| i as u16 + 1);
+                let pg = r.subtitle.and_then(|id| subs.iter().position(|s| s.id == id)).map(|i| i as u16 + 1);
+                if a.is_none() && subs.is_empty() {
+                    continue;
+                }
+                commands.push(Command::Compare(Cmp::Eq, Operand::Gpr(GPR_LANGUAGE), Operand::Imm(k as u32 + 1)));
+                commands.push(Command::SetStream { audio: a, pg, display: pg.is_some() });
+            }
+            let end = match t.end_action {
+                // Loop past the stream selection so a viewer's choice sticks.
+                EndAction::Loop => Command::Goto(commands.len() as u32),
+                EndAction::PlayNextTitle if i + 1 < p.titles.len() => Command::JumpTitle(i as u32 + 2),
+                _ => match menu_obj {
+                    Some(o) => Command::JumpObject(o),
+                    None if i + 1 < p.titles.len() => Command::JumpTitle(i as u32 + 2),
+                    None => Command::Break,
+                },
+            };
             commands.extend([
                 Command::Move(GPR_TMP, Operand::Gpr(GPR_CHAPTER)),
                 Command::Move(GPR_CHAPTER, Operand::Imm(0)),
@@ -325,6 +345,16 @@ impl<'a> Builder<'a> {
             Action::PlayAll => vec![],
             Action::ShowMenu(menu) => match p.menus.iter().position(|m| m.id == menu) {
                 Some(i) => vec![Command::JumpObject(object_for_menu(i))],
+                None => vec![],
+            },
+            Action::SetLanguage { preset, menu } => match p.disc.languages.iter().position(|l| l.id == preset) {
+                Some(k) => {
+                    let mut c = vec![Command::Move(GPR_LANGUAGE, Operand::Imm(k as u32 + 1))];
+                    if let Some(i) = menu.and_then(|m| p.menus.iter().position(|x| x.id == m)) {
+                        c.push(Command::JumpObject(object_for_menu(i)));
+                    }
+                    c
+                }
                 None => vec![],
             },
         }

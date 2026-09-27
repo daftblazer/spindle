@@ -7,6 +7,7 @@ use crate::bluray::{AudioCodec, VideoFormat};
 use crate::document::{Change, Document};
 use crate::model::FirstPlay;
 use adw::prelude::*;
+use gtk::glib;
 use gettextrs::gettext;
 use std::rc::Rc;
 
@@ -63,6 +64,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     page.add(&g);
 
     subtitle_group(doc, &page);
+    languages_group(doc, &page);
 
     let g = rows::group(&gettext("Capacity"));
     let size_row = adw::ActionRow::builder().title(gettext("Estimated Size")).build();
@@ -91,6 +93,165 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
 
     dialog.add(&page);
     dialog.present(Some(parent));
+}
+
+/// Language presets for a Setup menu.
+fn languages_group(doc: &Rc<Document>, page: &adw::PreferencesPage) {
+    use crate::model::{language_name, LanguagePreset, SubtitleMode};
+    let g = rows::group(&gettext("Languages"));
+    g.set_description(Some(&gettext(
+        "Choices for a Setup menu. Each sets the audio and subtitles of every title; the default applies until the viewer picks another.",
+    )));
+    page.add(&g);
+    let rows_in: Rc<std::cell::RefCell<Vec<gtk::Widget>>> = Rc::default();
+    let expanded: Rc<std::cell::RefCell<Vec<crate::model::Id>>> = Rc::default();
+
+    let rebuild: Rc<dyn Fn()> = {
+        let (doc, g) = (Rc::downgrade(doc), g.downgrade());
+        let (rows_in, expanded) = (rows_in.clone(), expanded.clone());
+        Rc::new(move || {
+            let (Some(doc), Some(g)) = (doc.upgrade(), g.upgrade()) else { return };
+            for w in rows_in.borrow_mut().drain(..) {
+                g.remove(&w);
+            }
+            let add = |w: gtk::Widget| {
+                g.add(&w);
+                rows_in.borrow_mut().push(w);
+            };
+            let p = doc.project();
+            // Languages to offer: those in the titles first, then common ones.
+            let mut codes: Vec<String> = Vec::new();
+            for t in &p.titles {
+                for l in t.disc_audio().map(|a| a.lang.clone()).chain(t.disc_subtitles().map(|s| s.lang.clone())) {
+                    if l != "und" && !codes.contains(&l) {
+                        codes.push(l);
+                    }
+                }
+            }
+            for l in ["eng", "jpn", "fra", "deu", "spa", "ita", "por", "kor", "zho", "rus"] {
+                if !codes.iter().any(|c| c == l) {
+                    codes.push(l.into());
+                }
+            }
+            let default = p.default_language().map(|l| l.id);
+            for preset in &p.disc.languages {
+                let pid = preset.id;
+                let mut codes = codes.clone();
+                for l in [&preset.audio, &preset.subtitle_lang] {
+                    if !codes.contains(l) {
+                        codes.push(l.clone());
+                    }
+                }
+                let names: Vec<String> = codes.iter().map(|c| language_name(c)).collect();
+                let modes = [gettext("Off"), gettext("Signs & Songs"), gettext("Full Subtitles")];
+                let mode_of = |m: SubtitleMode| match m {
+                    SubtitleMode::Off => 0,
+                    SubtitleMode::SignsSongs => 1,
+                    SubtitleMode::Full => 2,
+                };
+                let summary = match preset.subtitles {
+                    SubtitleMode::Off => format!("{} {}", language_name(&preset.audio), gettext("audio · no subtitles")),
+                    m => format!("{} {} · {} {}", language_name(&preset.audio), gettext("audio"), language_name(&preset.subtitle_lang), modes[mode_of(m)].to_lowercase()),
+                };
+                let mut title = glib::markup_escape_text(&preset.name).to_string();
+                if default == Some(pid) {
+                    title = format!("{title} · {}", gettext("Default"));
+                }
+                let row = adw::ExpanderRow::builder().title(title.as_str()).subtitle(glib::markup_escape_text(&summary).as_str()).build();
+                row.set_expanded(expanded.borrow().contains(&pid));
+                let exp = expanded.clone();
+                row.connect_expanded_notify(move |r| {
+                    let mut e = exp.borrow_mut();
+                    e.retain(|x| *x != pid);
+                    if r.is_expanded() {
+                        e.push(pid);
+                    }
+                });
+                fn preset_mut(p: &mut crate::model::Project, id: crate::model::Id) -> Option<&mut LanguagePreset> {
+                    p.disc.languages.iter_mut().find(|l| l.id == id)
+                }
+                let name = rows::entry(&doc, &gettext("Name"), &preset.name, Change::Content, move |p, v| {
+                    if let Some(l) = preset_mut(p, pid) {
+                        l.name = v;
+                    }
+                });
+                name.set_tooltip_text(Some(&gettext("The label of this choice's button")));
+                row.add_row(&name);
+                let c = codes.clone();
+                row.add_row(&rows::combo(&doc, &gettext("Audio"), &names, codes.iter().position(|x| *x == preset.audio).unwrap_or(0), Change::Structure, move |p, i| {
+                    if let (Some(l), Some(code)) = (preset_mut(p, pid), c.get(i)) {
+                        l.audio = code.clone();
+                    }
+                }));
+                row.add_row(&rows::combo(&doc, &gettext("Subtitles"), &modes, mode_of(preset.subtitles), Change::Structure, move |p, i| {
+                    if let Some(l) = preset_mut(p, pid) {
+                        l.subtitles = [SubtitleMode::Off, SubtitleMode::SignsSongs, SubtitleMode::Full][i.min(2)];
+                    }
+                }));
+                if preset.subtitles != SubtitleMode::Off {
+                    let c = codes.clone();
+                    row.add_row(&rows::combo(&doc, &gettext("Subtitle Language"), &names, codes.iter().position(|x| *x == preset.subtitle_lang).unwrap_or(0), Change::Structure, move |p, i| {
+                        if let (Some(l), Some(code)) = (preset_mut(p, pid), c.get(i)) {
+                            l.subtitle_lang = code.clone();
+                        }
+                    }));
+                }
+                if default != Some(pid) {
+                    let make_default = adw::ButtonRow::builder().title(gettext("Make Default")).build();
+                    let d = doc.clone();
+                    make_default.connect_activated(move |_| d.edit(Change::Structure, |p| p.disc.default_language = Some(pid)));
+                    row.add_row(&make_default);
+                }
+                let remove = adw::ButtonRow::builder().title(gettext("Remove Language")).css_classes(["destructive-action"]).build();
+                let d = doc.clone();
+                remove.connect_activated(move |_| d.edit(Change::Structure, |p| p.remove_language(pid)));
+                row.add_row(&remove);
+                add(row.upcast());
+            }
+
+            if p.disc.languages.is_empty() {
+                let suggested = p.suggest_languages();
+                if !suggested.is_empty() {
+                    let names: Vec<String> = suggested.iter().map(|l| l.name.clone()).collect();
+                    let b = adw::ButtonRow::builder()
+                        .title(gettext("Add from Tracks: {}").replace("{}", &names.join(", ")))
+                        .start_icon_name("list-add-symbolic")
+                        .build();
+                    let d = doc.clone();
+                    b.connect_activated(move |_| d.edit(Change::Structure, |p| p.disc.languages = suggested.clone()));
+                    add(b.upcast());
+                }
+            }
+            let b = adw::ButtonRow::builder().title(gettext("Add Language")).start_icon_name("list-add-symbolic").build();
+            let d = doc.clone();
+            b.connect_activated(move |_| {
+                d.edit(Change::Structure, |p| {
+                    let lang = p.titles.iter().flat_map(|t| t.disc_audio()).map(|a| a.lang.clone()).find(|l| l != "und").unwrap_or_else(|| "eng".into());
+                    p.disc.languages.push(LanguagePreset {
+                        id: crate::model::new_id(),
+                        name: language_name(&lang),
+                        audio: lang.clone(),
+                        subtitles: SubtitleMode::Off,
+                        subtitle_lang: lang,
+                    });
+                })
+            });
+            add(b.upcast());
+        })
+    };
+    rebuild();
+    let weak = Rc::downgrade(&rebuild);
+    doc.connect(move |c| {
+        if c == Change::Structure {
+            if let Some(r) = weak.upgrade() {
+                glib::idle_add_local_once(move || r());
+            }
+        }
+    });
+    // Keep the rebuild alive as long as the group.
+    g.connect_destroy(move |_| {
+        let _keep = &rebuild;
+    });
 }
 
 /// Text subtitle style with a live preview.

@@ -3,11 +3,13 @@
 //! Project document model (serialized as `.spindle` JSON).
 
 mod audio;
+mod language;
 mod menu;
 mod subtitle;
 mod undo;
 
 pub use audio::*;
+pub use language::*;
 pub use menu::*;
 pub use subtitle::*;
 pub use undo::UndoStack;
@@ -38,6 +40,12 @@ pub struct DiscSettings {
     pub audio_bitrate: u32,
     #[serde(default)]
     pub subtitle_style: SubtitleStyle,
+    /// Choices for a Setup menu.
+    #[serde(default)]
+    pub languages: Vec<LanguagePreset>,
+    /// Preset used until the viewer picks one (first when unset).
+    #[serde(default)]
+    pub default_language: Option<Id>,
 }
 
 impl Default for DiscSettings {
@@ -49,6 +57,8 @@ impl Default for DiscSettings {
             video_bitrate: 18_000,
             audio_bitrate: 448,
             subtitle_style: SubtitleStyle::default(),
+            languages: Vec::new(),
+            default_language: None,
         }
     }
 }
@@ -101,6 +111,9 @@ pub struct Title {
     /// Audio tracks in disc order; the first one plays by default.
     #[serde(default)]
     pub audio: Vec<AudioTrack>,
+    /// Tracks chosen by hand for language presets.
+    #[serde(default)]
+    pub language_tracks: Vec<LanguageTracks>,
     /// Frame (seconds) used as this title's thumbnail; `None` picks one
     /// automatically.
     #[serde(default)]
@@ -316,6 +329,7 @@ impl Project {
             return_menu: None,
             audio_lang: String::new(),
             audio: embedded_tracks_audio(&a.info),
+            language_tracks: Vec::new(),
             poster: None,
             subtitles: {
                 let mut subs = embedded_tracks(&a.info);

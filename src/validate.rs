@@ -5,7 +5,7 @@
 //! estimates.
 
 use crate::bluray::AudioCodec;
-use crate::model::{Action, AudioSource, EndAction, FirstPlay, Id, Project, SubtitleSource, MAX_AUDIO_TRACKS, SAFE_AREA};
+use crate::model::{language_name, Action, AudioSource, EndAction, FirstPlay, Id, Project, SubtitleSource, MAX_AUDIO_TRACKS, SAFE_AREA};
 use gettextrs::gettext;
 use std::collections::HashSet;
 
@@ -138,6 +138,7 @@ fn reachable(p: &Project) -> (HashSet<Id>, HashSet<Id>) {
                     Action::ShowMenu(m) => todo_m.push(*m),
                     Action::PlayTitle { title, .. } => todo_t.push(*title),
                     Action::PlayAll => todo_t.extend(p.titles.iter().map(|t| t.id)),
+                    Action::SetLanguage { menu, .. } => todo_m.extend(*menu),
                     Action::None => {}
                 }
             }
@@ -275,6 +276,9 @@ pub fn check(p: &Project) -> Vec<Issue> {
                 Action::ShowMenu(id) if p.menu(*id).is_none() => {
                     error(gettext("Button “{}” on “{}” links to a deleted menu.").replacen("{}", &name, 1).replacen("{}", &m.name, 1), target)
                 }
+                Action::SetLanguage { preset, .. } if p.language(*preset).is_none() => {
+                    error(gettext("Button “{}” on “{}” sets a deleted language.").replacen("{}", &name, 1).replacen("{}", &m.name, 1), target)
+                }
                 Action::PlayTitle { title, chapter } => match p.title(*title) {
                     None => error(
                         gettext("Button “{}” on “{}” links to a deleted title.").replacen("{}", &name, 1).replacen("{}", &m.name, 1),
@@ -340,6 +344,17 @@ pub fn check(p: &Project) -> Vec<Issue> {
                     .replace("{}", &MAX_AUDIO_TRACKS.to_string()),
                 target,
             );
+        }
+        for l in &p.disc.languages {
+            if t.resolve_language(l).audio.is_none() && t.disc_audio().next().is_some() {
+                warn(
+                    gettext("“{}” has no {} audio for the language choice “{}”; its audio stays as it is.")
+                        .replacen("{}", &t.name, 1)
+                        .replacen("{}", &language_name(&l.audio), 1)
+                        .replacen("{}", &l.name, 1),
+                    target,
+                );
+            }
         }
         if t.keep_video && t.video_check.is_none() {
             warn(gettext("“{}” keeps its original video but hasn't been checked for compatibility.").replace("{}", &t.name), target);

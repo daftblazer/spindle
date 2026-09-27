@@ -117,6 +117,8 @@ pub enum Action {
     ShowMenu(Id),
     /// Play every title in order, then return to the menu.
     PlayAll,
+    /// Choose a language preset, then show `menu` (or stay).
+    SetLanguage { preset: Id, menu: Option<Id> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -395,6 +397,8 @@ impl Menu {
                 match b.action {
                     Action::PlayTitle { title, .. } if title == target => b.action = Action::None,
                     Action::ShowMenu(m) if m == target => b.action = Action::None,
+                    Action::SetLanguage { preset, .. } if preset == target => b.action = Action::None,
+                    Action::SetLanguage { preset, menu: Some(m) } if m == target => b.action = Action::SetLanguage { preset, menu: None },
                     _ => {}
                 }
             }

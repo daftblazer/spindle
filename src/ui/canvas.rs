@@ -233,6 +233,19 @@ impl MenuCanvas {
                     });
                     None
                 }
+                Some(Action::SetLanguage { preset, menu }) => {
+                    let name = p.language(preset).map(|l| l.name.clone()).unwrap_or_default();
+                    drop(p);
+                    if let Some(m) = menu {
+                        let this = self.clone();
+                        glib::timeout_add_local_once(std::time::Duration::from_millis(200), move || {
+                            this.inner.doc.select(Node::Menu(m), None);
+                            this.inner.preview_activated.set(false);
+                            this.reset_preview_button();
+                        });
+                    }
+                    Some(gettext("Language set to “{}”").replace("{}", &name))
+                }
                 Some(Action::PlayAll) => Some(
                     ngettext("Would play all {} title", "Would play all {} titles", p.titles.len() as u32)
                         .replace("{}", &p.titles.len().to_string()),
@@ -907,6 +920,7 @@ impl MenuCanvas {
                 }
                 Action::ShowMenu(m) => format!("☰ {}", p.menu(m).map(|m| m.name.clone()).unwrap_or_default()),
                 Action::PlayAll => gettext("▶ Play all"),
+                Action::SetLanguage { preset, .. } => format!("🌐 {}", p.language(preset).map(|l| l.name.clone()).unwrap_or_default()),
             };
             let is_default = menu.default_button == Some(item.id)
                 || (menu.default_button.is_none() && menu.buttons().next().map(|i| i.id) == Some(item.id));

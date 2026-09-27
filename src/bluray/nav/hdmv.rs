@@ -62,6 +62,9 @@ pub enum Command {
     /// Select PG (subtitle) stream `number` (1-based) and turn its display
     /// on or off.
     SetPgStream { number: u16, display: bool },
+    /// Select the primary audio stream (1-based, when given) and the PG
+    /// stream (when given), and turn subtitle display on or off.
+    SetStream { audio: Option<u16>, pg: Option<u16>, display: bool },
     /// Set selected button (`button`) and/or page (`page`).
     SetButtonPage { button: Option<u16>, page: Option<u8> },
 }
@@ -155,6 +158,20 @@ impl Command {
                 r.set_opt = 1;
                 r
             }
+            Command::SetStream { audio, pg, display } => {
+                let mut dst = (display as u32) << 14;
+                if let Some(a) = audio {
+                    dst |= 0x8000_0000 | ((a as u32 & 0xFFF) << 16);
+                }
+                if let Some(n) = pg {
+                    dst |= 0x8000 | (n as u32 & 0xFFF);
+                }
+                let mut r = Raw::branch(0, 0, &[Imm(dst), Imm(0)]);
+                r.grp = GRP_SET;
+                r.sub_grp = 1;
+                r.set_opt = 1;
+                r
+            }
             Command::SetButtonPage { button, page } => {
                 // dst: bit31 = button valid, low 16 bits button id
                 // src: bit31 = page valid, low 8 bits page id
@@ -223,5 +240,16 @@ mod tests {
             Command::Move(0, Operand::Imm(5)).to_bytes(),
             [0x50, 0x40, 0, 1, 0, 0, 0, 0, 0, 0, 0, 5]
         );
+    }
+
+    #[test]
+    fn set_stream_encoding() {
+        // "SetStream audio 2, PG 3 on": 51 C0 00 01 8002C003 00000000
+        assert_eq!(
+            Command::SetStream { audio: Some(2), pg: Some(3), display: true }.to_bytes(),
+            [0x51, 0xC0, 0, 1, 0x80, 0x02, 0xC0, 0x03, 0, 0, 0, 0]
+        );
+        // Subtitles off, audio unchanged: only the display flag (cleared).
+        assert_eq!(Command::SetStream { audio: None, pg: None, display: false }.to_bytes()[4..8], [0, 0, 0, 0]);
     }
 }

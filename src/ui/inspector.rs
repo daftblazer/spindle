@@ -411,10 +411,16 @@ impl Inspector {
                 for mm in p.menus.iter().filter(|x| x.id != menu) {
                     targets.push((Action::ShowMenu(mm.id), format!("{} {}", gettext("Show"), mm.name)));
                 }
+                // Language choices return to the first menu by default.
+                let home = p.menus.first().map(|m| m.id).filter(|m| *m != menu);
+                for l in &p.disc.languages {
+                    targets.push((Action::SetLanguage { preset: l.id, menu: home }, gettext("Set Language: {}").replace("{}", &l.name)));
+                }
                 let sel = targets
                     .iter()
                     .position(|(a, _)| match (a, b.action) {
                         (Action::PlayTitle { title: x, .. }, Action::PlayTitle { title: y, .. }) => *x == y,
+                        (Action::SetLanguage { preset: x, .. }, Action::SetLanguage { preset: y, .. }) => *x == y,
                         (a, b) => *a == b,
                     })
                     .unwrap_or(0);
@@ -425,6 +431,18 @@ impl Inspector {
                         b.action = actions.get(i).copied().unwrap_or(Action::None);
                     }
                 }));
+                if let Action::SetLanguage { menu: then, .. } = b.action {
+                    let menus: Vec<(Id, String)> = p.menus.iter().filter(|m| m.id != menu).map(|m| (m.id, m.name.clone())).collect();
+                    let (labels, sel) = optional_choice(&gettext("Stay on This Menu"), &menus, then);
+                    let row = rows::combo(doc, &gettext("Then Show"), &labels, sel, Change::Structure, move |p, i| {
+                        if let Some(b) = button_mut(p, menu, item) {
+                            if let Action::SetLanguage { preset, .. } = b.action {
+                                b.action = Action::SetLanguage { preset, menu: pick(&menus, i) };
+                            }
+                        }
+                    });
+                    g.add(&row);
+                }
                 if let Action::PlayTitle { title, chapter } = b.action {
                     let n_chapters = p.title(title).map_or(1, |t| t.chapters.len() + 1);
                     let row = rows::spin(doc, &gettext("Start at Chapter"), chapter as f64 + 1.0, 1.0, n_chapters as f64, 1.0, 0, Change::Content, move |p, v| {
@@ -737,6 +755,78 @@ impl Inspector {
         page.add(&g);
     }
 
+    /// Tracks each language preset picks in this title.
+    fn languages_group(&self, page: &adw::PreferencesPage, id: Id) {
+        let doc = &self.doc;
+        let p = doc.project();
+        let Some(t) = p.title(id) else { return };
+        if p.disc.languages.is_empty() {
+            return;
+        }
+        let g = group(&gettext("Language Setup"));
+        g.set_description(Some(&gettext("What each language choice from Disc Settings plays in this title")));
+        let audio: Vec<(Id, String)> = t.disc_audio().map(|a| (a.id, format!("{} ({})", a.name, language_name(&a.lang)))).collect();
+        let subs: Vec<(Id, String)> = t.disc_subtitles().map(|s| (s.id, format!("{} ({})", s.name, language_name(&s.lang)))).collect();
+        let name_of = |list: &[(Id, String)], id: Option<Id>, none: String| id.and_then(|id| list.iter().find(|(x, _)| *x == id)).map_or(none, |(_, n)| n.clone());
+
+        fn picks_mut(p: &mut Project, title: Id, preset: Id) -> Option<&mut LanguageTracks> {
+            let t = p.title_mut(title)?;
+            if !t.language_tracks.iter().any(|l| l.preset == preset) {
+                t.language_tracks.push(LanguageTracks { preset, audio: TrackPick::Auto, subtitle: TrackPick::Auto });
+            }
+            t.language_tracks.iter_mut().find(|l| l.preset == preset)
+        }
+
+        for preset in &p.disc.languages {
+            let pid = preset.id;
+            let r = t.resolve_language(preset);
+            let current = t.language_tracks.iter().find(|l| l.preset == pid).cloned();
+            let (a_name, s_name) = (name_of(&audio, r.audio, gettext("Unchanged")), name_of(&subs, r.subtitle, gettext("Off")));
+            let row = adw::ExpanderRow::builder()
+                .title(glib::markup_escape_text(&preset.name).as_str())
+                .subtitle(glib::markup_escape_text(&format!("{a_name} · {s_name}")).as_str())
+                .build();
+
+            // Combo entries: Automatic, then (for subtitles) Off, then tracks.
+            let choice_row = |title: String, list: &[(Id, String)], with_off: bool, pick: TrackPick, auto: String, set: fn(&mut LanguageTracks, TrackPick)| {
+                let mut labels = vec![gettext("Automatic ({})").replace("{}", &auto)];
+                let mut values = vec![TrackPick::Auto];
+                if with_off {
+                    labels.push(gettext("Off"));
+                    values.push(TrackPick::Off);
+                }
+                labels.extend(list.iter().map(|(_, n)| n.clone()));
+                values.extend(list.iter().map(|(id, _)| TrackPick::Track(*id)));
+                let sel = values.iter().position(|v| *v == pick).unwrap_or(0);
+                rows::combo(doc, &title, &labels, sel, Change::Structure, move |p, i| {
+                    if let Some(l) = picks_mut(p, id, pid) {
+                        set(l, values.get(i).copied().unwrap_or_default());
+                    }
+                })
+            };
+            let auto_preset = LanguagePreset { id: new_id(), ..preset.clone() };
+            let auto = t.resolve_language(&auto_preset);
+            row.add_row(&choice_row(
+                gettext("Audio"),
+                &audio,
+                false,
+                current.as_ref().map_or(TrackPick::Auto, |c| c.audio),
+                name_of(&audio, auto.audio, gettext("unchanged")),
+                |l, v| l.audio = v,
+            ));
+            row.add_row(&choice_row(
+                gettext("Subtitles"),
+                &subs,
+                true,
+                current.as_ref().map_or(TrackPick::Auto, |c| c.subtitle),
+                name_of(&subs, auto.subtitle, gettext("off")),
+                |l, v| l.subtitle = v,
+            ));
+            g.add(&row);
+        }
+        page.add(&g);
+    }
+
     fn subtitles_group(&self, page: &adw::PreferencesPage, id: Id) {
         let doc = &self.doc;
         let p = doc.project();
@@ -830,7 +920,11 @@ impl Inspector {
                     t.default_subtitle = pick(&on_disc, i);
                 }
             });
-            row.set_subtitle(&gettext("Viewers can switch with the remote"));
+            row.set_subtitle(&if p.disc.languages.is_empty() {
+                gettext("Viewers can switch with the remote")
+            } else {
+                gettext("Only when the disc's language setting doesn't choose")
+            });
             g.add(&row);
         } else if t.subtitles.is_empty() {
             let empty = adw::ActionRow::builder().title(gettext("No subtitles")).css_classes(["dim-label"]).build();
@@ -909,6 +1003,7 @@ impl Inspector {
         self.video_group(page, id);
         self.audio_group(page, id);
         self.subtitles_group(page, id);
+        self.languages_group(page, id);
 
         let g = group(&gettext("When Finished"));
         let ends = [gettext("Return to Menu"), gettext("Play Next Title"), gettext("Loop")];
