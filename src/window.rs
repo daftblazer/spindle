@@ -412,6 +412,7 @@ impl SpindleWindow {
             });
         self.action_enabled("replace-with-image", single_visual);
         self.action_enabled("menu-background-image", in_menu);
+        self.action_enabled("menu-music", in_menu);
         for a in ["add-button", "add-text", "add-image", "add-button-grid", "select-all"] {
             self.action_enabled(a, editing);
         }
@@ -500,6 +501,27 @@ impl SpindleWindow {
             });
         });
         add("replace-with-image", |w| w.replace_with_image());
+        add("menu-music", |w| {
+            let Some(menu) = w.doc().current_menu() else { return };
+            let win = w.clone();
+            w.pick_audio(move |asset| {
+                let doc = win.doc();
+                let length = doc.project().asset(asset).map(|a| a.info.duration).filter(|d| *d > 1.0);
+                if doc.project().asset(asset).is_some_and(|a| !a.info.has_audio()) {
+                    win.toast(&gettext("That file has no sound"));
+                    return;
+                }
+                doc.edit(Change::Structure, |p| {
+                    if let Some(m) = p.menu_mut(menu) {
+                        m.audio = Some(asset);
+                        // Loop the whole song (within reason).
+                        if let Some(d) = length {
+                            m.duration = d.clamp(5.0, 600.0).floor();
+                        }
+                    }
+                });
+            });
+        });
         add("menu-background-image", |w| {
             let Some(menu) = w.doc().current_menu() else { return };
             let win = w.clone();
@@ -1011,13 +1033,26 @@ impl SpindleWindow {
     /// Let the user pick an image file, import it, and call `done` with
     /// its asset id.
     pub fn pick_image(&self, done: impl FnOnce(Id) + 'static) {
+        self.pick_media(&gettext("Choose an Image"), &gettext("Images"), &["image/*"], glib::UserDirectory::Pictures, done);
+    }
+
+    /// Pick an audio file (or a video, for its soundtrack) and import it.
+    pub fn pick_audio(&self, done: impl FnOnce(Id) + 'static) {
+        self.pick_media(&gettext("Choose Menu Music"), &gettext("Audio"), &["audio/*", "video/*"], glib::UserDirectory::Music, done);
+    }
+
+    /// Pick one file matching `mimes`, import it as an asset and call
+    /// `done` with its id.
+    fn pick_media(&self, title: &str, filter_name: &str, mimes: &[&str], start: glib::UserDirectory, done: impl FnOnce(Id) + 'static) {
         let filter = gtk::FileFilter::new();
-        filter.set_name(Some(&gettext("Images")));
-        filter.add_mime_type("image/*");
+        filter.set_name(Some(filter_name));
+        for m in mimes {
+            filter.add_mime_type(m);
+        }
         let filters = gio::ListStore::new::<gtk::FileFilter>();
         filters.append(&filter);
-        let fd = gtk::FileDialog::builder().title(gettext("Choose an Image")).filters(&filters).modal(true).build();
-        if let Some(p) = glib::user_special_dir(glib::UserDirectory::Pictures) {
+        let fd = gtk::FileDialog::builder().title(title).filters(&filters).modal(true).build();
+        if let Some(p) = glib::user_special_dir(start) {
             fd.set_initial_folder(Some(&gio::File::for_path(p)));
         }
         let win = self.clone();

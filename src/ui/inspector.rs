@@ -285,11 +285,14 @@ impl Inspector {
             .map(|a| (a.id, a.name()))
             .collect();
         let (labels, sel) = optional_choice(&gettext("Silent"), &audio, m.audio);
-        g.add(&rows::combo(doc, &gettext("Music"), &labels, sel, Change::Content, move |p, i| {
+        let music_row = rows::combo(doc, &gettext("Music"), &labels, sel, Change::Structure, move |p, i| {
             if let Some(m) = p.menu_mut(id) {
                 m.audio = pick(&audio, i);
             }
-        }));
+        });
+        music_row.set_subtitle(&gettext("Loops while the menu is shown"));
+        music_row.add_suffix(&pick_button(&gettext("Choose Music File…"), "win.menu-music"));
+        g.add(&music_row);
         let row = rows::spin(doc, &gettext("Loop Length"), m.duration, 1.0, 600.0, 1.0, 0, Change::Content, move |p, v| {
             if let Some(m) = p.menu_mut(id) {
                 m.duration = v;
