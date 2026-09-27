@@ -460,7 +460,7 @@ impl Inspector {
                 s.outline = v;
             }
         });
-        outline.set_subtitle(&gettext("Width in pixels; helps text stand out on busy backgrounds"));
+        outline.set_subtitle(&gettext("Width in pixels"));
         g.add(&outline);
         if style.outline > 0.0 {
             g.add(&rows::color(doc, &gettext("Outline Color"), style.outline_color, Change::Content, move |p, c| {

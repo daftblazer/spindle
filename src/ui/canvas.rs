@@ -950,6 +950,50 @@ impl MenuCanvas {
             self.draw_tag(cr, &v, item.rect.x, item.rect.y, &tag, matches!(b.action, Action::None));
         }
 
+        // Where the arrow keys lead from the selected button (manual
+        // choices in orange).
+        if let [only] = selection.as_slice() {
+            let buttons: Vec<&MenuItem> = menu.buttons().collect();
+            if let Some(bi) = buttons.iter().position(|i| i.id == *only) {
+                let nav = menu.navigation();
+                let from = buttons[bi];
+                let manual = from.button().map(|b| [b.nav.up, b.nav.down, b.nav.left, b.nav.right]).unwrap_or_default();
+                for (dir, target) in nav[bi].iter().enumerate() {
+                    let Some(to) = buttons.iter().find(|i| i.id == *target && i.id != from.id) else { continue };
+                    let (fr, tr) = (from.rect, to.rect);
+                    // Leave from the edge facing the direction, arrive at the target's middle.
+                    let start = match dir {
+                        0 => (fr.x + fr.w / 2.0, fr.y),
+                        1 => (fr.x + fr.w / 2.0, fr.y + fr.h),
+                        2 => (fr.x, fr.y + fr.h / 2.0),
+                        _ => (fr.x + fr.w, fr.y + fr.h / 2.0),
+                    };
+                    let end = tr.center();
+                    let (dx, dy) = (end.0 - start.0, end.1 - start.1);
+                    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                    // Stop short of the target's middle so its label stays readable.
+                    let stop = (len * 0.25).min(tr.w.min(tr.h) * 0.5);
+                    let end = (end.0 - dx / len * stop, end.1 - dy / len * stop);
+                    if manual[dir].is_some() {
+                        cr.set_source_rgba(1.0, 0.6, 0.1, 0.9);
+                    } else {
+                        cr.set_source_rgba(0.3, 0.8, 1.0, 0.85);
+                    }
+                    cr.set_line_width(3.0 / v.scale);
+                    cr.move_to(start.0, start.1);
+                    cr.line_to(end.0, end.1);
+                    cr.stroke().ok();
+                    let head = 14.0 / v.scale;
+                    let (ux, uy) = (dx / len, dy / len);
+                    cr.move_to(end.0, end.1);
+                    cr.line_to(end.0 - ux * head - uy * head * 0.6, end.1 - uy * head + ux * head * 0.6);
+                    cr.line_to(end.0 - ux * head + uy * head * 0.6, end.1 - uy * head - ux * head * 0.6);
+                    cr.close_path();
+                    cr.fill().ok();
+                }
+            }
+        }
+
         for g in self.inner.guides.borrow().iter() {
             cr.set_source_rgba(0.95, 0.3, 0.5, 0.9);
             cr.set_line_width(1.0 / v.scale);
