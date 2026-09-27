@@ -423,6 +423,12 @@ impl SpindleWindow {
         self.action_enabled("default-button", single_button);
         self.action_enabled("edit-label", n_selected == 1);
         self.action_enabled("distribute-h", n_selected > 2);
+        self.action_enabled("group-items", n_selected > 1);
+        let grouped = doc
+            .current_menu()
+            .and_then(|m| doc.project().menu(m).map(|m| m.items.iter().any(|i| i.group.is_some() && doc.is_selected(i.id))))
+            .unwrap_or(false);
+        self.action_enabled("ungroup-items", grouped);
         self.action_enabled("distribute-v", n_selected > 2);
         let editing = in_menu && !self.state().canvas.is_preview();
         let single_visual = n_selected == 1
@@ -661,6 +667,16 @@ impl SpindleWindow {
                 }
             })
         });
+        add("group-items", |w| {
+            let group = new_id();
+            w.edit_selection(|m, ids| m.items.iter_mut().filter(|i| ids.contains(&i.id)).for_each(|i| i.group = Some(group)));
+        });
+        add("ungroup-items", |w| {
+            w.edit_selection(|m, ids| {
+                let all = m.with_groups(ids);
+                m.items.iter_mut().filter(|i| all.contains(&i.id)).for_each(|i| i.group = None);
+            })
+        });
         add("lock-item", |w| {
             w.edit_selection(|m, ids| m.items.iter_mut().filter(|i| ids.contains(&i.id)).for_each(|i| i.locked = true));
             w.doc().select_item(None);
@@ -832,8 +848,11 @@ impl SpindleWindow {
         let ids = doc.edit(Change::Structure, |p| {
             let Some(m) = p.menu_mut(menu) else { return vec![] };
             let mut ids = Vec::new();
+            // Copies of a group form a new group.
+            let mut groups: std::collections::HashMap<Id, Id> = std::collections::HashMap::new();
             for mut it in items {
                 it.id = new_id();
+                it.group = it.group.map(|g| *groups.entry(g).or_insert_with(new_id));
                 it.rect = Rect::new(it.rect.x + offset, it.rect.y + offset, it.rect.w, it.rect.h).clamped();
                 if let Some(b) = it.button_mut() {
                     b.nav = NavOverride::default();

@@ -531,7 +531,11 @@ impl MenuCanvas {
             }
             Some(item) => {
                 if !doc.is_selected(item) {
-                    doc.select_item(Some(item));
+                    // Grouped items come along, with the clicked one first.
+                    let mut group = self.with_menu(|m| m.with_groups(&[item])).unwrap_or_default();
+                    group.retain(|i| *i != item);
+                    group.insert(0, item);
+                    doc.set_selection(group);
                 } else if doc.item() != Some(item) {
                     // Make the grabbed item primary, keep the group.
                     let mut sel = doc.selection();
@@ -696,7 +700,7 @@ impl MenuCanvas {
                 let band = Rect::new(x0.min(*x1), y0.min(*y1), (*x1 - *x0).abs(), (*y1 - *y0).abs());
                 let mut sel = base.clone();
                 if let Some(hits) = self.with_menu(|m| {
-                    m.items.iter().filter(|i| !i.locked && intersects(i.rect, band)).map(|i| i.id).collect::<Vec<_>>()
+                    m.with_groups(&m.items.iter().filter(|i| !i.locked && intersects(i.rect, band)).map(|i| i.id).collect::<Vec<_>>())
                 }) {
                     for h in hits {
                         if !sel.contains(&h) {
@@ -809,6 +813,7 @@ impl MenuCanvas {
         arrange.append(Some(&gettext("Send Back_ward")), Some("win.backward-item"));
         arrange.append(Some(&gettext("Send to _Back")), Some("win.lower-item"));
         menu.append_section(None, &arrange);
+        menu.append_section(None, &section(&[("_Group", "win.group-items"), ("U_ngroup", "win.ungroup-items")]));
         menu.append_section(None, &section(&[("_Lock", "win.lock-item"), ("_Hide", "win.hide-item")]));
         if is_button {
             menu.append_section(None, &section(&[("Make _Default Button", "win.default-button")]));
@@ -845,6 +850,8 @@ impl MenuCanvas {
                     self.zoom_fit();
                     return glib::Propagation::Stop;
                 }
+                gdk::Key::g if state.contains(gdk::ModifierType::SHIFT_MASK) => act("win.ungroup-items"),
+                gdk::Key::g => act("win.group-items"),
                 gdk::Key::a => act("win.select-all"),
                 gdk::Key::c => act("win.copy"),
                 gdk::Key::x => act("win.cut"),

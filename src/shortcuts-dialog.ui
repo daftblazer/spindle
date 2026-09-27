@@ -124,6 +124,36 @@
         </child>
         <child>
           <object class="AdwShortcutsItem">
+            <property name="title" translatable="yes" context="shortcut window">Group</property>
+            <property name="accelerator">&lt;Control&gt;g</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title" translatable="yes" context="shortcut window">Ungroup</property>
+            <property name="accelerator">&lt;Control&gt;&lt;Shift&gt;g</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title" translatable="yes" context="shortcut window">Zoom In</property>
+            <property name="accelerator">&lt;Control&gt;plus</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title" translatable="yes" context="shortcut window">Zoom Out</property>
+            <property name="accelerator">&lt;Control&gt;minus</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
+            <property name="title" translatable="yes" context="shortcut window">Zoom to Fit</property>
+            <property name="accelerator">&lt;Control&gt;0</property>
+          </object>
+        </child>
+        <child>
+          <object class="AdwShortcutsItem">
             <property name="title" translatable="yes" context="shortcut window">Edit Label</property>
             <property name="accelerator">Return</property>
           </object>

@@ -253,6 +253,9 @@ pub struct MenuItem {
     /// Can't be selected or moved on the canvas.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub locked: bool,
+    /// Items with the same group are selected and moved together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<Id>,
 }
 
 impl ImageItem {
@@ -269,7 +272,7 @@ impl ShapeItem {
 
 impl MenuItem {
     pub fn new(kind: ItemKind, rect: Rect) -> Self {
-        MenuItem { id: new_id(), rect, kind, hidden: false, locked: false }
+        MenuItem { id: new_id(), rect, kind, hidden: false, locked: false, group: None }
     }
 
     pub fn new_button(label: &str, action: Action, rect: Rect) -> Self {
@@ -457,6 +460,16 @@ impl Menu {
         self.items.iter_mut().find(|i| i.id == id)
     }
 
+    /// `ids` plus every item grouped with one of them, in menu order.
+    pub fn with_groups(&self, ids: &[Id]) -> Vec<Id> {
+        let groups: Vec<Id> = self.items.iter().filter(|i| ids.contains(&i.id)).filter_map(|i| i.group).collect();
+        self.items
+            .iter()
+            .filter(|i| ids.contains(&i.id) || i.group.is_some_and(|g| groups.contains(&g)))
+            .map(|i| i.id)
+            .collect()
+    }
+
     /// Buttons that are part of the menu (not hidden).
     pub fn buttons(&self) -> impl Iterator<Item = &MenuItem> {
         self.items.iter().filter(|i| i.button().is_some() && !i.hidden)
@@ -619,6 +632,21 @@ impl Menu {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn groups_expand_selection() {
+        let mut m = Menu::new("M");
+        let g = new_id();
+        let mut a = MenuItem::new_text("a", Rect::new(0.0, 0.0, 50.0, 50.0));
+        let mut b = MenuItem::new_text("b", Rect::new(60.0, 0.0, 50.0, 50.0));
+        let c = MenuItem::new_text("c", Rect::new(120.0, 0.0, 50.0, 50.0));
+        a.group = Some(g);
+        b.group = Some(g);
+        let (ia, ib, ic) = (a.id, b.id, c.id);
+        m.items.extend([a, b, c]);
+        assert_eq!(m.with_groups(&[ib]), vec![ia, ib]);
+        assert_eq!(m.with_groups(&[ic]), vec![ic]);
+    }
 
     #[test]
     fn fit_keeps_aspect() {
