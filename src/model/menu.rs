@@ -405,6 +405,12 @@ pub struct Menu {
     /// Do something by itself after a while on the menu.
     #[serde(default)]
     pub timeout: Option<MenuTimeout>,
+    /// Seconds the buttons take to fade in when the menu appears / out
+    /// when it's left for another pop-up page (0 = no fade).
+    #[serde(default)]
+    pub fade_in: f64,
+    #[serde(default)]
+    pub fade_out: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -427,6 +433,8 @@ impl Menu {
             intro: None,
             intro_every_time: false,
             timeout: None,
+            fade_in: 0.0,
+            fade_out: 0.0,
         }
     }
 

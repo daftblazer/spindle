@@ -61,6 +61,20 @@ pub struct Page {
     /// Button selected when the page appears; [`NO_BUTTON`] keeps the
     /// player's last selection (PSR10) or falls back to the first button.
     pub default_button: u16,
+    /// Fade the buttons in when the page appears / out when it goes (90 kHz
+    /// ticks, 0 = no effect).
+    pub fade_in: u32,
+    pub fade_out: u32,
+}
+
+/// Steps of a fade effect (each with its own palette).
+const FADE_STEPS: u8 = 5;
+/// Palette ids of fade steps start here (page palettes use the page index).
+const FADE_PALETTE_BASE: u8 = 128;
+
+fn fade_palette_id(page: usize, step: u8) -> Option<u8> {
+    let id = FADE_PALETTE_BASE as usize + page * FADE_STEPS as usize + step as usize;
+    (id <= 255).then_some(id as u8)
 }
 
 #[derive(Debug, Clone)]
@@ -77,7 +91,7 @@ pub struct Menu {
 impl Menu {
     /// A single always-on page.
     pub fn single(video: VideoFormat, buttons: Vec<Button>, default_button: u16) -> Self {
-        Menu { video, pages: vec![Page { buttons, default_button }], popup: false, user_timeout: 0 }
+        Menu { video, pages: vec![Page { buttons, default_button, fade_in: 0, fade_out: 0 }], popup: false, user_timeout: 0 }
     }
 }
 
@@ -95,12 +109,41 @@ pub(crate) fn pds(q: &Quantized) -> Vec<u8> {
 }
 
 fn pds_with_id(q: &Quantized, id: u8) -> Vec<u8> {
+    pds_scaled(q, id, 1.0)
+}
+
+/// A palette with every entry's opacity scaled by `alpha` (for fades).
+fn pds_scaled(q: &Quantized, id: u8, alpha: f32) -> Vec<u8> {
     let mut w = BitWriter::new();
     w.u8(id).u8(0); // palette id, version
     for (i, e) in q.palette_ycrcb().iter().enumerate() {
-        w.u8(i as u8).u8(e[0]).u8(e[1]).u8(e[2]).u8(e[3]);
+        w.u8(i as u8).u8(e[0]).u8(e[1]).u8(e[2]).u8((e[3] as f32 * alpha).round() as u8);
     }
     segment(SEG_PDS, &w.into_bytes())
+}
+
+/// An in or out effect sequence: the page's buttons (normal state) drawn
+/// with palettes of rising (or falling) opacity.
+fn effect_sequence(w: &mut BitWriter, page: &Page, ids: &[[u16; 3]], page_index: usize, ticks: u32, fade_in: bool) {
+    let usable = ticks > 0 && !page.buttons.is_empty() && fade_palette_id(page_index, FADE_STEPS - 1).is_some();
+    if !usable {
+        w.u8(0).u8(0); // no windows, no effects
+        return;
+    }
+    let x0 = page.buttons.iter().map(|b| b.x).min().unwrap_or(0);
+    let y0 = page.buttons.iter().map(|b| b.y).min().unwrap_or(0);
+    let x1 = page.buttons.iter().map(|b| b.x + b.normal.width).max().unwrap_or(0);
+    let y1 = page.buttons.iter().map(|b| b.y + b.normal.height).max().unwrap_or(0);
+    w.u8(1).u8(0).u16(x0).u16(y0).u16(x1 - x0).u16(y1 - y0);
+    w.u8(FADE_STEPS);
+    for k in 0..FADE_STEPS {
+        let step = if fade_in { k } else { FADE_STEPS - 1 - k };
+        w.u24(ticks / FADE_STEPS as u32).u8(fade_palette_id(page_index, step).unwrap_or(0));
+        w.u8(page.buttons.len() as u8);
+        for (b, objs) in page.buttons.iter().zip(ids) {
+            w.u16(objs[0]).u8(0).u8(0).u16(b.x).u16(b.y);
+        }
+    }
 }
 
 /// ODS segments for one object, fragmented as needed.
@@ -151,8 +194,8 @@ fn ics(menu: &Menu, object_ids: &[Vec<[u16; 3]>]) -> Result<Vec<u8>> {
     for (pi, (page, ids)) in menu.pages.iter().zip(object_ids).enumerate() {
         comp.u8(pi as u8).u8(0);
         comp.bytes(&[0; 8]); // UO mask
-        comp.u8(0).u8(0); // in effects: no windows, no effects
-        comp.u8(0).u8(0); // out effects
+        effect_sequence(&mut comp, page, ids, pi, page.fade_in, true);
+        effect_sequence(&mut comp, page, ids, pi, page.fade_out, false);
         comp.u8(0); // animation frame rate code
         comp.u16(page.default_button).u16(NO_BUTTON);
         comp.u8(pi as u8); // palette id
@@ -227,6 +270,13 @@ pub fn prepare(menu: &Menu) -> Result<DisplaySet> {
         }
         let q = palette::quantize(&bitmaps)?;
         segments.push((pds_with_id(&q, pi as u8), 0));
+        if page.fade_in > 0 || page.fade_out > 0 {
+            for step in 0..FADE_STEPS {
+                if let Some(id) = fade_palette_id(pi, step) {
+                    segments.push((pds_scaled(&q, id, (step + 1) as f32 / (FADE_STEPS + 1) as f32), 0));
+                }
+            }
+        }
         let mut page_ids = Vec::new();
         for bi in 0..page.buttons.len() {
             let mut ids = [0u16; 3];

@@ -124,6 +124,10 @@ fn language_streams(t: &Title, preset: &LanguagePreset) -> Option<Command> {
 /// Pop-up menus close after this long without input.
 const POPUP_TIMEOUT_SECONDS: u32 = 30;
 
+fn seconds_to_ticks(s: f64) -> u32 {
+    (s.clamp(0.0, 10.0) * 90_000.0) as u32
+}
+
 fn object_for_menu(i: usize) -> u32 {
     1 + i as u32
 }
@@ -487,7 +491,7 @@ impl<'a> Builder<'a> {
             }
             let default = m.default_button.and_then(|d| items.iter().position(|i| i.id == d)).unwrap_or(0);
             let default_button = if items.is_empty() { ig::NO_BUTTON } else { base + default as u16 };
-            ig_pages.push(ig::Page { buttons, default_button });
+            ig_pages.push(ig::Page { buttons, default_button, fade_in: seconds_to_ticks(m.fade_in), fade_out: seconds_to_ticks(m.fade_out) });
         }
         Some(ig::Menu { video: self.settings.video, pages: ig_pages, popup: true, user_timeout: POPUP_TIMEOUT_SECONDS * 90_000 })
     }
@@ -782,7 +786,9 @@ impl<'a> Builder<'a> {
         let mut extra = Vec::new();
         if !buttons.is_empty() {
             let first_pts = ts::first_video_pts(&tmp)?;
-            let ig_menu = ig::Menu::single(self.settings.video, buttons, default_button);
+            let mut ig_menu = ig::Menu::single(self.settings.video, buttons, default_button);
+            ig_menu.pages[0].fade_in = seconds_to_ticks(m.fade_in);
+            ig_menu.pages[0].fade_out = seconds_to_ticks(m.fade_out);
             let ig_index = streams.len();
             streams.push(EsInfo { pid: PID_IG_FIRST, kind: EsKind::Ig { lang: "und".into() } });
             extra = ig::encode(&ig_menu, first_pts)?.into_iter().map(|p| (ig_index, p)).collect();

@@ -251,6 +251,7 @@ impl Inspector {
             });
             all.set_subtitle(&gettext("Titles can choose a different pop-up menu in their settings"));
             g.add(&all);
+            self.fade_rows(&g, id, m.fade_in, m.fade_out);
             page.add(&g);
             page.add(&delete_button(&gettext("Delete Pop-up Menu"), "win.delete-node"));
             return;
@@ -325,12 +326,31 @@ impl Inspector {
         page.add(&delete_button(&gettext("Delete Menu"), "win.delete-node"));
     }
 
+    fn fade_rows(&self, g: &adw::PreferencesGroup, id: Id, fade_in: f64, fade_out: f64) {
+        let doc = &self.doc;
+        let row = rows::spin(doc, &gettext("Fade In"), fade_in, 0.0, 3.0, 0.1, 1, Change::Content, move |p, v| {
+            if let Some(m) = p.menu_mut(id) {
+                m.fade_in = v;
+            }
+        });
+        row.set_subtitle(&gettext("Seconds for the buttons to appear"));
+        g.add(&row);
+        let row = rows::spin(doc, &gettext("Fade Out"), fade_out, 0.0, 3.0, 0.1, 1, Change::Content, move |p, v| {
+            if let Some(m) = p.menu_mut(id) {
+                m.fade_out = v;
+            }
+        });
+        row.set_subtitle(&gettext("When switching to another page of a pop-up"));
+        g.add(&row);
+    }
+
     /// Intro video and timeout of a menu.
     fn timing_group(&self, page: &adw::PreferencesPage, id: Id) {
         let doc = &self.doc;
         let p = doc.project();
         let Some(m) = p.menu(id) else { return };
         let g = group(&gettext("Timing"));
+        self.fade_rows(&g, id, m.fade_in, m.fade_out);
         let videos = assets_of(&p, &[AssetKind::Video]);
         let (labels, sel) = optional_choice(&gettext("None"), &videos, m.intro);
         let intro = rows::combo(doc, &gettext("Intro Video"), &labels, sel, Change::Structure, move |p, i| {

@@ -282,6 +282,7 @@ impl Ctx {
 
     fn popup_page(&self, name: &str, heading: &str) -> Menu {
         let mut m = Menu::new_popup(name);
+        m.fade_in = 0.3;
         m.items.push(MenuItem::new_shape(alpha(self.theme.bottom, 0.82), 0.0, Rect::new(0.0, 800.0, DESIGN_WIDTH, 280.0)));
         m.items.push(MenuItem::new_shape(self.theme.selected, 0.0, Rect::new(0.0, 800.0, DESIGN_WIDTH, 4.0)));
         m.items.push(self.text(heading, Rect::new(SAFE_AREA.x, 812.0, 800.0, 50.0), 26, "Bold", Align::Left, true));
