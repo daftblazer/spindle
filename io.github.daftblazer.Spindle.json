@@ -87,7 +87,12 @@
             "sources": [
                 {
                     "type": "archive",
-                    "url": "https://www.gnu.org/software/xorriso/xorriso-1.5.8.pl02.tar.gz",
+                    "url": "https://ftp.gnu.org/gnu/xorriso/xorriso-1.5.8.pl02.tar.gz",
+                    "mirror-urls": [
+                        "https://ftpmirror.gnu.org/xorriso/xorriso-1.5.8.pl02.tar.gz",
+                        "https://mirrors.kernel.org/gnu/xorriso/xorriso-1.5.8.pl02.tar.gz",
+                        "https://www.gnu.org/software/xorriso/xorriso-1.5.8.pl02.tar.gz"
+                    ],
                     "sha256": "b1455ecafbf0692ddafe1d71002a96f2ce2d77f4deae602678261ce033f97bc8"
                 }
             ]
