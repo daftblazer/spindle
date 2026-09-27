@@ -15,19 +15,37 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+/// Last output path, if any.
+fn recent_output() -> Option<PathBuf> {
+    crate::app_settings().map(|s| s.string("recent-output").to_string()).filter(|s| !s.is_empty()).map(PathBuf::from)
+}
+
+/// Default output: an image, unless the last build made a folder.
 fn default_output(doc: &Document) -> PathBuf {
     let name = doc.project().disc.name.clone();
     let folder = format!("{} Blu-ray", if name.is_empty() { "Disc" } else { &name });
     // Next to the last output, else next to the project, else in Videos.
-    let recent = crate::app_settings()
-        .map(|s| s.string("recent-output").to_string())
-        .filter(|s| !s.is_empty())
-        .and_then(|s| PathBuf::from(s).parent().map(|p| p.to_path_buf()));
+    let recent = recent_output().and_then(|p| p.parent().map(|p| p.to_path_buf()));
     let base = recent
         .or_else(|| doc.path().and_then(|p| p.parent().map(|d| d.to_path_buf())))
         .or_else(|| glib::user_special_dir(glib::UserDirectory::Videos))
         .unwrap_or_else(glib::home_dir);
-    base.join(folder)
+    let out = base.join(folder);
+    let folder = recent_output().is_some_and(|p| !build::is_image(&p));
+    with_image(&out, !folder)
+}
+
+/// Switch an output path between "X" (folder) and "X.iso" (image).
+fn with_image(path: &std::path::Path, image: bool) -> PathBuf {
+    match (build::is_image(path), image) {
+        (false, true) => {
+            let mut s = path.as_os_str().to_os_string();
+            s.push(".iso");
+            s.into()
+        }
+        (true, false) => path.with_extension(""),
+        _ => path.to_path_buf(),
+    }
 }
 
 pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
@@ -42,18 +60,40 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
 
     // --- setup page
     let page = adw::PreferencesPage::new();
-    let g = adw::PreferencesGroup::builder()
-        .title(gettext("Output"))
-        .description(gettext("Spindle writes a BDMV folder that can be played with VLC or burned to a BD-R with any disc burning tool."))
+    let g = adw::PreferencesGroup::builder().title(gettext("Output")).build();
+    let format_row = adw::ComboRow::builder()
+        .title(gettext("Format"))
+        .model(&gtk::StringList::new(&[&gettext("Disc Image (ISO)"), &gettext("Blu-ray Folder (BDMV)")]))
+        .selected(if build::is_image(&output.borrow()) { 0 } else { 1 })
         .build();
-    let folder_row = adw::ActionRow::builder()
-        .title(gettext("Folder"))
-        .subtitle(output.borrow().to_string_lossy().as_ref())
-        .subtitle_selectable(true)
-        .build();
+    g.add(&format_row);
+    let folder_row = adw::ActionRow::builder().subtitle(output.borrow().to_string_lossy().as_ref()).subtitle_selectable(true).build();
     let choose = gtk::Button::builder().label(gettext("Choose…")).valign(gtk::Align::Center).build();
     folder_row.add_suffix(&choose);
     g.add(&folder_row);
+    let describe = {
+        let (g, folder_row, output) = (g.clone(), folder_row.clone(), output.clone());
+        move || {
+            let image = build::is_image(&output.borrow());
+            folder_row.set_title(&if image { gettext("File") } else { gettext("Folder") });
+            folder_row.set_subtitle(&output.borrow().to_string_lossy());
+            g.set_description(Some(&if image {
+                gettext("A single file to burn to a BD-R with any disc burning app, or to open in VLC or Kodi.")
+            } else {
+                gettext("A BDMV folder that plays in VLC or Kodi; burning it needs a tool that writes UDF 2.50.")
+            }));
+        }
+    };
+    describe();
+    {
+        let (output, describe) = (output.clone(), describe.clone());
+        format_row.connect_selected_notify(move |r| {
+            let image = r.selected() == 0;
+            let path = with_image(&output.borrow(), image);
+            *output.borrow_mut() = path;
+            describe();
+        });
+    }
     let size_row = adw::ActionRow::builder().title(gettext("Estimated Size")).build();
     let fit_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).build();
     let fit = gtk::MenuButton::builder()
@@ -207,23 +247,31 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     // --- behaviour
     let d = dialog.clone();
     let out = output.clone();
-    let fr = folder_row.clone();
     choose.connect_clicked(move |_| {
-        let fd = gtk::FileDialog::builder().title(gettext("Choose Output Folder")).modal(true).build();
+        let image = build::is_image(&out.borrow());
+        let name = out.borrow().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let fd = gtk::FileDialog::builder()
+            .title(if image { gettext("Save Disc Image") } else { gettext("Choose Output Folder") })
+            .modal(true)
+            .build();
         if let Some(parent) = out.borrow().parent() {
             fd.set_initial_folder(Some(&gio::File::for_path(parent)));
         }
         let out = out.clone();
-        let fr = fr.clone();
-        let root = d.root().and_downcast::<gtk::Window>();
-        fd.select_folder(root.as_ref(), gio::Cancellable::NONE, move |res| {
-            if let Ok(f) = res {
-                if let Some(p) = f.path() {
-                    fr.set_subtitle(&p.to_string_lossy());
-                    *out.borrow_mut() = p;
-                }
+        let describe = describe.clone();
+        let done = move |res: Result<gio::File, glib::Error>| {
+            if let Some(p) = res.ok().and_then(|f| f.path()) {
+                *out.borrow_mut() = with_image(&crate::media::portal::real_path(&p), image);
+                describe();
             }
-        });
+        };
+        let root = d.root().and_downcast::<gtk::Window>();
+        if image {
+            fd.set_initial_name(Some(&name));
+            fd.save(root.as_ref(), gio::Cancellable::NONE, done);
+        } else {
+            fd.select_folder(root.as_ref(), gio::Cancellable::NONE, done);
+        }
     });
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -241,9 +289,14 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     let out = output.clone();
     let d = dialog.clone();
     open_btn.connect_clicked(move |_| {
-        let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(&*out.borrow())));
+        let path = out.borrow().clone();
+        let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(&path)));
         let root = d.root().and_downcast::<gtk::Window>();
-        launcher.launch(root.as_ref(), gio::Cancellable::NONE, |_| {});
+        if build::is_image(&path) {
+            launcher.open_containing_folder(root.as_ref(), gio::Cancellable::NONE, |_| {});
+        } else {
+            launcher.launch(root.as_ref(), gio::Cancellable::NONE, |_| {});
+        }
     });
 
     let doc = doc.clone();
@@ -285,7 +338,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                                 result.set_title(&gettext("Disc Ready"));
                                 result.set_description(Some(&format!(
                                     "{}\n<small>{}</small>",
-                                    gettext("Your Blu-ray folder has been written."),
+                                    if build::is_image(&path) { gettext("Your disc image has been written.") } else { gettext("Your Blu-ray folder has been written.") },
                                     glib::markup_escape_text(&path.to_string_lossy())
                                 )));
                                 open_btn.set_visible(true);

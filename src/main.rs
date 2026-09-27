@@ -177,6 +177,17 @@ fn main() -> glib::ExitCode {
     if args.len() == 4 && args[1] == "--build" {
         return build_cli(&args[2], &args[3]);
     }
+    if (4..=5).contains(&args.len()) && args[1] == "--make-image" {
+        let (dir, iso) = (std::path::Path::new(&args[2]), std::path::Path::new(&args[3]));
+        let label = args.get(4).cloned().unwrap_or_else(|| dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        return match bluray::udf::write_image(dir, iso, &label, |_| true) {
+            Ok(()) => glib::ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                glib::ExitCode::FAILURE
+            }
+        };
+    }
     if args.len() >= 4 && args[1] == "--new-project" {
         return new_project_cli(&args[2], &args[3..]);
     }

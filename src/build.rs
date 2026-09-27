@@ -560,6 +560,33 @@ impl<'a> Builder<'a> {
 }
 
 /// Convenience wrapper used by the UI and the command line.
+/// Whether `out` names a disc image rather than a folder.
+pub fn is_image(out: &Path) -> bool {
+    out.extension().is_some_and(|e| e.eq_ignore_ascii_case("iso"))
+}
+
+/// Build the disc into a folder, or into a UDF image when `out` ends in
+/// ".iso" (built in a temporary folder next to it, which is then removed).
 pub fn build(project: &Project, out: &Path, cancel: &AtomicBool, emit: &dyn Fn(BuildEvent)) -> Result<PathBuf> {
-    Builder::new(project, out, cancel, emit).run()
+    if !is_image(out) {
+        return Builder::new(project, out, cancel, emit).run();
+    }
+    let folder = out.with_extension("spindle-tmp");
+    let scaled = |ev: BuildEvent| match ev {
+        BuildEvent::Progress(p) => emit(BuildEvent::Progress(p * 0.9)),
+        ev => emit(ev),
+    };
+    let result = (|| -> Result<()> {
+        Builder::new(project, &folder, cancel, &scaled).run()?;
+        emit(BuildEvent::Stage("Writing disc image".into()));
+        crate::bluray::udf::write_image(&folder, out, &project.disc.name, |f| {
+            emit(BuildEvent::Progress(0.9 + f * 0.1));
+            !cancel.load(Ordering::Relaxed)
+        })
+    })();
+    let _ = std::fs::remove_dir_all(&folder);
+    if result.is_err() {
+        let _ = std::fs::remove_file(out);
+    }
+    result.map(|_| out.to_path_buf())
 }
