@@ -620,6 +620,25 @@ impl Inspector {
                         }
                     }));
                 }
+                // Copy this look to other buttons (for consistent templates).
+                let look = gtk::Box::builder().spacing(6).halign(gtk::Align::Center).margin_top(12).build();
+                for (label, whole_disc) in [(gettext("Apply to Menu"), false), (gettext("Apply to All Menus"), true)] {
+                    let btn = gtk::Button::builder().label(label.as_str()).css_classes(["pill", "small"]).build();
+                    btn.set_tooltip_text(Some(&if whole_disc {
+                        gettext("Give every button on the disc this font, colors and highlight")
+                    } else {
+                        gettext("Give every button on this menu this font, colors and highlight")
+                    }));
+                    let d = doc.clone();
+                    btn.connect_clicked(move |_| {
+                        let from = d.project().menu(menu).and_then(|m| m.item(item)).and_then(|i| i.button().cloned());
+                        if let Some(from) = from {
+                            d.edit(Change::Content, |p| p.apply_button_look(&from, (!whole_disc).then_some(menu)));
+                        }
+                    });
+                    look.append(&btn);
+                }
+                g.add(&look);
                 page.add(&g);
 
                 let g = group(&gettext("Pictures"));

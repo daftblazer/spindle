@@ -432,6 +432,7 @@ impl SpindleWindow {
         self.action_enabled("preview-title", matches!(doc.node(), Node::Title(_)));
         self.action_enabled("check-video", matches!(doc.node(), Node::Title(_)));
         self.action_enabled("delete-node", doc.node() != Node::None);
+        self.action_enabled("duplicate-menu", matches!(doc.node(), Node::Menu(_)));
     }
 
     fn toast(&self, msg: &str) {
@@ -691,6 +692,13 @@ impl SpindleWindow {
                 Node::Menu(id) => doc.edit(Change::Structure, |p| p.remove_menu(id)),
                 Node::Title(id) => doc.edit(Change::Structure, |p| p.remove_title(id)),
                 Node::None => {}
+            }
+        });
+        add("duplicate-menu", |w| {
+            let doc = w.doc();
+            let Node::Menu(id) = doc.node() else { return };
+            if let Some(copy) = doc.edit(Change::Structure, |p| p.duplicate_menu(id)) {
+                doc.select(Node::Menu(copy), None);
             }
         });
         add("move-node-up", |w| w.move_node(-1));

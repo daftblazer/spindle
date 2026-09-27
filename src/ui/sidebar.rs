@@ -216,6 +216,9 @@ impl Sidebar {
                 menu.append(Some(&gettext("Choose _Thumbnail…")), Some("win.choose-thumbnail"));
                 menu.append(Some(&gettext("Create _Chapter Menu")), Some("win.add-chapter-menu"));
             }
+            if matches!(node, Node::Menu(_)) {
+                menu.append(Some(&gettext("D_uplicate")), Some("win.duplicate-menu"));
+            }
             menu.append(Some(&gettext("Move _Up")), Some("win.move-node-up"));
             menu.append(Some(&gettext("Move _Down")), Some("win.move-node-down"));
             menu.append(Some(&gettext("_Delete")), Some("win.delete-node"));

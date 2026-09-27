@@ -462,6 +462,56 @@ impl Project {
         }
     }
 
+    /// Copy a menu (with new ids) right after it; returns the copy's id.
+    pub fn duplicate_menu(&mut self, menu: Id) -> Option<Id> {
+        let i = self.menus.iter().position(|m| m.id == menu)?;
+        let mut copy = self.menus[i].clone();
+        copy.id = new_id();
+        copy.name = format!("{} {}", copy.name, gettextrs::gettext("(Copy)"));
+        let map: std::collections::HashMap<Id, Id> = copy.items.iter().map(|it| (it.id, new_id())).collect();
+        let remap = |id: &mut Option<Id>| {
+            if let Some(x) = id.as_mut() {
+                if let Some(n) = map.get(x) {
+                    *x = *n;
+                }
+            }
+        };
+        for it in &mut copy.items {
+            it.id = map[&it.id];
+            if let Some(b) = it.button_mut() {
+                remap(&mut b.nav.up);
+                remap(&mut b.nav.down);
+                remap(&mut b.nav.left);
+                remap(&mut b.nav.right);
+                // Links to the menu itself stay within the copy.
+                if b.action == Action::ShowMenu(menu) {
+                    b.action = Action::ShowMenu(copy.id);
+                }
+            }
+        }
+        remap(&mut copy.default_button);
+        let id = copy.id;
+        self.menus.insert(i + 1, copy);
+        Some(id)
+    }
+
+    /// Give buttons the look (text, colors, highlight, fill) of `from`.
+    /// `scope` limits it to one menu.
+    pub fn apply_button_look(&mut self, from: &ButtonItem, scope: Option<Id>) {
+        for m in self.menus.iter_mut().filter(|m| scope.is_none_or(|s| s == m.id)) {
+            for it in &mut m.items {
+                if let Some(b) = it.button_mut() {
+                    b.text = from.text.clone();
+                    b.selected_color = from.selected_color;
+                    b.activated_color = from.activated_color;
+                    b.highlight = from.highlight;
+                    b.highlight_text = from.highlight_text;
+                    b.fill = from.fill;
+                }
+            }
+        }
+    }
+
     pub fn remove_menu(&mut self, menu: Id) {
         self.menus.retain(|m| m.id != menu);
         for m in &mut self.menus {
@@ -508,6 +558,30 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(p, back);
+    }
+
+    #[test]
+    fn duplicate_menu_remaps_items() {
+        let mut p = Project::default();
+        let menu = p.menus[0].id;
+        let a = MenuItem::new_button("A", Action::ShowMenu(menu), Rect::new(100.0, 100.0, 300.0, 60.0));
+        let mut b = MenuItem::new_button("B", Action::None, Rect::new(100.0, 200.0, 300.0, 60.0));
+        b.button_mut().unwrap().nav.up = Some(a.id);
+        p.menus[0].default_button = Some(b.id);
+        p.menus[0].items.extend([a, b]);
+        let copy = p.duplicate_menu(menu).unwrap();
+        let (orig, dup) = (p.menu(menu).unwrap(), p.menu(copy).unwrap());
+        assert_eq!(p.menus[1].id, copy);
+        assert!(dup.items.iter().all(|i| orig.item(i.id).is_none()));
+        assert_eq!(dup.default_button, Some(dup.items[1].id));
+        assert_eq!(dup.items[1].button().unwrap().nav.up, Some(dup.items[0].id));
+        assert_eq!(dup.items[0].button().unwrap().action, Action::ShowMenu(copy));
+
+        let mut look = dup.items[0].button().unwrap().clone();
+        look.highlight = Highlight::Fill;
+        p.apply_button_look(&look, Some(menu));
+        assert!(p.menu(menu).unwrap().buttons().all(|b| b.button().unwrap().highlight == Highlight::Fill));
+        assert!(p.menu(copy).unwrap().buttons().all(|b| b.button().unwrap().highlight != Highlight::Fill));
     }
 
     #[test]
