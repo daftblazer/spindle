@@ -719,7 +719,7 @@ impl Inspector {
                 page.add(&g);
 
                 let g = group(&gettext("Remote Navigation"));
-                g.set_description(Some(&gettext("Which button is selected when pressing the arrow keys")));
+                g.set_description(Some(&gettext("Which button is selected when pressing the arrow keys. On the canvas, Alt+drag from this button to another to set one.")));
                 let others: Vec<(Id, String)> = m
                     .buttons()
                     .filter(|o| o.id != item)

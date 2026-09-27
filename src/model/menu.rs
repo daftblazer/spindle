@@ -471,7 +471,7 @@ impl Menu {
     }
 
     /// Buttons that are part of the menu (not hidden).
-    pub fn buttons(&self) -> impl Iterator<Item = &MenuItem> {
+    pub fn buttons(&self) -> impl DoubleEndedIterator<Item = &MenuItem> {
         self.items.iter().filter(|i| i.button().is_some() && !i.hidden)
     }
 

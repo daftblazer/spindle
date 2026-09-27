@@ -27,6 +27,8 @@ enum Drag {
     Resize { item: Id, handle: u8, start: Rect, moved: bool },
     /// Rubber band selection in design coordinates.
     Marquee { x0: f64, y0: f64, x1: f64, y1: f64, base: Vec<Id> },
+    /// Alt+drag from a button to another: sets where an arrow key leads.
+    Link { from: Id, x0: f64, y0: f64, x1: f64, y1: f64 },
 }
 
 #[derive(Clone, Copy)]
@@ -519,6 +521,15 @@ impl MenuCanvas {
         let state = g.current_event_state();
         let extend = state.intersects(gdk::ModifierType::SHIFT_MASK | gdk::ModifierType::CONTROL_MASK);
 
+        if state.contains(gdk::ModifierType::ALT_MASK) {
+            let button = self.with_menu(|m| m.buttons().rev().find(|i| i.rect.contains(dx, dy)).map(|i| i.id)).flatten();
+            if let Some(from) = button {
+                doc.select_item(Some(from));
+                *self.inner.drag.borrow_mut() = Some(Drag::Link { from, x0: dx, y0: dy, x1: dx, y1: dy });
+                return;
+            }
+        }
+
         if let Some((item, handle)) = self.hit_handle(x, y) {
             let start = self.with_menu(|m| m.item(item).map(|i| i.rect)).flatten().unwrap();
             *self.inner.drag.borrow_mut() = Some(Drag::Resize { item, handle, start, moved: false });
@@ -693,6 +704,14 @@ impl MenuCanvas {
                     }
                 });
             }
+            Drag::Link { x1, y1, .. } => {
+                let (ex, ey) = v.to_design(sx + ox, sy + oy);
+                *x1 = ex;
+                *y1 = ey;
+                *self.inner.drag.borrow_mut() = Some(drag);
+                self.queue_draw();
+                return;
+            }
             Drag::Marquee { x0, y0, x1, y1, base } => {
                 let (ex, ey) = v.to_design(sx + ox, sy + oy);
                 *x1 = ex;
@@ -717,9 +736,45 @@ impl MenuCanvas {
     }
 
     fn drag_end(&self) {
-        *self.inner.drag.borrow_mut() = None;
+        let drag = self.inner.drag.borrow_mut().take();
+        if let Some(Drag::Link { from, x0, y0, x1, y1 }) = drag {
+            self.link_buttons(from, x0, y0, x1, y1);
+        }
         self.inner.guides.borrow_mut().clear();
         self.queue_draw();
+    }
+
+    /// Make the arrow key in the direction of the drag lead from `from`
+    /// to the button under the end point.
+    fn link_buttons(&self, from: Id, x0: f64, y0: f64, x1: f64, y1: f64) {
+        let doc = &self.inner.doc;
+        let Some(menu) = doc.current_menu() else { return };
+        let target = self.with_menu(|m| m.buttons().rev().find(|i| i.id != from && i.rect.contains(x1, y1)).map(|i| i.id)).flatten();
+        let Some(target) = target else { return };
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        doc.edit(Change::Structure, |p| {
+            if let Some(b) = p.menu_mut(menu).and_then(|m| m.item_mut(from)).and_then(|i| i.button_mut()) {
+                let slot = if dx.abs() > dy.abs() {
+                    if dx > 0.0 { &mut b.nav.right } else { &mut b.nav.left }
+                } else if dy > 0.0 {
+                    &mut b.nav.down
+                } else {
+                    &mut b.nav.up
+                };
+                *slot = Some(target);
+            }
+        });
+        let name = self.with_menu(|m| m.item(target).and_then(|i| i.button()).map(|b| b.label.clone())).flatten().unwrap_or_default();
+        let dir = if dx.abs() > dy.abs() {
+            if dx > 0.0 { gettext("Right") } else { gettext("Left") }
+        } else if dy > 0.0 {
+            gettext("Down")
+        } else {
+            gettext("Up")
+        };
+        if let Some(f) = self.inner.on_message.borrow().clone() {
+            f(gettext("{dir} now leads to “{name}”").replace("{dir}", &dir).replace("{name}", &name));
+        }
     }
 
     fn motion(&self, x: f64, y: f64) {
@@ -1194,6 +1249,15 @@ impl MenuCanvas {
                     cr.stroke().ok();
                 }
             }
+        }
+        if let Some(Drag::Link { x0, y0, x1, y1, .. }) = &*self.inner.drag.borrow() {
+            cr.set_source_rgba(1.0, 0.6, 0.1, 0.95);
+            cr.set_line_width(4.0 / v.scale);
+            cr.set_dash(&[10.0 / v.scale, 6.0 / v.scale], 0.0);
+            cr.move_to(*x0, *y0);
+            cr.line_to(*x1, *y1);
+            cr.stroke().ok();
+            cr.set_dash(&[], 0.0);
         }
         if let Some(Drag::Marquee { x0, y0, x1, y1, .. }) = &*self.inner.drag.borrow() {
             cr.rectangle(x0.min(*x1), y0.min(*y1), (x1 - x0).abs(), (y1 - y0).abs());
