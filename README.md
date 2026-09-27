@@ -56,7 +56,15 @@ imported logo instead of the title text.
   paginated chapter selection menus in the disc's theme
 - A frame picker to choose each title's thumbnail
 - **Multiple audio tracks** from the video or from separate files (with a
-  delay adjustment); Blu-ray compatible AC-3 is copied without re-encoding
+  delay adjustment). Audio that Blu-ray players decode is copied without
+  re-encoding: AC-3, DTS, DTS-HD Master Audio, Dolby TrueHD (with the AC-3
+  core players need added) and Dolby Digital Plus. Other audio becomes AC-3
+  or 16/24-bit LPCM, mixed to mono, stereo or 5.1 as chosen, and optionally
+  evened out to −23 LUFS (EBU R128)
+- **Picture controls** per title: deinterlacing or inverse telecine,
+  crop (with black bar detection), aspect ratio override, and fitting the
+  whole picture, filling the screen or stretching; HDR video is tone mapped
+  to standard range
 - **Subtitles** from the video or sidecar files (`Movie.en.srt`): SRT, ASS/SSA,
   WebVTT and MP4 text are rendered with libass (ASS keeps its styling), PGS is
   re-encoded; choose tracks, languages, forced and default tracks
@@ -72,8 +80,13 @@ imported logo instead of the title text.
 - Checks before building (missing files, dead ends, buttons outside the safe
   area, disc size…), each with a link to fix it, and **Fit to Disc** to pick
   the bitrate that fills a BD-25, BD-50 or BD-100
+- Every Blu-ray video format: 1080p 23.976/24, 1080i 25/29.97 (interlaced
+  video kept as it is, film with 3:2 pulldown), 720p 23.976/24/50/59.94 and
+  SD 576i/480i
 - Quality presets: Fast, Balanced, and Best (x264 two-pass for the best
-  picture and accurate sizes)
+  picture and accurate sizes), with the build time estimated beforehand
+- Titles are encoded several at a time on computers with many cores, and
+  the build shows each step with its progress, speed and time left
 - **Hardware encoding** (VA-API for AMD/Intel, NVENC for NVIDIA) for quick
   test discs; it is faster but noticeably lower quality, so final discs
   should use Software (x264)
@@ -87,10 +100,10 @@ imported logo instead of the title text.
 | Stage | What happens |
 | --- | --- |
 | Render | Menus are drawn with cairo/pango, the same code as the editor canvas |
-| Encode | `ffmpeg` produces Blu-ray compliant H.264 (High@4.1, x264 `bluray-compat`, or constrained VA-API/NVENC) and AC-3 or LPCM |
+| Encode | `ffmpeg` produces Blu-ray compliant H.264 (High@4.1, x264 `bluray-compat`, or constrained VA-API/NVENC) and AC-3 or LPCM; `src/media/picture.rs` builds the deinterlacing, cropping, scaling and tone mapping filters |
 | Subtitles | `src/subtitles` renders or decodes every track into timed bitmaps and encodes PGS display sets |
 | Menus | `src/bluray/ig` encodes Interactive Graphics: pages, buttons, palettes, fade effects and HDMV button commands |
-| Mux | `src/bluray/ts` schedules the PES packets into a 192-byte-packet BDAV stream with PCR/PAT/PMT/SIT, menu and subtitle streams, and records the EP map |
+| Mux | `src/bluray/ts` schedules the PES packets into a 192-byte-packet BDAV stream with PCR/PAT/PMT/SIT, menu and subtitle streams, and records the EP map; copied HD audio is split into core and extension packets as Blu-ray requires |
 | Navigate | `src/bluray/nav` writes `index.bdmv`, `MovieObject.bdmv`, `*.mpls` and `*.clpi` |
 | Image | `src/bluray/udf.rs` writes a UDF 2.50 image with a metadata partition, as BD-ROM uses |
 | Burn | `xorriso` writes the image; `src/burn.rs` reads the disc back with SCSI commands and compares it |
@@ -101,8 +114,8 @@ language setting and menu intros keep their state in further GPRs.
 
 ## Building Spindle
 
-Flatpak (recommended; bundles FFmpeg with x264, VA-API and NVENC, libass and
-xorriso):
+Flatpak (recommended; bundles FFmpeg with x264, zimg, VA-API and NVENC,
+libass and xorriso):
 
 ```sh
 flatpak install org.gnome.Sdk//50 org.freedesktop.Sdk.Extension.rust-stable//25.08
@@ -113,7 +126,7 @@ flatpak run io.github.daftblazer.Spindle
 GNOME Builder can build and run the same manifest.
 
 Native (needs GTK ≥ 4.18, libadwaita ≥ 1.7, libass ≥ 0.15, `ffmpeg`/`ffprobe`
-with libx264, and `xorriso` for burning):
+with libx264 and zimg, and `xorriso` for burning):
 
 ```sh
 meson setup _build --prefix=$PWD/_install
@@ -145,7 +158,7 @@ Other commands: `--preview PROJECT TITLE START SECONDS [SUBTITLE]`,
 `--render-menus PROJECT DIR` (every menu as a PNG) and `--disc-status DRIVE`.
 
 Set `SPINDLE_FFMPEG`, `SPINDLE_FFPROBE` or `SPINDLE_XORRISO` to use specific
-binaries.
+binaries, and `SPINDLE_JOBS` to choose how many titles are encoded at once.
 
 ## Testing
 
