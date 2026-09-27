@@ -131,6 +131,28 @@ pub struct Project {
     pub titles: Vec<Title>,
     pub menus: Vec<Menu>,
     pub first_play: FirstPlay,
+    /// Media paths relative to the project file, written on save so a
+    /// project folder can be moved or copied to another machine.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub relative_paths: std::collections::BTreeMap<Id, PathBuf>,
+}
+
+/// `path` relative to `base`, when they share more than the root.
+fn relative_to(path: &Path, base: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let (p, b): (Vec<_>, Vec<_>) = (path.components().collect(), base.components().collect());
+    let common = p.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    if common < 2 || !path.is_absolute() || p[..common].iter().any(|c| !matches!(c, Component::RootDir | Component::Normal(_))) {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for _ in common..b.len() {
+        out.push("..");
+    }
+    for c in &p[common..] {
+        out.push(c);
+    }
+    Some(out)
 }
 
 impl Default for Project {
@@ -142,6 +164,7 @@ impl Default for Project {
             titles: Vec::new(),
             menus: vec![Menu::new("Main Menu")],
             first_play: FirstPlay::FirstMenu,
+            relative_paths: Default::default(),
         }
     }
 }
@@ -158,12 +181,30 @@ impl Project {
                     a.path = dir.join(&a.path);
                 }
             }
+            // The project was moved: find media at the same place relative to it.
+            let rel = std::mem::take(&mut p.relative_paths);
+            for (id, old) in p.media_paths() {
+                if old.exists() {
+                    continue;
+                }
+                if let Some(r) = rel.get(&id) {
+                    let moved = dir.join(r);
+                    if moved.exists() {
+                        p.relink(id, moved.canonicalize().unwrap_or(moved));
+                    }
+                }
+            }
         }
         Ok(p)
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
-        let data = serde_json::to_vec_pretty(self)?;
+        let mut out = self.clone();
+        let dir = path.parent().map(|d| d.canonicalize().unwrap_or_else(|_| d.to_path_buf()));
+        out.relative_paths = dir
+            .map(|dir| self.media_paths().into_iter().filter_map(|(id, p)| Some((id, relative_to(&p, &dir)?))).collect())
+            .unwrap_or_default();
+        let data = serde_json::to_vec_pretty(&out)?;
         let tmp = path.with_extension("spindle~");
         std::fs::write(&tmp, data).with_context(|| format!("writing {}", tmp.display()))?;
         std::fs::rename(&tmp, path)?;
@@ -343,6 +384,26 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(p, back);
+    }
+
+    #[test]
+    fn moved_project_finds_media() {
+        let root = std::env::temp_dir().join(format!("spindle-move-{}", new_id()));
+        let old = root.join("old");
+        std::fs::create_dir_all(old.join("media")).unwrap();
+        std::fs::write(old.join("media/ep.mkv"), b"x").unwrap();
+        let mut p = Project::default();
+        let id = new_id();
+        p.assets.push(Asset { id, path: old.join("media/ep.mkv"), kind: AssetKind::Video, info: MediaInfo::default() });
+        p.save(&old.join("show.spindle")).unwrap();
+        let new = root.join("new");
+        std::fs::rename(&old, &new).unwrap();
+        let back = Project::load(&new.join("show.spindle")).unwrap();
+        assert_eq!(back.assets[0].path, new.canonicalize().unwrap().join("media/ep.mkv"));
+        assert!(back.relative_paths.is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(relative_to(Path::new("/a/b/c.mkv"), Path::new("/a/d")), Some(PathBuf::from("../b/c.mkv")));
+        assert_eq!(relative_to(Path::new("/x/c.mkv"), Path::new("/a/d")), None);
     }
 
     #[test]
