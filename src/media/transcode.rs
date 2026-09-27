@@ -52,6 +52,18 @@ pub enum Pass {
 }
 
 impl EncodeSettings {
+    /// The encode settings of a disc.
+    pub fn for_disc(d: &crate::model::DiscSettings) -> Self {
+        EncodeSettings {
+            video: d.video,
+            video_bitrate: d.video_bitrate,
+            audio: d.audio,
+            audio_bitrate: d.audio_bitrate,
+            encoder: d.encoder,
+            quality: d.quality,
+        }
+    }
+
     /// The encoder actually used: hardware encoders can't make the
     /// field-coded streams of 1080i and SD formats, so those use x264.
     pub fn effective_encoder(&self) -> VideoEncoder {
@@ -207,12 +219,14 @@ fn video_args(set: &EncodeSettings, bitrate: u32, interlaced: Option<bool>) -> V
     ]
 }
 
-fn audio_args(set: &EncodeSettings, channels: u8) -> Vec<String> {
+/// Encoder options for output audio stream `n` in the disc's format.
+fn encode_audio(set: &EncodeSettings, n: usize, channels: u8) -> Vec<String> {
     let mut a = match set.audio {
-        AudioCodec::Ac3 => vec![s("-c:a"), s("ac3"), s("-b:a"), format!("{}k", set.audio_bitrate)],
-        AudioCodec::Lpcm => vec![s("-c:a"), s("pcm_bluray"), s("-sample_fmt"), s("s16")],
+        AudioCodec::Lpcm => vec![format!("-c:a:{n}"), s("pcm_bluray"), format!("-sample_fmt:a:{n}"), s("s16")],
+        AudioCodec::Lpcm24 => vec![format!("-c:a:{n}"), s("pcm_bluray"), format!("-sample_fmt:a:{n}"), s("s32")],
+        _ => vec![format!("-c:a:{n}"), s("ac3"), format!("-b:a:{n}"), format!("{}k", set.audio_bitrate)],
     };
-    a.extend([s("-ar"), s("48000"), s("-ac"), s(channels)]);
+    a.extend([format!("-ar:a:{n}"), s("48000"), format!("-ac:a:{n}"), s(channels)]);
     a
 }
 
@@ -241,18 +255,31 @@ pub struct AudioInput {
     pub offset: f64,
     /// Source channel count.
     pub channels: u8,
-    /// Copy the stream (Blu-ray compatible AC-3) instead of encoding it.
-    pub copy: bool,
+    /// Copied as it is, in this Blu-ray codec, instead of encoded.
+    pub copy: Option<AudioCodec>,
+    /// Channels wanted on the disc, when not the source's.
+    pub layout: Option<u8>,
+    /// Loudness adjustment filter.
+    pub loudness: Option<String>,
 }
 
 impl AudioInput {
+    /// A stream encoded as it comes.
+    pub fn encode(file: Option<PathBuf>, index: usize, offset: f64, channels: u8) -> Self {
+        AudioInput { file, index, offset, channels, copy: None, layout: None, loudness: None }
+    }
+
     /// Channels on the disc.
     pub fn output_channels(&self) -> u8 {
-        if self.copy {
-            self.channels.max(1)
-        } else {
-            output_channels(self.channels)
+        match self.copy {
+            Some(_) => self.channels.max(1),
+            None => self.layout.unwrap_or_else(|| output_channels(self.channels)),
         }
+    }
+
+    /// Copied TrueHD, which carries an AC-3 core for other players.
+    pub fn needs_core(&self) -> bool {
+        self.copy == Some(AudioCodec::TrueHd)
     }
 }
 
@@ -328,18 +355,31 @@ fn title_common(
         VideoMode::Copy => a.extend([s("-c:v"), s("copy"), s("-bsf:v"), s("h264_metadata=aud=insert")]),
     }
     for (n, (au, delay)) in audio.iter().zip(&delays).enumerate() {
-        if au.copy {
+        if au.copy.is_some() {
             a.extend([format!("-c:a:{n}"), s("copy")]);
             continue;
         }
-        match set.audio {
-            AudioCodec::Ac3 => a.extend([format!("-c:a:{n}"), s("ac3"), format!("-b:a:{n}"), format!("{}k", set.audio_bitrate)]),
-            AudioCodec::Lpcm => a.extend([format!("-c:a:{n}"), s("pcm_bluray"), format!("-sample_fmt:a:{n}"), s("s16")]),
-        }
-        a.extend([format!("-ar:a:{n}"), s("48000"), format!("-ac:a:{n}"), s(au.output_channels())]);
+        a.extend(encode_audio(set, n, au.output_channels()));
+        let mut filters = Vec::new();
         if *delay > 0.0 {
-            a.extend([format!("-filter:a:{n}"), format!("adelay={:.0}:all=1", delay * 1000.0)]);
+            filters.push(format!("adelay={:.0}:all=1", delay * 1000.0));
         }
+        // Stereo (or mono) spread over 5.1.
+        if au.layout == Some(6) && au.channels < 6 {
+            filters.push(s("surround=chl_out=5.1"));
+        }
+        filters.extend(au.loudness.clone());
+        if !filters.is_empty() {
+            a.extend([format!("-filter:a:{n}"), filters.join(",")]);
+        }
+    }
+    // AC-3 cores of TrueHD streams, as extra streams after the others
+    // (the remuxer puts each with its TrueHD).
+    let cores = audio.iter().zip(&file_inputs).filter(|(au, _)| au.needs_core());
+    for (n, (au, input)) in (audio.len()..).zip(cores) {
+        a.extend([s("-map"), format!("{}:a:{}", input.unwrap_or(0), au.index)]);
+        a.extend([format!("-c:a:{n}"), s("ac3"), format!("-b:a:{n}"), s("640k"), format!("-ar:a:{n}"), s("48000")]);
+        a.extend([format!("-ac:a:{n}"), s(au.channels.min(6))]);
     }
     if matches!(pass, Pass::First(_)) {
         // The first pass only looks at the video.
@@ -421,7 +461,7 @@ pub fn menu_args(
     let bitrate = if motion.is_some() { set.video_bitrate } else { set.video_bitrate.min(15_000) };
     a.extend(video_args(set, bitrate, None));
     if let Some((_, info)) = audio {
-        a.extend(audio_args(set, output_channels(info.audio_channels)));
+        a.extend(encode_audio(set, 0, output_channels(info.audio_channels)));
     }
     // Leave room before the first frame for the IG stream to be decoded.
     a.extend(mux_args(output, 2.0));
@@ -475,11 +515,30 @@ mod tests {
     }
 
     #[test]
+    fn audio_options() {
+        let info = MediaInfo { duration: 60.0, video_codec: Some("h264".into()), ..Default::default() };
+        let opts = VideoOptions::default();
+        let src = Source { path: Path::new("/tmp/in.mkv"), info: &info, picture: &opts };
+        let set = EncodeSettings { audio: AudioCodec::Lpcm24, ..settings(VideoFormat::P1080_23976, VideoEncoder::Software) };
+        let upmix = AudioInput { layout: Some(6), loudness: Some("loudnorm=I=-23".into()), ..AudioInput::encode(None, 0, 0.0, 2) };
+        let truehd = AudioInput { copy: Some(AudioCodec::TrueHd), ..AudioInput::encode(None, 1, 0.0, 8) };
+        let a = title_args(&src, &set, &[], &[upmix, truehd], None, &Pass::Only, Path::new("/tmp/o.ts"));
+        assert_eq!(arg_after(&a, "-sample_fmt:a:0"), Some("s32"));
+        assert_eq!(arg_after(&a, "-ac:a:0"), Some("6"));
+        assert_eq!(arg_after(&a, "-filter:a:0"), Some("surround=chl_out=5.1,loudnorm=I=-23"));
+        assert_eq!(arg_after(&a, "-c:a:1"), Some("copy"));
+        // The TrueHD's AC-3 core comes last, from the same source stream.
+        assert_eq!(arg_after(&a, "-c:a:2"), Some("ac3"));
+        assert_eq!(arg_after(&a, "-ac:a:2"), Some("6"));
+        assert_eq!(a.iter().filter(|x| *x == "0:a:1").count(), 2);
+    }
+
+    #[test]
     fn two_pass() {
         let info = MediaInfo { duration: 60.0, video_codec: Some("h264".into()), audio_codec: Some("aac".into()), ..Default::default() };
         let set = EncodeSettings { quality: Quality::Best, ..settings(VideoFormat::P1080_23976, VideoEncoder::Software) };
         let log = Path::new("/tmp/pass");
-        let audio = [AudioInput { file: None, index: 0, offset: 0.0, channels: 2, copy: false }];
+        let audio = [AudioInput::encode(None, 0, 0.0, 2)];
         let opts = VideoOptions::default();
         let src = Source { path: Path::new("/tmp/in.mkv"), info: &info, picture: &opts };
         let first = title_args(&src, &set, &[], &audio, None, &Pass::First(log.into()), Path::new("/tmp/o.ts"));

@@ -1065,7 +1065,7 @@ mod tests {
             for t in &mut p.titles {
                 t.audio = ["eng", "jpn"]
                     .iter()
-                    .map(|l| AudioTrack { id: new_id(), source: AudioSource::Embedded { index: 0 }, lang: l.to_string(), name: l.to_string(), enabled: true })
+                    .map(|l| AudioTrack { id: new_id(), source: AudioSource::Embedded { index: 0 }, lang: l.to_string(), name: l.to_string(), enabled: true, layout: Default::default(), reencode: false })
                     .collect();
             }
             let main = apply(&mut p, &opts(style, 1));

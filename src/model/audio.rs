@@ -25,6 +25,38 @@ pub struct AudioTrack {
     pub name: String,
     /// Include on the disc.
     pub enabled: bool,
+    /// Channels on the disc.
+    #[serde(default)]
+    pub layout: ChannelLayout,
+    /// Encode it even when the original is valid on Blu-ray (to change its
+    /// channels or loudness, or to save space).
+    #[serde(default)]
+    pub reencode: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum ChannelLayout {
+    /// As the source: mono, stereo, or 5.1 (7.1 is mixed down to 5.1).
+    #[default]
+    Original,
+    Mono,
+    Stereo,
+    /// 5.1, spreading stereo sources over the surround channels.
+    Surround,
+}
+
+impl ChannelLayout {
+    pub const ALL: [ChannelLayout; 4] = [ChannelLayout::Original, ChannelLayout::Mono, ChannelLayout::Stereo, ChannelLayout::Surround];
+
+    /// Channel count asked for, if not the source's.
+    pub fn channels(self) -> Option<u8> {
+        match self {
+            ChannelLayout::Original => None,
+            ChannelLayout::Mono => Some(1),
+            ChannelLayout::Stereo => Some(2),
+            ChannelLayout::Surround => Some(6),
+        }
+    }
 }
 
 /// Blu-ray allows 32 primary audio streams; players cope better with few.
@@ -32,9 +64,12 @@ pub const MAX_AUDIO_TRACKS: usize = 8;
 
 /// Short description of a stream, e.g. "AC-3 5.1".
 pub fn describe(stream: &AudioStream) -> String {
+    let profile = stream.profile.as_deref().unwrap_or("");
     let codec = match stream.codec.as_str() {
         "ac3" => "AC-3",
         "eac3" => "E-AC-3",
+        "dts" if profile.starts_with("DTS-HD MA") => "DTS-HD MA",
+        "dts" if profile.starts_with("DTS-HD HRA") => "DTS-HD HRA",
         "dts" => "DTS",
         "truehd" => "TrueHD",
         "aac" => "AAC",
@@ -68,6 +103,8 @@ pub fn embedded_tracks_audio(info: &MediaInfo) -> Vec<AudioTrack> {
             lang: s.lang.as_deref().map(normalize_lang).unwrap_or_else(|| "und".into()),
             name: s.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| describe(s)),
             enabled: true,
+            layout: ChannelLayout::Original,
+            reencode: false,
         })
         .collect();
     // The default stream goes first so it plays first on the disc.
@@ -95,5 +132,7 @@ pub fn external_audio_track(asset: &super::Asset) -> Option<AudioTrack> {
         lang,
         name: stream.title.clone().filter(|t| !t.is_empty()).unwrap_or(stem),
         enabled: true,
+        layout: ChannelLayout::Original,
+        reencode: false,
     })
 }

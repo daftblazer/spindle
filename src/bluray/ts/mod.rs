@@ -2,12 +2,14 @@
 
 //! Transport stream handling: demuxing ffmpeg output and muxing BDAV clips.
 
+pub mod audio;
 pub mod demux;
 pub mod mux;
 pub mod psi;
 
 use crate::bluray::{EsInfo, EsKind};
 use anyhow::{bail, Context, Result};
+use audio::Role;
 use demux::{Demuxer, Pes};
 use mux::{MuxStats, Muxer};
 use std::fs::File;
@@ -18,8 +20,9 @@ use std::path::Path;
 ///
 /// `streams` describes the output streams; the first video and the audio
 /// streams of the input are mapped in order onto the output's video and
-/// audio entries. `extra` holds additional PES packets (e.g. IG segments) as
-/// `(output stream index, pes)`.
+/// audio entries. Further input audio streams are the AC-3 cores of the
+/// TrueHD outputs, in order. `extra` holds additional PES packets (e.g. IG
+/// segments) as `(output stream index, pes)`.
 pub fn remux(
     input: &Path,
     output: &Path,
@@ -31,21 +34,22 @@ pub fn remux(
     demux.read_headers()?;
 
     let video_out = streams.iter().position(|s| matches!(s.kind, EsKind::Video(_)));
-    let mut audio_out = streams
-        .iter()
-        .enumerate()
-        .filter(|(_, s)| matches!(s.kind, EsKind::Audio { .. }))
-        .map(|(i, _)| i);
+    let role = |i: usize| match streams[i].kind {
+        EsKind::Audio { codec, .. } => Role::for_codec(codec),
+        _ => Role::AsIs,
+    };
+    let audio: Vec<usize> = streams.iter().enumerate().filter(|(_, s)| matches!(s.kind, EsKind::Audio { .. })).map(|(i, _)| i).collect();
+    let mut audio_out = audio.iter().map(|&i| (i, role(i))).chain(audio.iter().filter(|&&i| role(i) == Role::TrueHd).map(|&i| (i, Role::TrueHdCore)));
 
-    let mut map: Vec<Option<usize>> = Vec::new();
+    let mut map: Vec<Option<(usize, Role)>> = Vec::new();
     let mut have_video = false;
     for s in &demux.streams {
         let out = match s.stream_type {
             0x1b if !have_video => {
                 have_video = true;
-                video_out
+                video_out.map(|v| (v, Role::AsIs))
             }
-            0x80 | 0x81 | 0x06 | 0x03 | 0x04 | 0x0f => audio_out.next(),
+            0x80..=0x86 | 0x06 | 0x03 | 0x04 | 0x0f | 0x87 => audio_out.next(),
             _ => None,
         };
         map.push(out);
@@ -59,14 +63,19 @@ pub fn remux(
     for (s, pes) in extra {
         muxer.push(s, pes);
     }
+    // Audio split into core and extension comes out as two packets.
+    let mut pending: std::collections::VecDeque<(usize, Pes)> = Default::default();
     muxer.run(
         || {
-            while let Some(pes) = demux.next_pes()? {
-                if let Some(out) = map[pes.stream] {
-                    return Ok(Some((out, pes)));
+            loop {
+                if let Some(p) = pending.pop_front() {
+                    return Ok(Some(p));
+                }
+                let Some(pes) = demux.next_pes()? else { return Ok(None) };
+                if let Some((out, role)) = map[pes.stream] {
+                    pending.extend(audio::convert(pes, role).into_iter().map(|p| (out, p)));
                 }
             }
-            Ok(None)
         },
         &mut progress,
     )

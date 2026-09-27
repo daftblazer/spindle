@@ -53,14 +53,7 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
         None
     };
     let duration = req.duration.min(info.duration - start).max(1.0);
-    let settings = EncodeSettings {
-        video: project.disc.video,
-        video_bitrate: project.disc.video_bitrate,
-        audio: project.disc.audio,
-        audio_bitrate: project.disc.audio_bitrate,
-        encoder: project.disc.encoder,
-        quality: project.disc.quality,
-    };
+    let settings = EncodeSettings::for_disc(&project.disc);
 
     let work = preview_dir().join(format!("work-{}", crate::model::new_id()));
     std::fs::create_dir_all(&work)?;
@@ -68,6 +61,10 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
         let progress = |f: f64| emit(BuildEvent::Progress(f.clamp(0.0, 1.0)));
 
         let tmp = work.join("preview.ts");
+        if project.disc.normalize_loudness {
+            emit(BuildEvent::Stage(format!("Measuring the loudness of “{}”", t.name)));
+            crate::build::measure_loudness(project, t, &settings, cancel)?;
+        }
         let audio = crate::build::title_audio(project, t, &settings, start)?;
         let inputs: Vec<transcode::AudioInput> = audio.iter().map(|(i, _)| i.clone()).collect();
         let vformat = match keep {

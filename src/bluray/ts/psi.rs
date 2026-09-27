@@ -79,9 +79,7 @@ pub fn pmt(streams: &[EsInfo]) -> Vec<u8> {
         let st = stream_type(es);
         match &es.kind {
             EsKind::Video(v) => registration(&mut d, &[0xFF, st, (v.format_code() << 4) | v.rate_code(), 0x3F]),
-            EsKind::Audio { channels, .. } => {
-                registration(&mut d, &[0xFF, st, (EsInfo::audio_format_code(*channels) << 4) | 1, 0x3F])
-            }
+            EsKind::Audio { .. } => registration(&mut d, &[0xFF, st, es.audio_attributes(), 0x3F]),
             EsKind::Ig { .. } | EsKind::Pg { .. } => {}
         };
         let d = d.into_bytes();

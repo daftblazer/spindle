@@ -60,20 +60,28 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     page.add(&g);
 
     let g = rows::group(&gettext("Audio"));
-    let codecs = [gettext("Dolby Digital (AC-3)"), gettext("Uncompressed PCM")];
-    g.add(&rows::combo(
-        doc,
-        &gettext("Codec"),
-        &codecs,
-        if d.audio == AudioCodec::Ac3 { 0 } else { 1 },
-        Change::Content,
-        |p, i| p.disc.audio = if i == 0 { AudioCodec::Ac3 } else { AudioCodec::Lpcm },
-    ));
+    g.set_description(Some(&gettext(
+        "Audio is encoded to this format. DTS, DTS-HD, Dolby TrueHD and Dolby Digital Plus sources are copied as they are, since Blu-ray players decode them.",
+    )));
+    let codecs = [gettext("Dolby Digital (AC-3)"), gettext("LPCM 16-bit (uncompressed)"), gettext("LPCM 24-bit (uncompressed)")];
+    let sel = AudioCodec::ENCODE.iter().position(|c| *c == d.audio).unwrap_or(0);
+    let codec_row = rows::combo(doc, &gettext("Format"), &codecs, sel, Change::Content, |p, i| {
+        p.disc.audio = AudioCodec::ENCODE[i.min(AudioCodec::ENCODE.len() - 1)];
+    });
+    g.add(&codec_row);
     let labels: Vec<String> = AUDIO_BITRATES.iter().map(|b| format!("{b} kbit/s")).collect();
     let sel = AUDIO_BITRATES.iter().position(|b| *b == d.audio_bitrate).unwrap_or(3);
-    g.add(&rows::combo(doc, &gettext("AC-3 Bitrate"), &labels, sel, Change::Content, |p, i| {
+    let bitrate_row = rows::combo(doc, &gettext("AC-3 Bitrate"), &labels, sel, Change::Content, |p, i| {
         p.disc.audio_bitrate = AUDIO_BITRATES[i.min(AUDIO_BITRATES.len() - 1)];
-    }));
+    });
+    bitrate_row.set_subtitle(&gettext("448 or 640 for 5.1 surround"));
+    bitrate_row.set_visible(d.audio == AudioCodec::Ac3);
+    codec_row.connect_selected_notify(glib::clone!(#[weak] bitrate_row, move |r| bitrate_row.set_visible(r.selected() == 0)));
+    g.add(&bitrate_row);
+    let loud = rows::switch(doc, &gettext("Even Out Loudness"), d.normalize_loudness, Change::Content, |p, v| p.disc.normalize_loudness = v);
+    loud.set_subtitle(&gettext("Measures every track and sets it to −23 LUFS (EBU R128), so titles play at the same volume. Tracks are then re-encoded rather than copied."));
+    loud.set_subtitle_lines(3);
+    g.add(&loud);
     page.add(&g);
 
     subtitle_group(doc, &page);

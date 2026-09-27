@@ -1084,7 +1084,12 @@ impl Inspector {
         let p = doc.project();
         let Some(t) = p.title(id) else { return };
         let g = group(&gettext("Audio"));
-        g.set_description(Some(&gettext("The first track plays by default; viewers switch with the remote. Compatible AC-3 is copied without re-encoding.")));
+        g.set_description(Some(&gettext("The first track plays by default; viewers switch with the remote. Audio Blu-ray players decode (AC-3, DTS, DTS-HD, TrueHD) is copied without re-encoding.")));
+
+        // What each track becomes on the disc.
+        let set = crate::media::transcode::EncodeSettings::for_disc(&p.disc);
+        let on_disc: std::collections::HashMap<Id, (crate::media::transcode::AudioInput, crate::bluray::EsInfo)> =
+            t.disc_audio().map(|a| a.id).zip(crate::build::title_audio(&p, t, &set, 0.0).unwrap_or_default()).collect();
 
         fn track_mut(p: &mut Project, title: Id, track: Id) -> Option<&mut AudioTrack> {
             p.title_mut(title)?.audio.iter_mut().find(|a| a.id == track)
@@ -1105,6 +1110,24 @@ impl Inspector {
             if first_enabled == Some(tid) {
                 subtitle.push_str(&format!(" · {}", gettext("default")));
             }
+            let result = on_disc.get(&tid).map(|(input, es)| {
+                let codec = match es.kind {
+                    crate::bluray::EsKind::Audio { codec, .. } => codec.label(),
+                    _ => "",
+                };
+                let layout = match input.output_channels() {
+                    1 => gettext("mono"),
+                    2 => gettext("stereo"),
+                    6 => "5.1".to_string(),
+                    8 => "7.1".to_string(),
+                    n => format!("{n} ch"),
+                };
+                if input.copy.is_some() {
+                    gettext("On the disc as it is: {}").replace("{}", &format!("{codec} {layout}"))
+                } else {
+                    gettext("Encoded as {}").replace("{}", &format!("{codec} {layout}"))
+                }
+            });
             let row = adw::ExpanderRow::builder()
                 .title(glib::markup_escape_text(&track.name).as_str())
                 .subtitle(glib::markup_escape_text(&subtitle).as_str())
@@ -1149,12 +1172,40 @@ impl Inspector {
                 }
             });
             lang.set_tooltip_text(Some(&gettext("ISO 639 code such as eng, fra or jpn")));
+            if let Some(result) = &result {
+                let info = adw::ActionRow::builder().title(gettext("On the Disc")).subtitle(result).build();
+                info.add_css_class("property");
+                row.add_row(&info);
+            }
             row.add_row(&lang);
             row.add_row(&rows::entry(doc, &gettext("Name"), &track.name, Change::Content, move |p, v| {
                 if let Some(a) = track_mut(p, id, tid) {
                     a.name = v;
                 }
             }));
+            let labels = [gettext("Original"), gettext("Mono"), gettext("Stereo"), gettext("5.1 Surround")];
+            let sel = ChannelLayout::ALL.iter().position(|l| *l == track.layout).unwrap_or(0);
+            let channels = rows::combo(doc, &gettext("Channels"), &labels, sel, Change::Content, move |p, i| {
+                if let Some(a) = track_mut(p, id, tid) {
+                    a.layout = ChannelLayout::ALL[i.min(3)];
+                }
+            });
+            channels.set_subtitle(&match track.layout {
+                ChannelLayout::Original => gettext("7.1 is mixed down to 5.1 when encoding"),
+                ChannelLayout::Surround if stream.as_ref().is_some_and(|s| s.channels < 6) => gettext("Spreads the sound over the surround speakers"),
+                _ => gettext("Mixed to this layout"),
+            });
+            row.add_row(&channels);
+            if stream.as_ref().and_then(|s| s.bluray_codec()).is_some() {
+                let keep = rows::switch(doc, &gettext("Keep Original Audio"), !track.reencode, Change::Content, move |p, v| {
+                    if let Some(a) = track_mut(p, id, tid) {
+                        a.reencode = !v;
+                    }
+                });
+                keep.set_subtitle(&gettext("Blu-ray players decode this format, so it can go on the disc as it is"));
+                keep.set_subtitle_lines(2);
+                row.add_row(&keep);
+            }
             if let AudioSource::External { offset, .. } = track.source {
                 let delay = rows::spin(doc, &gettext("Delay"), offset, -600.0, 600.0, 0.1, 2, Change::Content, move |p, v| {
                     if let Some(a) = track_mut(p, id, tid) {

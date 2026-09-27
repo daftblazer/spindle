@@ -54,8 +54,8 @@ fn write_coding_info(w: &mut BitWriter, s: &EsInfo) {
                 .flag(false /* cc */)
                 .zeros(17);
         }
-        EsKind::Audio { channels, lang, .. } => {
-            w.bits(4, EsInfo::audio_format_code(*channels) as u64).bits(4, 1 /* 48 kHz */);
+        EsKind::Audio { lang, .. } => {
+            w.u8(s.audio_attributes());
             w.ascii(&lang3(lang), 3);
         }
         EsKind::Ig { lang } | EsKind::Pg { lang } => {

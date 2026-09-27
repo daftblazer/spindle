@@ -73,8 +73,8 @@ fn write_stn(w: &mut BitWriter, streams: &[EsInfo]) {
                     w.bits(4, v.format_code() as u64).bits(4, v.rate_code() as u64);
                     w.bytes(&[0; 3]);
                 }
-                EsKind::Audio { channels, lang, .. } => {
-                    w.bits(4, EsInfo::audio_format_code(*channels) as u64).bits(4, 1 /* 48 kHz */);
+                EsKind::Audio { lang, .. } => {
+                    w.u8(s.audio_attributes());
                     w.ascii(&lang3(lang), 3);
                 }
                 EsKind::Ig { lang } | EsKind::Pg { lang } => {

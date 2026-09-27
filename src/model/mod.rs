@@ -57,6 +57,9 @@ pub struct DiscSettings {
     pub encoder: crate::media::hwenc::VideoEncoder,
     #[serde(default)]
     pub quality: crate::media::transcode::Quality,
+    /// Bring every encoded audio track to the same loudness (EBU R128).
+    #[serde(default)]
+    pub normalize_loudness: bool,
 }
 
 impl Default for DiscSettings {
@@ -74,6 +77,7 @@ impl Default for DiscSettings {
             top_menu: None,
             encoder: Default::default(),
             quality: Default::default(),
+            normalize_loudness: false,
         }
     }
 }

@@ -2,6 +2,7 @@
 
 //! Media inspection via `ffprobe`.
 
+use crate::bluray::AudioCodec;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -46,7 +47,7 @@ pub struct MediaInfo {
 }
 
 /// Current [`MediaInfo::probe_version`].
-pub const PROBE_VERSION: u32 = 2;
+pub const PROBE_VERSION: u32 = 3;
 
 /// An audio stream inside a media file.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -61,9 +62,31 @@ pub struct AudioStream {
     pub lang: Option<String>,
     pub title: Option<String>,
     pub default: bool,
+    /// Codec profile, e.g. "DTS-HD MA".
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// E-AC-3 only: whether it carries an AC-3 core (as Blu-ray requires).
+    #[serde(default)]
+    pub ac3_core: Option<bool>,
 }
 
 impl AudioStream {
+    /// The Blu-ray codec this stream can be copied as, if it's valid on a
+    /// disc as it is.
+    pub fn bluray_codec(&self) -> Option<AudioCodec> {
+        let hd_rate = matches!(self.sample_rate, 48_000 | 96_000);
+        let profile = self.profile.as_deref().unwrap_or("");
+        match self.codec.as_str() {
+            "ac3" if self.is_bluray_ac3() => Some(AudioCodec::Ac3),
+            "dts" if profile.starts_with("DTS-HD MA") && hd_rate && self.channels <= 8 => Some(AudioCodec::DtsHdMa),
+            "dts" if profile.starts_with("DTS-HD HRA") && hd_rate && self.channels <= 8 => Some(AudioCodec::DtsHdHra),
+            "dts" if !profile.starts_with("DTS-HD") && !profile.contains("Express") && self.sample_rate == 48_000 && self.channels <= 7 => Some(AudioCodec::Dts),
+            "truehd" if hd_rate && self.channels <= 8 => Some(AudioCodec::TrueHd),
+            "eac3" if self.ac3_core == Some(true) && self.sample_rate == 48_000 && self.channels <= 8 => Some(AudioCodec::Eac3),
+            _ => None,
+        }
+    }
+
     /// AC-3 that is valid on a Blu-ray as it is.
     pub fn is_bluray_ac3(&self) -> bool {
         self.codec == "ac3" && self.sample_rate == 48000 && self.channels <= 6 && self.bit_rate.is_none_or(|b| b <= 640_000)
@@ -170,6 +193,7 @@ struct ProbeStream {
     color_transfer: Option<String>,
     color_space: Option<String>,
     pix_fmt: Option<String>,
+    profile: Option<String>,
     #[serde(default)]
     tags: std::collections::HashMap<String, String>,
     #[serde(default)]
@@ -197,6 +221,9 @@ pub fn probe(path: &Path) -> Result<MediaInfo> {
         bail!("ffprobe could not read {}: {}", path.display(), String::from_utf8_lossy(&out.stderr).trim());
     }
     let mut info = parse(&out.stdout)?;
+    for a in info.audio_streams.iter_mut().filter(|a| a.codec == "eac3") {
+        a.ac3_core = eac3_has_core(path, a.index);
+    }
     // Containers disagree on what their field order flags mean; a decoded
     // frame says which field comes first.
     if info.interlaced() == Some(true) {
@@ -205,6 +232,53 @@ pub fn probe(path: &Path) -> Result<MediaInfo> {
         }
     }
     Ok(info)
+}
+
+/// Whether an E-AC-3 stream has AC-3 frames (bsid up to 8) alongside its
+/// E-AC-3 ones, as Dolby Digital Plus on Blu-ray does.
+fn eac3_has_core(path: &Path, index: usize) -> Option<bool> {
+    let out = Command::new(super::ffmpeg_bin())
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args(["-map", &format!("0:a:{index}"), "-c", "copy", "-frames:a", "24", "-f", "eac3", "-"])
+        .output()
+        .ok()?;
+    Some(ac3_frames(&out.stdout).iter().any(|&bsid| bsid <= 8))
+}
+
+/// bsid of each (E-)AC-3 syncframe in `data`.
+pub fn ac3_frames(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 6 <= data.len() {
+        if data[i] != 0x0B || data[i + 1] != 0x77 {
+            i += 1;
+            continue;
+        }
+        let bsid = data[i + 5] >> 3;
+        let size = if bsid <= 10 {
+            // AC-3: frame size from fscod and frmsizecod.
+            ac3_frame_bytes(data[i + 4] >> 6, data[i + 4] & 0x3F)
+        } else {
+            (((data[i + 2] as usize & 0x07) << 8 | data[i + 3] as usize) + 1) * 2
+        };
+        out.push(bsid);
+        i += size.max(2);
+    }
+    out
+}
+
+/// Bytes in an AC-3 frame (ATSC A/52 table 5.18).
+pub fn ac3_frame_bytes(fscod: u8, frmsizecod: u8) -> usize {
+    const KBPS: [usize; 19] = [32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512, 576, 640];
+    let Some(&kbps) = KBPS.get(frmsizecod as usize / 2) else { return 2 };
+    match fscod {
+        // 48 kHz: 2 words per kbit/s; 32 kHz: 3.
+        0 => kbps * 4,
+        1 => (kbps * 2 * 1000 * 1536 / 44100 / 16 + (frmsizecod as usize & 1)) * 2,
+        2 => kbps * 6,
+        _ => 2,
+    }
 }
 
 /// Whether the first interlaced frame shows its top field first.
@@ -275,6 +349,8 @@ fn parse(json: &[u8]) -> Result<MediaInfo> {
                     lang: tag("language").filter(|l| l.len() == 3 && l != "und"),
                     title: tag("title"),
                     default: s.disposition.get("default") == Some(&1),
+                    profile: s.profile.clone(),
+                    ac3_core: None,
                 };
                 if info.audio_codec.is_none() {
                     info.audio_codec = Some(stream.codec.clone());
@@ -301,6 +377,7 @@ mod tests {
              "avg_frame_rate":"24000/1001","r_frame_rate":"24000/1001","sample_aspect_ratio":"1:1",
              "field_order":"progressive","color_transfer":"smpte2084","pix_fmt":"yuv420p10le"},
             {"codec_type":"audio","codec_name":"aac","channels":6,"tags":{"language":"eng"}},
+            {"codec_type":"audio","codec_name":"dts","profile":"DTS-HD MA","channels":8,"sample_rate":"48000"},
             {"codec_type":"audio","codec_name":"ac3","channels":2,"sample_rate":"48000","bit_rate":"192000",
              "tags":{"language":"jpn","title":"Commentary"}},
             {"codec_type":"subtitle","codec_name":"subrip","tags":{"language":"fre","title":"Francais"},
@@ -319,11 +396,19 @@ mod tests {
         assert!((i.display_aspect() - 16.0 / 9.0).abs() < 1e-9);
         assert_eq!(i.audio_channels, 6);
         assert_eq!(i.audio_lang.as_deref(), Some("eng"));
-        assert_eq!(i.audio_streams.len(), 2);
-        assert_eq!(i.audio_streams[1].index, 1);
-        assert_eq!(i.audio_streams[1].title.as_deref(), Some("Commentary"));
-        assert!(i.audio_streams[1].is_bluray_ac3());
+        assert_eq!(i.audio_streams.len(), 3);
+        assert_eq!(i.audio_streams[1].bluray_codec(), Some(AudioCodec::DtsHdMa));
+        assert_eq!(i.audio_streams[0].bluray_codec(), None);
+        assert_eq!(i.audio_streams[2].index, 2);
+        assert_eq!(i.audio_streams[2].title.as_deref(), Some("Commentary"));
+        assert!(i.audio_streams[2].is_bluray_ac3());
         assert!(!i.audio_streams[0].is_bluray_ac3());
+
+        // An AC-3 frame (48 kHz, 448 kbit/s) then an E-AC-3 one.
+        let mut frames = vec![0x0B, 0x77, 0, 0, 0x1E, 8 << 3];
+        frames.resize(ac3_frame_bytes(0, 0x1E), 0);
+        frames.extend([0x0B, 0x77, 0x00, 0x03, 0, 16 << 3, 0, 0]);
+        assert_eq!(ac3_frames(&frames), vec![8, 16]);
         assert!((i.duration - 123.456).abs() < 1e-9);
         assert_eq!(i.subtitles.len(), 2);
         assert_eq!(i.subtitles[0].lang.as_deref(), Some("fre"));

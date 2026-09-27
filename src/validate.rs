@@ -42,16 +42,31 @@ pub fn disc_for(bytes: f64) -> Option<(&'static str, f64)> {
     DISCS.iter().copied().find(|(_, cap)| bytes <= cap * MARGIN)
 }
 
-/// Audio bitrate on disc in kbit/s for a source with `channels`.
+/// Bitrate on disc in kbit/s of an audio stream encoded to the disc's
+/// format with `channels` channels.
 fn audio_kbps(p: &Project, channels: u8) -> f64 {
+    let ch = (channels as f64).max(2.0);
     match p.disc.audio {
-        AudioCodec::Ac3 => p.disc.audio_bitrate as f64,
         // 48 kHz; 16-bit samples, stored in 24-bit words for more than two channels.
-        AudioCodec::Lpcm => {
-            let ch = crate::media::transcode::output_channels(channels) as f64;
-            48.0 * if ch > 2.0 { 24.0 } else { 16.0 } * ch.max(2.0)
-        }
+        AudioCodec::Lpcm => 48.0 * if ch > 2.0 { 24.0 } else { 16.0 } * ch,
+        AudioCodec::Lpcm24 => 48.0 * 24.0 * ch,
+        _ => p.disc.audio_bitrate as f64,
     }
+}
+
+/// Bitrate on disc in kbit/s of a copied stream, from the source's when
+/// known (plus the AC-3 core of TrueHD).
+fn copied_kbps(codec: AudioCodec, source: Option<u64>) -> f64 {
+    let typical = match codec {
+        AudioCodec::Ac3 => 640.0,
+        AudioCodec::Dts => 1509.0,
+        AudioCodec::DtsHdHra => 3000.0,
+        AudioCodec::DtsHdMa | AudioCodec::TrueHd => 4000.0,
+        AudioCodec::Eac3 => 1536.0,
+        _ => 2304.0,
+    };
+    let core = if codec == AudioCodec::TrueHd { 640.0 } else { 0.0 };
+    source.map_or(typical, |b| b as f64 / 1000.0) + core
 }
 
 /// Transport overhead (packet headers, PSI, subtitles) in kbit/s.
@@ -67,17 +82,17 @@ fn size_parts(p: &Project) -> (f64, f64) {
         let d = a.info.duration;
         let own = a.info.audio();
         let (mut audio, mut extra_audio) = (0.0, 0.0);
-        for track in t.disc_audio() {
-            match track.source {
-                AudioSource::Embedded { index } => {
-                    if let Some(s) = own.iter().find(|s| s.index == index) {
-                        audio += s.bit_rate.filter(|_| s.is_bluray_ac3()).map_or_else(|| audio_kbps(p, s.channels), |b| b as f64 / 1000.0);
-                    }
-                }
-                AudioSource::External { asset, .. } => {
-                    let ch = p.asset(asset).and_then(|a| a.info.audio().first().map(|s| s.channels)).unwrap_or(2);
-                    extra_audio += audio_kbps(p, ch);
-                }
+        let set = crate::media::transcode::EncodeSettings::for_disc(&p.disc);
+        for (input, _) in crate::build::title_audio(p, t, &set, 0.0).unwrap_or_default() {
+            let source = if input.file.is_some() { None } else { own.iter().find(|s| s.index == input.index).and_then(|s| s.bit_rate) };
+            let kbps = match input.copy {
+                Some(codec) => copied_kbps(codec, source),
+                None => audio_kbps(p, input.output_channels()),
+            };
+            if input.file.is_some() {
+                extra_audio += kbps;
+            } else {
+                audio += kbps;
             }
         }
         match std::fs::metadata(&a.path) {

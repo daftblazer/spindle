@@ -210,7 +210,7 @@ mod tests {
     }
 
     fn audio(lang: &str) -> AudioTrack {
-        AudioTrack { id: new_id(), source: AudioSource::Embedded { index: 0 }, lang: lang.into(), name: lang.into(), enabled: true }
+        AudioTrack { id: new_id(), source: AudioSource::Embedded { index: 0 }, lang: lang.into(), name: lang.into(), enabled: true, layout: Default::default(), reencode: false }
     }
 
     fn anime() -> Project {

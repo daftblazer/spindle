@@ -24,8 +24,25 @@ pub fn run(args: &[String], cancel: &AtomicBool, mut progress: impl FnMut(f64)) 
     run_status(args, cancel, |s| progress(s.time))
 }
 
+/// Run ffmpeg and return the end of its log (for filters that report
+/// there, like loudness measurements).
+pub fn run_log(args: &[String], cancel: &AtomicBool) -> Result<String> {
+    let mut all = vec!["-v".to_string(), "info".to_string()];
+    all.extend(args.iter().cloned());
+    let tail = Arc::new(Mutex::new(VecDeque::<String>::new()));
+    run_inner(&all, cancel, &mut |_| {}, &tail, 60)?;
+    let t = tail.lock().unwrap();
+    Ok(t.iter().cloned().collect::<Vec<_>>().join("\n"))
+}
+
 /// [`run`], with the encoding speed as well.
 pub fn run_status(args: &[String], cancel: &AtomicBool, mut progress: impl FnMut(Status)) -> Result<()> {
+    let tail = Arc::new(Mutex::new(VecDeque::<String>::new()));
+    run_inner(args, cancel, &mut progress, &tail, 20)
+}
+
+/// Run ffmpeg keeping the last `keep` lines of its log in `tail`.
+fn run_inner(args: &[String], cancel: &AtomicBool, progress: &mut dyn FnMut(Status), tail: &Arc<Mutex<VecDeque<String>>>, keep: usize) -> Result<()> {
     log::debug!("ffmpeg {}", args.join(" "));
     let mut child = Command::new(super::ffmpeg_bin())
         .args(["-hide_banner", "-nostdin", "-y", "-nostats", "-progress", "pipe:1"])
@@ -37,7 +54,6 @@ pub fn run_status(args: &[String], cancel: &AtomicBool, mut progress: impl FnMut
         .context("failed to run ffmpeg (is FFmpeg installed?)")?;
 
     // Keep the last lines of stderr for error reporting.
-    let tail = Arc::new(Mutex::new(VecDeque::<String>::new()));
     let stderr = child.stderr.take().unwrap();
     let tail2 = tail.clone();
     let err_thread = std::thread::spawn(move || {
@@ -48,7 +64,7 @@ pub fn run_status(args: &[String], cancel: &AtomicBool, mut progress: impl FnMut
             buf.clear();
             let mut t = tail2.lock().unwrap();
             t.push_back(line);
-            if t.len() > 20 {
+            if t.len() > keep {
                 t.pop_front();
             }
         }

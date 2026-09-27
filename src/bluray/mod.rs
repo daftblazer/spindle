@@ -145,14 +145,62 @@ impl VideoFormat {
 pub enum AudioCodec {
     #[default]
     Ac3,
+    /// 16-bit LPCM.
     Lpcm,
+    Lpcm24,
+    /// The codecs below are only copied from sources, never encoded.
+    Dts,
+    DtsHdHra,
+    DtsHdMa,
+    /// Dolby TrueHD, with an AC-3 core for players without TrueHD.
+    TrueHd,
+    /// Dolby Digital Plus (an AC-3 core plus E-AC-3 extension frames).
+    Eac3,
 }
 
 impl AudioCodec {
+    /// The formats audio can be encoded to.
+    pub const ENCODE: [AudioCodec; 3] = [AudioCodec::Ac3, AudioCodec::Lpcm, AudioCodec::Lpcm24];
+
     pub fn coding_type(self) -> u8 {
         match self {
-            AudioCodec::Lpcm => 0x80,
+            AudioCodec::Lpcm | AudioCodec::Lpcm24 => 0x80,
             AudioCodec::Ac3 => 0x81,
+            AudioCodec::Dts => 0x82,
+            AudioCodec::TrueHd => 0x83,
+            AudioCodec::Eac3 => 0x84,
+            AudioCodec::DtsHdHra => 0x85,
+            AudioCodec::DtsHdMa => 0x86,
+        }
+    }
+
+    pub fn is_lpcm(self) -> bool {
+        matches!(self, AudioCodec::Lpcm | AudioCodec::Lpcm24)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            AudioCodec::Ac3 => "Dolby Digital (AC-3)",
+            AudioCodec::Lpcm => "LPCM 16-bit",
+            AudioCodec::Lpcm24 => "LPCM 24-bit",
+            AudioCodec::Dts => "DTS",
+            AudioCodec::DtsHdHra => "DTS-HD High Resolution",
+            AudioCodec::DtsHdMa => "DTS-HD Master Audio",
+            AudioCodec::TrueHd => "Dolby TrueHD",
+            AudioCodec::Eac3 => "Dolby Digital Plus",
+        }
+    }
+
+    /// `sampling_frequency` code of stream attributes. HD codecs above
+    /// 48 kHz carry a 48 kHz core.
+    pub fn rate_code(self, rate: u32) -> u8 {
+        let core = matches!(self, AudioCodec::DtsHdHra | AudioCodec::DtsHdMa | AudioCodec::TrueHd);
+        match rate {
+            96_000 if core => 14,
+            96_000 => 4,
+            192_000 if core => 12,
+            192_000 => 5,
+            _ => 1,
         }
     }
 }
@@ -161,7 +209,7 @@ impl AudioCodec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EsKind {
     Video(VideoFormat),
-    Audio { codec: AudioCodec, channels: u8, lang: String },
+    Audio { codec: AudioCodec, channels: u8, rate: u32, lang: String },
     Ig { lang: String },
     /// Presentation graphics (subtitles).
     Pg { lang: String },
@@ -189,6 +237,14 @@ impl EsInfo {
             1 => 1,
             2 => 3,
             _ => 6,
+        }
+    }
+
+    /// (presentation type, sampling frequency) byte of audio attributes.
+    pub fn audio_attributes(&self) -> u8 {
+        match &self.kind {
+            EsKind::Audio { codec, channels, rate, .. } => (Self::audio_format_code(*channels) << 4) | codec.rate_code(*rate),
+            _ => 0,
         }
     }
 }

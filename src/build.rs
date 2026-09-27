@@ -25,6 +25,7 @@ use crate::encode_cache;
 use crate::subtitles;
 use crate::media::transcode::{self, EncodeSettings};
 use crate::media::ffmpeg;
+use crate::media::probe::AudioStream;
 use crate::model::*;
 use crate::render::{self, ButtonState, ImageCache};
 use anyhow::{bail, Context, Result};
@@ -178,38 +179,90 @@ pub struct Builder<'a> {
 }
 
 /// Audio of a title: the ffmpeg inputs and the disc stream of each.
-/// AC-3 that is already Blu-ray compatible is copied rather than
-/// re-encoded (for kept video always, else when the disc uses AC-3), except
-/// in clips starting at `clip_start` > 0: a copied stream cut there keeps
-/// audio from before it.
+/// Streams already valid on Blu-ray are copied rather than re-encoded:
+/// DTS, DTS-HD, TrueHD and Dolby Digital Plus always, AC-3 for kept video
+/// or when the disc uses AC-3. Not when the track's channels or loudness
+/// change, or in clips starting at `clip_start` > 0 (a copied stream cut
+/// there keeps audio from before it). Loudness uses earlier measurements
+/// (see [`measure_loudness`]).
 pub fn title_audio(p: &Project, t: &Title, set: &EncodeSettings, clip_start: f64) -> Result<Vec<(transcode::AudioInput, EsInfo)>> {
     let asset = p.asset(t.asset).context("title without video")?;
-    let own = asset.info.audio();
     let mut out = Vec::new();
-    for track in t.disc_audio() {
-        let input = match track.source {
-            AudioSource::Embedded { index } => {
-                let Some(stream) = own.iter().find(|s| s.index == index) else { continue };
-                let copy = stream.is_bluray_ac3() && (t.keep_video || set.audio == AudioCodec::Ac3) && clip_start <= 0.0;
-                transcode::AudioInput { file: None, index, offset: 0.0, channels: stream.channels, copy }
-            }
-            AudioSource::External { asset, offset } => {
-                let a = p.asset(asset).with_context(|| format!("audio track “{}” of “{}” has no file", track.name, t.name))?;
-                let stream = a.info.audio().into_iter().next().with_context(|| format!("{} has no audio", a.path.display()))?;
-                transcode::AudioInput { file: Some(a.path.clone()), index: stream.index, offset, channels: stream.channels, copy: false }
-            }
+    for (track, file, stream, offset) in audio_sources(p, t)? {
+        let external = file != asset.path;
+        let copy = stream.bluray_codec().filter(|c| {
+            let wanted = match c {
+                AudioCodec::Ac3 => t.keep_video || set.audio == AudioCodec::Ac3,
+                _ => true,
+            };
+            wanted
+                && !track.reencode
+                && track.layout == ChannelLayout::Original
+                && !p.disc.normalize_loudness
+                && clip_start <= 0.0
+                && offset <= 0.0
+        });
+        let loudness = if p.disc.normalize_loudness && copy.is_none() {
+            crate::media::loudness::cached(&file, stream.index).map(|m| crate::media::loudness::filter(&m))
+        } else {
+            None
+        };
+        let input = transcode::AudioInput {
+            file: external.then(|| file.clone()),
+            index: stream.index,
+            offset,
+            channels: stream.channels,
+            copy,
+            layout: track.layout.channels(),
+            loudness,
         };
         let es = EsInfo {
             pid: PID_AUDIO_FIRST + out.len() as u16,
             kind: EsKind::Audio {
-                codec: if input.copy { AudioCodec::Ac3 } else { set.audio },
+                codec: copy.unwrap_or(set.audio),
                 channels: input.output_channels(),
+                rate: if copy.is_some() { stream.sample_rate } else { 48_000 },
                 lang: track.lang.clone(),
             },
         };
         out.push((input, es));
     }
     Ok(out)
+}
+
+/// Each disc audio track of `t` with its file, stream and delay.
+fn audio_sources<'p>(p: &'p Project, t: &'p Title) -> Result<Vec<(&'p AudioTrack, PathBuf, AudioStream, f64)>> {
+    let asset = p.asset(t.asset).context("title without video")?;
+    let own = asset.info.audio();
+    let mut out = Vec::new();
+    for track in t.disc_audio() {
+        match track.source {
+            AudioSource::Embedded { index } => {
+                let Some(stream) = own.iter().find(|s| s.index == index) else { continue };
+                out.push((track, asset.path.clone(), stream.clone(), 0.0));
+            }
+            AudioSource::External { asset, offset } => {
+                let a = p.asset(asset).with_context(|| format!("audio track “{}” of “{}” has no file", track.name, t.name))?;
+                let stream = a.info.audio().into_iter().next().with_context(|| format!("{} has no audio", a.path.display()))?;
+                out.push((track, a.path.clone(), stream, offset));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Measure the loudness of the tracks of `t` that will be adjusted.
+pub fn measure_loudness(p: &Project, t: &Title, set: &EncodeSettings, cancel: &AtomicBool) -> Result<()> {
+    if !p.disc.normalize_loudness {
+        return Ok(());
+    }
+    let copied: Vec<bool> = title_audio(p, t, set, 0.0)?.iter().map(|(i, _)| i.copy.is_some()).collect();
+    for ((track, file, stream, _), copied) in audio_sources(p, t)?.into_iter().zip(copied) {
+        if !copied {
+            crate::media::loudness::measure(&file, stream.index, cancel).with_context(|| format!("audio track “{}” of “{}”", track.name, t.name))?;
+        }
+    }
+    Ok(())
 }
 
 /// Validate a project before building. Returns human-readable problems.
@@ -245,14 +298,7 @@ fn object_for_menu(i: usize) -> u32 {
 
 impl<'a> Builder<'a> {
     pub fn new(project: &'a Project, out: &Path, cancel: &'a AtomicBool, emit: &'a (dyn Fn(BuildEvent) + Sync)) -> Self {
-        let settings = EncodeSettings {
-            video: project.disc.video,
-            video_bitrate: project.disc.video_bitrate,
-            audio: project.disc.audio,
-            audio_bitrate: project.disc.audio_bitrate,
-            encoder: project.disc.encoder,
-            quality: project.disc.quality,
-        };
+        let settings = EncodeSettings::for_disc(&project.disc);
         Builder {
             project,
             menus: project.disc_menus().collect(),
@@ -817,6 +863,7 @@ impl<'a> Builder<'a> {
             kind: EsKind::Audio {
                 codec: self.settings.audio,
                 channels: transcode::output_channels(info.audio_channels),
+                rate: 48_000,
                 lang: lang.into(),
             },
         }
@@ -919,6 +966,10 @@ impl<'a> Builder<'a> {
         let p = self.project;
         let n = self.title_clip(i);
         let key = title_key(i);
+        if p.disc.normalize_loudness {
+            self.tracker.update(&key, TaskState::Running, 0.0, "Measuring loudness");
+            measure_loudness(p, t, &self.settings, &self.stop)?;
+        }
         let plan = self.title_plan(t, n)?;
         let TitlePlan { asset, chapters, duration, audio, .. } = &plan;
         let (asset, duration) = (*asset, *duration);
@@ -1048,7 +1099,7 @@ impl<'a> Builder<'a> {
             .info
             .audio()
             .first()
-            .map(|s| transcode::AudioInput { file: None, index: s.index, offset: 0.0, channels: s.channels, copy: false })
+            .map(|s| transcode::AudioInput::encode(None, s.index, 0.0, s.channels))
             .into_iter()
             .collect();
         let opts = crate::media::picture::VideoOptions::default();

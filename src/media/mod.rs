@@ -5,6 +5,7 @@
 pub mod compat;
 pub mod ffmpeg;
 pub mod hwenc;
+pub mod loudness;
 pub mod picture;
 pub mod portal;
 pub mod probe;
