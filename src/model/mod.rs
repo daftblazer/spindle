@@ -147,6 +147,9 @@ pub struct Title {
     /// Last compatibility check of the video for `keep_video`.
     #[serde(default)]
     pub video_check: Option<crate::media::compat::Report>,
+    /// Deinterlacing, cropping and fitting of the picture.
+    #[serde(default)]
+    pub video: crate::media::picture::VideoOptions,
 }
 
 impl Title {
@@ -229,6 +232,7 @@ impl Project {
         let mut p: Project =
             serde_json::from_slice(&data).with_context(|| format!("parsing {}", path.display()))?;
         p.migrate();
+        let reprobe = p.assets.iter().any(|a| a.kind != AssetKind::Image && a.info.probe_version < crate::media::probe::PROBE_VERSION);
         // Resolve asset paths relative to the project file.
         if let Some(dir) = path.parent() {
             for a in &mut p.assets {
@@ -250,7 +254,32 @@ impl Project {
                 }
             }
         }
+        if reprobe {
+            p.reprobe();
+        }
         Ok(p)
+    }
+
+    /// Probe media again when it was probed by an older version (which
+    /// didn't record everything the build uses now).
+    fn reprobe(&mut self) {
+        let old: Vec<(usize, PathBuf)> = self
+            .assets
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.kind != AssetKind::Image && a.info.probe_version < crate::media::probe::PROBE_VERSION && a.path.exists())
+            .map(|(i, a)| (i, a.path.clone()))
+            .collect();
+        let mut found: Vec<(usize, MediaInfo)> = Vec::new();
+        for batch in old.chunks(8) {
+            std::thread::scope(|s| {
+                let handles: Vec<_> = batch.iter().map(|(i, path)| s.spawn(move || crate::media::probe::probe(path).ok().map(|info| (*i, info)))).collect();
+                found.extend(handles.into_iter().filter_map(|h| h.join().ok().flatten()));
+            });
+        }
+        for (i, info) in found {
+            self.assets[i].info = info;
+        }
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -411,6 +440,7 @@ impl Project {
             default_subtitle: None,
             keep_video: false,
             video_check: None,
+            video: Default::default(),
         };
         let id = t.id;
         self.titles.push(t);

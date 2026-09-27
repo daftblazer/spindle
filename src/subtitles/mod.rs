@@ -15,6 +15,7 @@ pub mod pgs;
 use crate::bluray::ig::Bitmap;
 use crate::bluray::VideoFormat;
 use crate::media::ffmpeg;
+use crate::media::picture::{self, Area};
 use crate::media::probe::MediaInfo;
 use crate::model::{SubtitleKind, SubtitleSource, SubtitleStyle, SubtitleTrack};
 use anyhow::{bail, Context, Result};
@@ -33,20 +34,20 @@ pub struct SubImage {
     pub forced: bool,
 }
 
-/// Where the source picture lands on the disc frame (fit + centre, like
-/// the video scaling filter).
-pub struct Placement {
-    pub scale: f64,
-    pub offset: (u32, u32),
-    pub size: (u32, u32),
+/// Where the video picture is on the disc frame when nothing is changed
+/// (kept video, or a whole picture fitted in).
+pub fn default_area(info: &MediaInfo, disc: VideoFormat) -> Area {
+    picture::plan(info, &Default::default(), disc).area
 }
 
-pub fn placement(src: (u32, u32), disc: VideoFormat) -> Placement {
-    let (dw, dh) = disc.size();
-    let (sw, sh) = (src.0.max(1) as f64, src.1.max(1) as f64);
-    let scale = (dw as f64 / sw).min(dh as f64 / sh);
-    let (w, h) = ((sw * scale).round() as u32, (sh * scale).round() as u32);
-    Placement { scale, offset: ((dw - w.min(dw)) / 2, (dh - h.min(dh)) / 2), size: (w.min(dw), h.min(dh)) }
+/// Squeeze images rendered with square pixels onto the disc's pixels.
+fn squeeze(img: &mut SubImage, k: f64) {
+    if (k - 1.0).abs() < 1e-3 {
+        return;
+    }
+    let w = ((img.bitmap.width as f64 * k).round() as u16).max(1);
+    img.bitmap = resize(&img.bitmap, w, img.bitmap.height);
+    img.x = (img.x as f64 * k).round() as u32;
 }
 
 /// Bilinear resize of a straight-alpha RGBA bitmap (premultiplied internally).
@@ -100,14 +101,14 @@ fn convert_text(input: &Path, out: &Path, cancel: &AtomicBool) -> Result<()> {
     ffmpeg::run(&args, cancel, |_| {}).context("could not read the subtitle file")
 }
 
-/// Produce the images of one track for a title whose video has `info`.
-/// `work` is a scratch directory.
+/// Produce the images of one track for a title whose video has `info` and
+/// is shown in `area` of the disc picture. `work` is a scratch directory.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare(
     track: &SubtitleTrack,
     video_path: &Path,
     info: &MediaInfo,
-    disc: VideoFormat,
+    area: &Area,
     style: &SubtitleStyle,
     work: &Path,
     window: Option<(f64, f64)>,
@@ -142,35 +143,42 @@ pub fn prepare(
     };
 
     let video_size = (info.width.max(1), info.height.max(1));
-    let place = placement(video_size, disc);
     let mut images = match track.kind() {
         SubtitleKind::Text => {
             let restyle = !track.is_ass() || style.restyle_ass;
+            // Rendered with square pixels, then squeezed onto wide ones.
+            let square = (area.w as f64 / area.squeeze).round() as u32;
             let opts = ass::RenderOptions {
-                frame: place.size,
-                offset: place.offset,
+                frame: (square, area.h),
+                offset: (0, 0),
                 storage: video_size,
                 style: restyle.then_some(style),
                 // (start, end) on the video timeline → script clock in ms
                 window: window.map(|(a, b)| (((a + base) * 1000.0) as i64, ((b + base) * 1000.0) as i64)),
             };
-            ass::render(&source_file, &opts, cancel)?
+            let mut images = ass::render(&source_file, &opts, cancel)?;
+            for img in &mut images {
+                squeeze(img, area.squeeze);
+                img.x += area.x;
+                img.y += area.y;
+            }
+            images
         }
         SubtitleKind::Pgs => {
             let data = std::fs::read(&source_file).with_context(|| format!("reading {}", source_file.display()))?;
             pgs::decode_sup(&data)?
                 .into_iter()
                 .map(|d| {
-                    // PGS canvas → disc picture.
-                    let p = placement((d.canvas.0 as u32, d.canvas.1 as u32), disc);
+                    // PGS canvas → the picture's area of the disc.
+                    let (sx, sy) = (area.w as f64 / d.canvas.0.max(1) as f64, area.h as f64 / d.canvas.1.max(1) as f64);
                     let mut img = d.image;
-                    if (p.scale - 1.0).abs() > 1e-3 {
-                        let w = ((img.bitmap.width as f64 * p.scale).round() as u16).max(1);
-                        let h = ((img.bitmap.height as f64 * p.scale).round() as u16).max(1);
+                    if (sx - 1.0).abs() > 1e-3 || (sy - 1.0).abs() > 1e-3 {
+                        let w = ((img.bitmap.width as f64 * sx).round() as u16).max(1);
+                        let h = ((img.bitmap.height as f64 * sy).round() as u16).max(1);
                         img.bitmap = resize(&img.bitmap, w, h);
                     }
-                    img.x = (img.x as f64 * p.scale).round() as u32 + p.offset.0;
-                    img.y = (img.y as f64 * p.scale).round() as u32 + p.offset.1;
+                    img.x = (img.x as f64 * sx).round() as u32 + area.x;
+                    img.y = (img.y as f64 * sy).round() as u32 + area.y;
                     img
                 })
                 .collect()
@@ -194,11 +202,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn placement_letterboxes() {
-        let p = placement((640, 480), VideoFormat::P1080_23976);
-        assert_eq!(p.size, (1440, 1080));
-        assert_eq!(p.offset, (240, 0));
-        let p = placement((1920, 800), VideoFormat::P1080_23976);
-        assert_eq!(p.offset, (0, 140));
+    fn default_area_letterboxes() {
+        let info = |w, h| MediaInfo { width: w, height: h, ..Default::default() };
+        let a = default_area(&info(640, 480), VideoFormat::P1080_23976);
+        assert_eq!((a.w, a.h, a.x, a.y), (1440, 1080, 240, 0));
+        let a = default_area(&info(1920, 800), VideoFormat::P1080_23976);
+        assert_eq!((a.x, a.y), (0, 140));
     }
 }

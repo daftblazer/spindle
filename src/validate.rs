@@ -376,6 +376,12 @@ pub fn check(p: &Project) -> Vec<Issue> {
         if t.keep_video && t.video_check.is_none() {
             warn(gettext("“{}” keeps its original video but hasn't been checked for compatibility.").replace("{}", &t.name), target);
         }
+        if !t.keep_video && p.asset(t.asset).is_some_and(|a| a.info.is_hdr()) {
+            warn(
+                gettext("“{}” is HDR video. Blu-ray is standard range, so it will be tone mapped: highlights and colours will look less intense.").replace("{}", &t.name),
+                target,
+            );
+        }
     }
 
     // --- encoder
@@ -386,8 +392,8 @@ pub fn check(p: &Project) -> Vec<Issue> {
                 gettext("The {} video encoder doesn't work on this computer. Choose Software in Disc Settings.").replace("{}", &encoder.label()),
                 Some(Target::Settings),
             );
-        } else if p.disc.video.fake_interlaced() {
-            warn(gettext("The 1080i formats can't be encoded in hardware; this disc will use Software encoding."), Some(Target::Settings));
+        } else if p.disc.video.interlaced() {
+            warn(gettext("The 1080i and SD formats can't be encoded in hardware; this disc will use Software encoding."), Some(Target::Settings));
         } else {
             warn(
                 gettext("Hardware video encoding is on. It's faster, but the picture is noticeably worse than Software: use it for test discs only."),

@@ -3,6 +3,7 @@
 //! ffmpeg argument construction for BD-compliant H.264/AC-3 streams.
 
 use super::hwenc::{self, VideoEncoder};
+use super::picture::{self, VideoOptions};
 use super::probe::MediaInfo;
 use crate::bluray::{AudioCodec, VideoFormat};
 use std::path::{Path, PathBuf};
@@ -52,9 +53,9 @@ pub enum Pass {
 
 impl EncodeSettings {
     /// The encoder actually used: hardware encoders can't make the
-    /// fake-interlaced streams of 1080i formats, so those use x264.
+    /// field-coded streams of 1080i and SD formats, so those use x264.
     pub fn effective_encoder(&self) -> VideoEncoder {
-        if self.video.fake_interlaced() {
+        if self.video.interlaced() {
             VideoEncoder::Software
         } else {
             self.encoder
@@ -78,11 +79,29 @@ fn device_args(set: &EncodeSettings) -> Vec<String> {
     }
 }
 
-/// Scaling to the disc format, plus the upload to the GPU for VA-API.
-fn video_filter(set: &EncodeSettings) -> String {
+/// The picture filters, plus the upload to the GPU for VA-API.
+fn video_filter(set: &EncodeSettings, filters: &str) -> String {
     match set.effective_encoder() {
-        VideoEncoder::Vaapi => format!("{},format=nv12,hwupload", scale_filter(set.video)),
-        _ => scale_filter(set.video),
+        VideoEncoder::Vaapi => format!("{filters},format=nv12,hwupload"),
+        _ => filters.to_string(),
+    }
+}
+
+/// A title's video: the file, what's in it, and how to prepare it.
+#[derive(Debug, Clone, Copy)]
+pub struct Source<'a> {
+    pub path: &'a Path,
+    pub info: &'a MediaInfo,
+    pub picture: &'a VideoOptions,
+}
+
+/// Colour description of the disc format: (ffmpeg primaries, transfer,
+/// matrix) names and the H.264 VUI codes.
+fn colour(v: VideoFormat) -> (&'static str, &'static str, &'static str, [u8; 3]) {
+    match v {
+        VideoFormat::I480_2997 => ("smpte170m", "smpte170m", "smpte170m", [6, 6, 6]),
+        VideoFormat::I576_25 => ("bt470bg", "smpte170m", "bt470bg", [5, 6, 5]),
+        _ => ("bt709", "bt709", "bt709", [1, 1, 1]),
     }
 }
 
@@ -105,19 +124,14 @@ pub fn output_channels(channels: u8) -> u8 {
     }
 }
 
-fn scale_filter(v: VideoFormat) -> String {
-    let (w, h) = v.size();
-    let (n, d) = v.fps();
-    format!(
-        "scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos,\
-         pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps={n}/{d},format=yuv420p"
-    )
-}
-
-fn video_args(set: &EncodeSettings, bitrate: u32) -> Vec<String> {
+/// `interlaced`: the picture is coded as fields (top field first when
+/// true); otherwise progressive frames are carried as fields on
+/// interlaced disc formats (segmented frames).
+fn video_args(set: &EncodeSettings, bitrate: u32, interlaced: Option<bool>) -> Vec<String> {
     let (n, d) = set.video.fps();
     // GOP length at most one second.
     let keyint = n / d;
+    let (prim, trc, matrix, vui) = colour(set.video);
     // Blu-ray limits for hardware encoders: High@4.1, closed GOPs of at
     // most a second, BT.709 and access unit delimiters.
     let common = |a: &mut Vec<String>| {
@@ -131,14 +145,17 @@ fn video_args(set: &EncodeSettings, bitrate: u32) -> Vec<String> {
             s("-g"),
             s(keyint),
             s("-color_primaries"),
-            s("bt709"),
+            s(prim),
             s("-color_trc"),
-            s("bt709"),
+            s(trc),
             s("-colorspace"),
-            s("bt709"),
-            // Delimiters and BT.709 colour in the stream headers.
+            s(matrix),
+            // Delimiters and the colour description in the stream headers.
             s("-bsf:v"),
-            s("h264_metadata=aud=insert:video_full_range_flag=0:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"),
+            format!(
+                "h264_metadata=aud=insert:video_full_range_flag=0:colour_primaries={}:transfer_characteristics={}:matrix_coefficients={}",
+                vui[0], vui[1], vui[2]
+            ),
         ]);
     };
     match set.effective_encoder() {
@@ -159,10 +176,14 @@ fn video_args(set: &EncodeSettings, bitrate: u32) -> Vec<String> {
     }
     let mut x264 = format!(
         "bluray-compat=1:keyint={keyint}:min-keyint=1:open-gop=0:slices=4:aud=1:nal-hrd=vbr:\
-         b-pyramid=strict:bframes=3:colorprim=bt709:transfer=bt709:colormatrix=bt709"
+         b-pyramid=strict:bframes=3:colorprim={prim}:transfer={trc}:colormatrix={matrix}"
     );
-    if set.video.fake_interlaced() {
-        x264.push_str(":fake-interlaced=1:pic-struct=1");
+    match interlaced {
+        Some(true) => x264.push_str(":tff=1"),
+        Some(false) => x264.push_str(":bff=1"),
+        // Progressive frames carried as fields (segmented frames).
+        None if set.video.interlaced() => x264.push_str(":fake-interlaced=1:pic-struct=1"),
+        None => {}
     }
     vec![
         s("-c:v"),
@@ -243,8 +264,7 @@ enum VideoMode<'a> {
 
 #[allow(clippy::too_many_arguments)]
 fn title_common(
-    input: &Path,
-    info: &MediaInfo,
+    src: &Source,
     set: &EncodeSettings,
     video: VideoMode,
     audio: &[AudioInput],
@@ -252,6 +272,7 @@ fn title_common(
     pass: &Pass,
     output: &Path,
 ) -> Vec<String> {
+    let (input, info) = (src.path, src.info);
     let start = range.map_or(0.0, |(start, _)| start);
     let mut a = Vec::new();
     if matches!(video, VideoMode::Encode { .. }) {
@@ -291,8 +312,9 @@ fn title_common(
     a.extend([s("-sn"), s("-dn"), s("-map_chapters"), s("-1")]);
     match video {
         VideoMode::Encode { keyframes } => {
-            a.extend([s("-vf"), video_filter(set)]);
-            a.extend(video_args(set, set.video_bitrate));
+            let plan = picture::plan(info, src.picture, set.video);
+            a.extend([s("-vf"), video_filter(set, &plan.filters)]);
+            a.extend(video_args(set, set.video_bitrate, plan.interlaced));
             if !keyframes.is_empty() {
                 let list: Vec<String> = keyframes.iter().map(|t| format!("{t:.3}")).collect();
                 a.extend([s("-force_key_frames"), list.join(",")]);
@@ -332,8 +354,7 @@ fn title_common(
 /// `range` limits the encode to (start, duration) seconds, for previews.
 #[allow(clippy::too_many_arguments)]
 pub fn title_args(
-    input: &Path,
-    info: &MediaInfo,
+    src: &Source,
     set: &EncodeSettings,
     keyframes: &[f64],
     audio: &[AudioInput],
@@ -341,20 +362,13 @@ pub fn title_args(
     pass: &Pass,
     output: &Path,
 ) -> Vec<String> {
-    title_common(input, info, set, VideoMode::Encode { keyframes }, audio, range, pass, output)
+    title_common(src, set, VideoMode::Encode { keyframes }, audio, range, pass, output)
 }
 
 /// Copy a compatible H.264 stream without re-encoding, adding the access
 /// unit delimiters Blu-ray requires.
-pub fn passthrough_args(
-    input: &Path,
-    info: &MediaInfo,
-    set: &EncodeSettings,
-    audio: &[AudioInput],
-    range: Option<(f64, f64)>,
-    output: &Path,
-) -> Vec<String> {
-    title_common(input, info, set, VideoMode::Copy, audio, range, &Pass::Only, output)
+pub fn passthrough_args(src: &Source, set: &EncodeSettings, audio: &[AudioInput], range: Option<(f64, f64)>, output: &Path) -> Vec<String> {
+    title_common(src, set, VideoMode::Copy, audio, range, &Pass::Only, output)
 }
 
 /// Encode a menu background clip.
@@ -366,7 +380,7 @@ pub fn passthrough_args(
 /// * `audio` – optional audio looped for the menu duration.
 pub fn menu_args(
     still: &Path,
-    motion: Option<(&Path, f64)>,
+    motion: Option<(&Path, &MediaInfo, f64)>,
     audio: Option<(&Path, &MediaInfo)>,
     duration: f64,
     set: &EncodeSettings,
@@ -378,7 +392,7 @@ pub fn menu_args(
     let mut a = Vec::new();
     let mut next_input = 0;
     let video_filter;
-    if let Some((m, start)) = motion {
+    if let Some((m, info, start)) = motion {
         // Start into the video; if it runs out before the loop ends, it
         // continues from its beginning.
         if start > 0.0 {
@@ -389,12 +403,12 @@ pub fn menu_args(
         next_input = 2;
         video_filter = format!(
             "[0:v]{}[bg];[1:v]scale={w}:{h},format=rgba[fg];[bg][fg]overlay=format=auto,format=yuv420p[v]",
-            scale_filter(set.video)
+            picture::plan(info, &VideoOptions::default(), set.video).filters
         );
     } else {
         a.extend([s("-loop"), s("1"), s("-framerate"), format!("{n}/{d}"), s("-i"), path(still)]);
         next_input += 1;
-        video_filter = format!("[0:v]{}[v]", scale_filter(set.video));
+        video_filter = format!("[0:v]{}[v]", picture::frame_filters(set.video));
     }
     if let Some((p, _)) = audio {
         a.extend([s("-stream_loop"), s("-1"), s("-i"), path(p)]);
@@ -405,7 +419,7 @@ pub fn menu_args(
     }
     a.extend([s("-t"), format!("{duration:.3}")]);
     let bitrate = if motion.is_some() { set.video_bitrate } else { set.video_bitrate.min(15_000) };
-    a.extend(video_args(set, bitrate));
+    a.extend(video_args(set, bitrate, None));
     if let Some((_, info)) = audio {
         a.extend(audio_args(set, output_channels(info.audio_channels)));
     }
@@ -430,8 +444,10 @@ mod tests {
     fn hardware_encoders_for_titles_only() {
         let info = MediaInfo { duration: 60.0, video_codec: Some("h264".into()), ..Default::default() };
         let out = Path::new("/tmp/out.ts");
+        let opts = VideoOptions::default();
+        let src = Source { path: Path::new("/tmp/in.mkv"), info: &info, picture: &opts };
         let vaapi = settings(VideoFormat::P1080_23976, VideoEncoder::Vaapi);
-        let a = title_args(Path::new("/tmp/in.mkv"), &info, &vaapi, &[10.0], &[], None, &Pass::Only, out);
+        let a = title_args(&src, &vaapi, &[10.0], &[], None, &Pass::Only, out);
         assert_eq!(arg_after(&a, "-c:v"), Some("h264_vaapi"));
         assert_eq!(arg_after(&a, "-g"), Some("23"));
         assert!(arg_after(&a, "-vf").unwrap().ends_with("hwupload"));
@@ -444,14 +460,14 @@ mod tests {
         }
 
         let nvenc = settings(VideoFormat::P720_5994, VideoEncoder::Nvenc);
-        let a = title_args(Path::new("/tmp/in.mkv"), &info, &nvenc, &[], &[], None, &Pass::Only, out);
+        let a = title_args(&src, &nvenc, &[], &[], None, &Pass::Only, out);
         assert_eq!(arg_after(&a, "-c:v"), Some("h264_nvenc"));
         assert_eq!(arg_after(&a, "-g"), Some("59"));
         assert!(!a.iter().any(|x| x == "-vaapi_device"));
 
         // 1080i can't be made in hardware; menus are always x264.
         let interlaced = settings(VideoFormat::I1080_25, VideoEncoder::Vaapi);
-        let a = title_args(Path::new("/tmp/in.mkv"), &info, &interlaced, &[], &[], None, &Pass::Only, out);
+        let a = title_args(&src, &interlaced, &[], &[], None, &Pass::Only, out);
         assert_eq!(arg_after(&a, "-c:v"), Some("libx264"));
         let a = menu_args(Path::new("/tmp/still.png"), None, None, 1.0, &vaapi, out);
         assert_eq!(arg_after(&a, "-c:v"), Some("libx264"));
@@ -464,11 +480,13 @@ mod tests {
         let set = EncodeSettings { quality: Quality::Best, ..settings(VideoFormat::P1080_23976, VideoEncoder::Software) };
         let log = Path::new("/tmp/pass");
         let audio = [AudioInput { file: None, index: 0, offset: 0.0, channels: 2, copy: false }];
-        let first = title_args(Path::new("/tmp/in.mkv"), &info, &set, &[], &audio, None, &Pass::First(log.into()), Path::new("/tmp/o.ts"));
+        let opts = VideoOptions::default();
+        let src = Source { path: Path::new("/tmp/in.mkv"), info: &info, picture: &opts };
+        let first = title_args(&src, &set, &[], &audio, None, &Pass::First(log.into()), Path::new("/tmp/o.ts"));
         assert_eq!(arg_after(&first, "-pass"), Some("1"));
         assert_eq!(arg_after(&first, "-preset"), Some("slow"));
         assert!(first.ends_with(&["-an".into(), "-f".into(), "null".into(), "-".into()]));
-        let second = title_args(Path::new("/tmp/in.mkv"), &info, &set, &[], &audio, None, &Pass::Second(log.into()), Path::new("/tmp/o.ts"));
+        let second = title_args(&src, &set, &[], &audio, None, &Pass::Second(log.into()), Path::new("/tmp/o.ts"));
         assert_eq!(arg_after(&second, "-pass"), Some("2"));
         assert_eq!(second.last().map(String::as_str), Some("/tmp/o.ts"));
     }

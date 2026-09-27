@@ -103,8 +103,12 @@ fn bd_format(w: u32, h: u32, fps: (u32, u32), interlaced: bool) -> Option<VideoF
         // Interlaced streams report the frame rate (25 / 29.97).
         (1920, 1080, true) if near(25.0) => Some(VideoFormat::I1080_25),
         (1920, 1080, true) if near(30000.0 / 1001.0) => Some(VideoFormat::I1080_2997),
+        (1280, 720, false) if near(24000.0 / 1001.0) => Some(VideoFormat::P720_23976),
+        (1280, 720, false) if near(24.0) => Some(VideoFormat::P720_24),
         (1280, 720, false) if near(50.0) => Some(VideoFormat::P720_50),
         (1280, 720, false) if near(60000.0 / 1001.0) => Some(VideoFormat::P720_5994),
+        (720, 576, true) if near(25.0) => Some(VideoFormat::I576_25),
+        (720, 480, true) if near(30000.0 / 1001.0) => Some(VideoFormat::I480_2997),
         _ => None,
     }
 }

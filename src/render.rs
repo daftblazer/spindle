@@ -499,18 +499,19 @@ pub fn draw_button(cr: &cairo::Context, project: &Project, images: &ImageCache, 
     }
 }
 
-/// Scale factor from design space to a disc of `width` pixels.
-pub fn disc_scale(width: u32) -> f64 {
-    width as f64 / DESIGN_WIDTH
+/// Scale factors from design space to a disc picture (they differ for the
+/// wide pixels of SD formats).
+pub fn disc_scale(width: u32, height: u32) -> (f64, f64) {
+    (width as f64 / DESIGN_WIDTH, height as f64 / DESIGN_HEIGHT)
 }
 
 /// Button position and bitmap size at disc resolution.
 pub fn button_geometry(item: &MenuItem, disc_w: u32, disc_h: u32) -> (u16, u16, u16, u16) {
-    let s = disc_scale(disc_w);
-    let x = (item.rect.x * s).floor().clamp(0.0, disc_w as f64 - 8.0);
-    let y = (item.rect.y * s).floor().clamp(0.0, disc_h as f64 - 8.0);
-    let w = (item.rect.w * s).ceil().clamp(8.0, disc_w as f64 - x);
-    let h = (item.rect.h * s).ceil().clamp(8.0, disc_h as f64 - y);
+    let (sx, sy) = disc_scale(disc_w, disc_h);
+    let x = (item.rect.x * sx).floor().clamp(0.0, disc_w as f64 - 8.0);
+    let y = (item.rect.y * sy).floor().clamp(0.0, disc_h as f64 - 8.0);
+    let w = (item.rect.w * sx).ceil().clamp(8.0, disc_w as f64 - x);
+    let h = (item.rect.h * sy).ceil().clamp(8.0, disc_h as f64 - y);
     (x as u16, y as u16, w as u16, h as u16)
 }
 
@@ -545,9 +546,9 @@ pub fn render_button_bitmap(project: &Project, images: &ImageCache, item: &MenuI
     let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w as i32, h as i32).expect("surface");
     {
         let cr = cairo::Context::new(&surface).expect("cairo context");
-        let s = disc_scale(disc_w);
+        let (sx, sy) = disc_scale(disc_w, disc_h);
         cr.translate(-(x as f64), -(y as f64));
-        cr.scale(s, s);
+        cr.scale(sx, sy);
         draw_button(&cr, project, images, item, b, state);
     }
     surface_to_bitmap(&mut surface)
@@ -579,7 +580,8 @@ pub fn render_static_bitmap(project: &Project, menu: &Menu, images: &ImageCache,
     let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, disc_w as i32, disc_h as i32).ok()?;
     {
         let cr = cairo::Context::new(&surface).ok()?;
-        cr.scale(disc_scale(disc_w), disc_h as f64 / DESIGN_HEIGHT);
+        let (sx, sy) = disc_scale(disc_w, disc_h);
+        cr.scale(sx, sy);
         draw_static(&cr, project, menu, images, false);
     }
     let full = surface_to_bitmap(&mut surface);
@@ -612,7 +614,8 @@ pub fn render_static_png(
     let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, disc_w as i32, disc_h as i32)?;
     {
         let cr = cairo::Context::new(&surface)?;
-        cr.scale(disc_scale(disc_w), disc_h as f64 / DESIGN_HEIGHT);
+        let (sx, sy) = disc_scale(disc_w, disc_h);
+        cr.scale(sx, sy);
         draw_static(&cr, project, menu, images, with_background);
     }
     let mut f = std::fs::File::create(out)?;

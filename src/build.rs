@@ -840,7 +840,8 @@ impl<'a> Builder<'a> {
         } else {
             let inputs: Vec<transcode::AudioInput> = audio.iter().map(|(i, _)| i.clone()).collect();
             let pass = if self.two_pass() { transcode::Pass::Second(self.work.join(format!("pass-{}", clip_name(n)))) } else { transcode::Pass::Only };
-            let args = transcode::title_args(&asset.path, &asset.info, &self.settings, &chapters, &inputs, None, &pass, Path::new("out.ts"));
+            let src = transcode::Source { path: &asset.path, info: &asset.info, picture: &t.video };
+            let args = transcode::title_args(&src, &self.settings, &chapters, &inputs, None, &pass, Path::new("out.ts"));
             // Reuse an identical earlier encode: the key is the whole command
             // (without its output or pass log) and the files it reads.
             let mut key: Vec<String> = args[..args.len() - 1]
@@ -887,7 +888,8 @@ impl<'a> Builder<'a> {
         let mut work = 0.0;
         if two_pass {
             self.stage(format!("Analysing title “{}” (pass 1 of 2)", t.name));
-            let first = transcode::title_args(&asset.path, &asset.info, &self.settings, &plan.chapters, &inputs, None, &transcode::Pass::First(log), &self.work.join("null.ts"));
+            let src = transcode::Source { path: &asset.path, info: &asset.info, picture: &t.video };
+            let first = transcode::title_args(&src, &self.settings, &plan.chapters, &inputs, None, &transcode::Pass::First(log), &self.work.join("null.ts"));
             self.encode(key, first, duration, 0.0, "Analysing · pass 1 of 2")?;
             work += duration;
         }
@@ -938,7 +940,8 @@ impl<'a> Builder<'a> {
                 };
                 self.stage(format!("Copying the video of “{}”", t.name));
                 let tmp = self.work.join(format!("title-{}.ts", clip_name(n)));
-                let args = transcode::passthrough_args(&asset.path, &asset.info, &self.settings, &inputs, None, &tmp);
+                let src = transcode::Source { path: &asset.path, info: &asset.info, picture: &t.video };
+                let args = transcode::passthrough_args(&src, &self.settings, &inputs, None, &tmp);
                 self.encode(&key, args, duration, 0.0, "Copying the original video")?;
                 work += duration;
                 (tmp, format)
@@ -966,6 +969,11 @@ impl<'a> Builder<'a> {
         let tracks: Vec<&SubtitleTrack> = t.disc_subtitles().collect();
         if !tracks.is_empty() {
             let first_pts = ts::first_video_pts(&tmp)?;
+            let area = if t.keep_video {
+                subtitles::default_area(&asset.info, vformat)
+            } else {
+                crate::media::picture::plan(&asset.info, &t.video, vformat).area
+            };
             for (i, track) in tracks.iter().enumerate() {
                 self.check_cancel()?;
                 self.tracker.update(&key, TaskState::Running, work, &format!("Converting subtitles “{}”", track.name));
@@ -974,7 +982,7 @@ impl<'a> Builder<'a> {
                     track,
                     &asset.path,
                     &asset.info,
-                    vformat,
+                    &area,
                     &p.disc.subtitle_style,
                     &self.work.join(format!("subtitles-{}", clip_name(n))),
                     None,
@@ -1043,7 +1051,9 @@ impl<'a> Builder<'a> {
             .map(|s| transcode::AudioInput { file: None, index: s.index, offset: 0.0, channels: s.channels, copy: false })
             .into_iter()
             .collect();
-        let args = transcode::title_args(&asset.path, &asset.info, &self.settings, &[], &audio, None, &transcode::Pass::Only, &tmp);
+        let opts = crate::media::picture::VideoOptions::default();
+        let src = transcode::Source { path: &asset.path, info: &asset.info, picture: &opts };
+        let args = transcode::title_args(&src, &self.settings, &[], &audio, None, &transcode::Pass::Only, &tmp);
         self.encode(&key, args, duration, 0.0, "Encoding")?;
         let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(self.settings.video) }];
         if asset.info.has_audio() {
@@ -1108,7 +1118,7 @@ impl<'a> Builder<'a> {
         let tmp = self.work.join(format!("menu-{}.ts", clip_name(n)));
         let args = transcode::menu_args(
             &still,
-            motion.map(|a| (a.path.as_path(), m.background.video_start)),
+            motion.map(|a| (a.path.as_path(), &a.info, m.background.video_start)),
             audio.map(|a| (a.path.as_path(), &a.info)),
             duration,
             &self.settings,

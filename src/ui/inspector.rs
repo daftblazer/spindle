@@ -4,11 +4,15 @@
 
 use super::rows::{self, format_time, group};
 use crate::document::{Change, Document, Node};
+use crate::bluray::VideoFormat;
+use crate::media::picture::VideoOptions;
+use crate::media::probe::MediaInfo;
 use crate::model::*;
 use adw::prelude::*;
 use gettextrs::{gettext, ngettext};
 use gtk::glib;
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 pub struct Inspector {
@@ -955,6 +959,123 @@ impl Inspector {
             .action_name("win.check-video")
             .build();
         g.add(&check);
+        page.add(&g);
+        if let Some(a) = p.asset(t.asset) {
+            self.picture_group(page, id, &a.info, a.path.clone(), t.video, t.keep_video, p.disc.video);
+        }
+    }
+
+    /// How the picture is prepared: deinterlacing, aspect ratio, fit, crop.
+    #[allow(clippy::too_many_arguments)]
+    fn picture_group(&self, page: &adw::PreferencesPage, id: Id, info: &MediaInfo, path: PathBuf, opts: VideoOptions, keep: bool, disc: VideoFormat) {
+        use crate::media::picture::{self, AspectRatio, Deinterlace, Fit};
+        let doc = &self.doc;
+        let g = group(&gettext("Picture"));
+        g.set_description(Some(&picture::describe(info)));
+        g.set_sensitive(!keep);
+        let edit = |f: fn(&mut VideoOptions, usize)| {
+            move |p: &mut Project, i: usize| {
+                if let Some(t) = p.title_mut(id) {
+                    f(&mut t.video, i);
+                }
+            }
+        };
+        let plan = picture::plan(info, &opts, disc);
+
+        let labels = [gettext("Auto"), gettext("Off"), gettext("Always"), gettext("Film")];
+        let sel = Deinterlace::ALL.iter().position(|d| *d == opts.deinterlace).unwrap_or(0);
+        let row = rows::combo(doc, &gettext("Deinterlace"), &labels, sel, Change::Content, edit(|v, i| v.deinterlace = Deinterlace::ALL[i.min(3)]));
+        row.set_subtitle(&match opts.deinterlace {
+            Deinterlace::InverseTelecine => gettext("Inverse telecine: restores film frames in 29.97 video (NTSC DVDs)"),
+            _ if plan.interlaced.is_some() => gettext("Kept interlaced, as the disc format allows"),
+            _ if plan.deinterlaced => gettext("The video is deinterlaced"),
+            Deinterlace::Auto if info.interlaced().is_none() => gettext("The file doesn't say whether it's interlaced; treated as progressive"),
+            _ => gettext("Nothing to do: the video is progressive"),
+        });
+        row.set_subtitle_lines(2);
+        g.add(&row);
+
+        let auto = format!("{} {:.2}", gettext("Auto"), info.display_aspect());
+        let labels = [auto, "4:3".into(), "16:9".into(), "1.85:1".into(), "2.39:1".into()];
+        let sel = AspectRatio::ALL.iter().position(|a| *a == opts.aspect).unwrap_or(0);
+        g.add(&rows::combo(doc, &gettext("Aspect Ratio"), &labels, sel, Change::Content, edit(|v, i| v.aspect = AspectRatio::ALL[i.min(4)])));
+
+        let labels = [gettext("Whole"), gettext("Fill"), gettext("Stretch")];
+        let sel = Fit::ALL.iter().position(|f| *f == opts.fit).unwrap_or(0);
+        let row = rows::combo(doc, &gettext("Fit"), &labels, sel, Change::Content, edit(|v, i| v.fit = Fit::ALL[i.min(2)]));
+        row.set_subtitle_lines(2);
+        row.set_subtitle(&match opts.fit {
+            Fit::Whole => gettext("The whole picture, with black bars if it isn't 16:9"),
+            Fit::Fill => gettext("Fills the screen, cutting off edges that don't fit"),
+            Fit::Stretch => gettext("Fills the screen by stretching the picture"),
+        });
+        g.add(&row);
+
+        // Crop, in source pixels.
+        let [l, t, r, b] = opts.crop;
+        let crop = adw::ExpanderRow::builder().title(gettext("Crop")).build();
+        crop.set_subtitle(&if l + t + r + b == 0 {
+            gettext("None")
+        } else {
+            gettext("{l} left, {t} top, {r} right, {b} bottom")
+                .replace("{l}", &l.to_string())
+                .replace("{t}", &t.to_string())
+                .replace("{r}", &r.to_string())
+                .replace("{b}", &b.to_string())
+        });
+        let sides = [gettext("Left"), gettext("Top"), gettext("Right"), gettext("Bottom")];
+        for (k, name) in sides.iter().enumerate() {
+            let max = if k % 2 == 0 { info.width / 2 } else { info.height / 2 };
+            let row = rows::spin(doc, name, opts.crop[k] as f64, 0.0, max.max(2) as f64, 2.0, 0, Change::Content, move |p, v| {
+                if let Some(t) = p.title_mut(id) {
+                    t.video.crop[k] = (v.round() as u32) & !1;
+                }
+            });
+            crop.add_row(&row);
+        }
+        let detect = adw::ButtonRow::builder().title(gettext("Detect Black Bars")).start_icon_name("edit-find-symbolic").build();
+        {
+            let (doc, info) = (doc.clone(), info.clone());
+            detect.connect_activated(move |row| {
+                row.set_sensitive(false);
+                row.set_title(&gettext("Looking for Black Bars…"));
+                let (tx, rx) = async_channel::bounded(1);
+                let (path, info) = (path.clone(), info.clone());
+                std::thread::spawn(move || {
+                    let _ = tx.send_blocking(picture::detect_crop(&path, &info).map_err(|e| e.to_string()));
+                });
+                let (doc, row) = (doc.clone(), row.clone());
+                glib::spawn_future_local(async move {
+                    match rx.recv().await {
+                        Ok(Ok(c)) => {
+                            doc.edit(Change::Content, |p| {
+                                if let Some(t) = p.title_mut(id) {
+                                    t.video.crop = c;
+                                }
+                            });
+                            if c == [0; 4] {
+                                row.set_title(&gettext("No Black Bars Found"));
+                            }
+                        }
+                        Ok(Err(e)) => row.set_title(&e),
+                        Err(_) => {}
+                    }
+                    row.set_sensitive(true);
+                });
+            });
+        }
+        crop.add_row(&detect);
+        g.add(&crop);
+
+        if plan.tone_mapped {
+            let hdr = adw::ActionRow::builder()
+                .title(gettext("HDR Video"))
+                .subtitle(gettext("Blu-ray is standard range (SDR): the picture is tone mapped, so bright highlights and colours look less intense than the HDR original."))
+                .subtitle_lines(4)
+                .build();
+            hdr.add_prefix(&gtk::Image::builder().icon_name("dialog-warning-symbolic").css_classes(["warning"]).build());
+            g.add(&hdr);
+        }
         page.add(&g);
     }
 

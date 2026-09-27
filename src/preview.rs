@@ -73,13 +73,15 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
         let vformat = match keep {
             Some(format) => {
                 emit(BuildEvent::Stage(format!("Copying {} seconds of “{}” (original video)", duration.round(), t.name)));
-                let args = transcode::passthrough_args(&asset.path, info, &settings, &inputs, Some((start, duration)), &tmp);
+                let src = transcode::Source { path: &asset.path, info, picture: &t.video };
+                let args = transcode::passthrough_args(&src, &settings, &inputs, Some((start, duration)), &tmp);
                 ffmpeg::run(&args, cancel, |secs| progress(secs / duration * 0.8))?;
                 format
             }
             None => {
                 emit(BuildEvent::Stage(format!("Encoding {} seconds of “{}”", duration.round(), t.name)));
-                let args = transcode::title_args(&asset.path, info, &settings, &[], &inputs, Some((start, duration)), &transcode::Pass::Only, &tmp);
+                let src = transcode::Source { path: &asset.path, info, picture: &t.video };
+                let args = transcode::title_args(&src, &settings, &[], &inputs, Some((start, duration)), &transcode::Pass::Only, &tmp);
                 ffmpeg::run(&args, cancel, |secs| progress(secs / duration * 0.8))?;
                 settings.video
             }
@@ -91,11 +93,12 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
         let mut sub_lang = None;
         if let Some(track) = req.subtitle.and_then(|id| t.subtitles.iter().find(|s| s.id == id)) {
             emit(BuildEvent::Stage(format!("Converting subtitles “{}”", track.name)));
+            let area = if keep.is_some() { subtitles::default_area(info, vformat) } else { crate::media::picture::plan(info, &t.video, vformat).area };
             let images = subtitles::prepare(
                 track,
                 &asset.path,
                 info,
-                vformat,
+                &area,
                 &project.disc.subtitle_style,
                 &work,
                 Some((start, start + duration)),
