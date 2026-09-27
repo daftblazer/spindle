@@ -82,7 +82,7 @@ imported logo instead of the title text.
   the bitrate that fills a BD-25, BD-50 or BD-100
 - Every Blu-ray video format: 1080p 23.976/24, 1080i 25/29.97 (interlaced
   video kept as it is, film with 3:2 pulldown), 720p 23.976/24/50/59.94 and
-  SD 576i/480i
+  SD 576i/480i in 16:9 or 4:3 (for 4:3 televisions)
 - Quality presets: Fast, Balanced, and Best (x264 two-pass for the best
   picture and accurate sizes), with the build time estimated beforehand
 - Titles are encoded several at a time on computers with many cores, and
