@@ -11,7 +11,7 @@
         "--share=ipc",
         "--socket=fallback-x11",
         "--socket=wayland",
-        "--device=dri",
+        "--device=all",
         "--filesystem=host"
     ],
     "build-options": {
@@ -77,6 +77,18 @@
                     "url": "https://github.com/FFmpeg/nv-codec-headers.git",
                     "tag": "n12.2.72.0",
                     "commit": "c69278340ab1d5559c7d7bf0edf615dc33ddbba7"
+                }
+            ]
+        },
+        {
+            "name": "xorriso",
+            "config-opts": ["--disable-static"],
+            "cleanup": ["/share/man", "/share/info"],
+            "sources": [
+                {
+                    "type": "archive",
+                    "url": "https://www.gnu.org/software/xorriso/xorriso-1.5.8.pl02.tar.gz",
+                    "sha256": "b1455ecafbf0692ddafe1d71002a96f2ce2d77f4deae602678261ce033f97bc8"
                 }
             ]
         },

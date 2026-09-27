@@ -482,6 +482,23 @@ impl SpindleWindow {
         add("import", |w| w.import_dialog());
         add("build", |w| ui::build_dialog::present(&w.doc(), w));
         add("disc-settings", |w| ui::settings::present(&w.doc(), w));
+        add("burn-image", |w| {
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some(&gettext("Disc Images")));
+            filter.add_suffix("iso");
+            let filters = gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&filter);
+            let fd = gtk::FileDialog::builder().title(gettext("Choose a Disc Image to Burn")).filters(&filters).modal(true).build();
+            if let Some(dir) = glib::user_special_dir(glib::UserDirectory::Videos) {
+                fd.set_initial_folder(Some(&gio::File::for_path(dir)));
+            }
+            let win = w.clone();
+            fd.open(Some(w), gio::Cancellable::NONE, move |res| {
+                if let Some(path) = res.ok().and_then(|f| f.path()) {
+                    ui::burn::present_image(&win, crate::media::portal::real_path(&path));
+                }
+            });
+        });
         add("templates", |w| {
             let state = w.state();
             let win = w.downgrade();

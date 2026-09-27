@@ -3,6 +3,7 @@
 //! Editor UI components.
 
 pub mod build_dialog;
+pub mod burn;
 pub mod canvas;
 pub mod compat_dialog;
 pub mod frame_picker;

@@ -21,6 +21,7 @@
 mod application;
 mod bluray;
 mod build;
+mod burn;
 mod config;
 mod document;
 mod media;
@@ -208,6 +209,40 @@ fn main() -> glib::ExitCode {
                 glib::ExitCode::FAILURE
             }
         };
+    }
+    // --burn IMAGE DRIVE [--verify-only]: burn (and verify) an image.
+    if (4..=5).contains(&args.len()) && args[1] == "--burn" {
+        let (image, drive) = (std::path::Path::new(&args[2]), std::path::Path::new(&args[3]));
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let last = std::cell::Cell::new(-1i32);
+        let report = |what: &str, f: f64| {
+            let pct = (f * 100.0) as i32;
+            if pct / 10 != last.get() / 10 {
+                last.set(pct);
+                eprintln!("{what} {pct}%");
+            }
+        };
+        let run = || -> anyhow::Result<()> {
+            if args.get(4).map(String::as_str) != Some("--verify-only") {
+                burn::burn(image, drive, &cancel, |f| report("burning", f))?;
+            }
+            last.set(-1);
+            burn::verify(image, drive, &cancel, |f| report("verifying", f))
+        };
+        return match run() {
+            Ok(()) => {
+                eprintln!("The disc matches the image.");
+                glib::ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                glib::ExitCode::FAILURE
+            }
+        };
+    }
+    if args.len() == 3 && args[1] == "--disc-status" {
+        eprintln!("{:?}", burn::check(std::path::Path::new(&args[2])));
+        return glib::ExitCode::SUCCESS;
     }
     // --render-menus PROJECT DIR: every menu as a PNG, for reviewing designs.
     if args.len() == 4 && args[1] == "--render-menus" {

@@ -9,7 +9,7 @@ use crate::validate::{self, Severity, Target};
 use adw::prelude::*;
 use gettextrs::gettext;
 use gtk::{gio, glib};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -63,7 +63,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     let g = adw::PreferencesGroup::builder().title(gettext("Output")).build();
     let format_row = adw::ComboRow::builder()
         .title(gettext("Format"))
-        .model(&gtk::StringList::new(&[&gettext("Disc Image (ISO)"), &gettext("Blu-ray Folder (BDMV)")]))
+        .model(&gtk::StringList::new(&[&gettext("Disc Image (ISO)"), &gettext("Blu-ray Folder (BDMV)"), &gettext("Burn to Disc")]))
         .selected(if build::is_image(&output.borrow()) { 0 } else { 1 })
         .build();
     g.add(&format_row);
@@ -71,9 +71,17 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     let choose = gtk::Button::builder().label(gettext("Choose…")).valign(gtk::Align::Center).build();
     folder_row.add_suffix(&choose);
     g.add(&folder_row);
+    let burning = Rc::new(Cell::new(false));
+    let burn_options = super::burn::BurnOptions::new(&g);
+    burn_options.set_visible(false);
     let describe = {
-        let (g, folder_row, output) = (g.clone(), folder_row.clone(), output.clone());
+        let (g, folder_row, output, burning) = (g.clone(), folder_row.clone(), output.clone(), burning.clone());
         move || {
+            folder_row.set_visible(!burning.get());
+            if burning.get() {
+                g.set_description(Some(&gettext("Builds the disc, burns it to a BD-R or BD-RE, and checks what was written.")));
+                return;
+            }
             let image = build::is_image(&output.borrow());
             folder_row.set_title(&if image { gettext("File") } else { gettext("Folder") });
             folder_row.set_subtitle(&output.borrow().to_string_lossy());
@@ -86,11 +94,14 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     };
     describe();
     {
-        let (output, describe) = (output.clone(), describe.clone());
+        let (output, describe, burning, options) = (output.clone(), describe.clone(), burning.clone(), burn_options.clone());
         format_row.connect_selected_notify(move |r| {
-            let image = r.selected() == 0;
-            let path = with_image(&output.borrow(), image);
-            *output.borrow_mut() = path;
+            burning.set(r.selected() == 2);
+            options.set_visible(burning.get());
+            if !burning.get() {
+                let path = with_image(&output.borrow(), r.selected() == 0);
+                *output.borrow_mut() = path;
+            }
             describe();
         });
     }
@@ -124,6 +135,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     let issue_rows: Rc<RefCell<Vec<adw::ActionRow>>> = Rc::default();
     let refresh: Rc<dyn Fn()> = {
         let doc = doc.clone();
+        let (burning, options) = (burning.clone(), Rc::downgrade(&burn_options));
         let (dialog, parent) = (dialog.downgrade(), parent.as_ref().clone());
         let (size_row, fit_box, fit, build_btn, issues_group) = (size_row.clone(), fit_box.clone(), fit.clone(), build_btn.clone(), issues_group.clone());
         Rc::new(move || {
@@ -190,10 +202,24 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                 issues_group.add(&row);
                 issue_rows.borrow_mut().push(row);
             }
-            build_btn.set_sensitive(errors == 0);
+            // Burning also needs a disc that the build fits on.
+            let disc_problem = if burning.get() { options.upgrade().and_then(|o| o.problem(bytes)) } else { None };
+            build_btn.set_sensitive(errors == 0 && disc_problem.is_none());
+            build_btn.set_tooltip_text(disc_problem.as_deref());
+            build_btn.set_label(&if burning.get() { gettext("_Build and Burn") } else { gettext("_Build") });
         })
     };
     refresh();
+    {
+        let weak = Rc::downgrade(&refresh);
+        let again = move || {
+            if let Some(r) = weak.upgrade() {
+                r();
+            }
+        };
+        burn_options.connect_changed(again.clone());
+        format_row.connect_selected_notify(move |_| again());
+    }
     // The document outlives the dialog, so it only holds a weak reference.
     let weak = Rc::downgrade(&refresh);
     doc.connect(move |c| {
@@ -300,20 +326,48 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     });
 
     let doc = doc.clone();
+    let d = dialog.clone();
     build_btn.connect_clicked(move |_| {
+        let target = if burning.get() { burn_options.target() } else { None };
+        let start = {
+            let (doc, output, cancel, stack, status, bar, log, result, open_btn) =
+                (doc.clone(), output.clone(), cancel.clone(), stack.clone(), status.clone(), bar.clone(), log.clone(), result.clone(), open_btn.clone());
+            let target = target.clone();
+            move || {
+        let target = target.clone();
         stack.set_visible_child_name("progress");
         let project = doc.project().clone();
         let out = output.borrow().clone();
-        if let Some(settings) = crate::app_settings() {
-            let _ = settings.set_string("recent-output", &out.to_string_lossy());
+        if target.is_none() {
+            if let Some(settings) = crate::app_settings() {
+                let _ = settings.set_string("recent-output", &out.to_string_lossy());
+            }
         }
         let cancel = cancel.clone();
         let (tx, rx) = async_channel::unbounded::<BuildEvent>();
+        let burn_target = target.clone();
         std::thread::spawn(move || {
             let emit = |ev: BuildEvent| {
                 let _ = tx.send_blocking(ev);
             };
-            let res = build::build(&project, &out, &cancel, &emit).map_err(|e| format!("{e:#}"));
+            let res = match &burn_target {
+                None => build::build(&project, &out, &cancel, &emit),
+                // Build an image in the cache, burn it, then remove it.
+                Some(t) => (|| {
+                    let dir = crate::media::cache_dir().join("burn");
+                    std::fs::create_dir_all(&dir)?;
+                    let image = dir.join("disc.iso");
+                    let scaled = |ev: BuildEvent| match ev {
+                        BuildEvent::Progress(p) => emit(BuildEvent::Progress(p * 0.6)),
+                        BuildEvent::Finished(_) => {}
+                        ev => emit(ev),
+                    };
+                    let r = build::build(&project, &image, &cancel, &scaled).and_then(|_| super::burn::run(&image, t, &cancel, &emit, 0.6));
+                    let _ = std::fs::remove_file(&image);
+                    r.map(|_| t.drive.clone())
+                })(),
+            }
+            .map_err(|e| format!("{e:#}"));
             emit(BuildEvent::Finished(res));
         });
         let (status, bar, log, result, stack, open_btn) =
@@ -330,6 +384,12 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                         let buf = log.buffer();
                         let mut end = buf.end_iter();
                         buf.insert(&mut end, &format!("{l}\n"));
+                    }
+                    BuildEvent::Finished(res) if target.is_some() => {
+                        super::burn::show_result(&result, res.map(|_| ()));
+                        open_btn.set_visible(false);
+                        stack.set_visible_child_name("result");
+                        break;
                     }
                     BuildEvent::Finished(res) => {
                         match res {
@@ -357,7 +417,17 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                 }
             }
         });
+            }
+        };
+        match &target {
+            Some(t) => super::burn::confirm_erase(&d, t, start),
+            None => start(),
+        }
     });
 
+    #[cfg(debug_assertions)]
+    if std::env::var("SPINDLE_SCREENSHOT_BURN").is_ok() {
+        format_row.set_selected(2);
+    }
     dialog.present(Some(parent));
 }
