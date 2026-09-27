@@ -4,7 +4,7 @@
 
 use super::probe::MediaInfo;
 use crate::bluray::{AudioCodec, VideoFormat};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy)]
 pub struct EncodeSettings {
@@ -98,6 +98,110 @@ fn mux_args(output: &Path, ts_offset: f64) -> Vec<String> {
     ]
 }
 
+/// An audio stream of a title's output.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioInput {
+    /// Separate file, or `None` for the title's video file.
+    pub file: Option<PathBuf>,
+    /// Audio stream index within its file.
+    pub index: usize,
+    /// Delay in seconds (negative starts the file earlier).
+    pub offset: f64,
+    /// Source channel count.
+    pub channels: u8,
+    /// Copy the stream (Blu-ray compatible AC-3) instead of encoding it.
+    pub copy: bool,
+}
+
+impl AudioInput {
+    /// Channels on the disc.
+    pub fn output_channels(&self) -> u8 {
+        if self.copy {
+            self.channels.max(1)
+        } else {
+            output_channels(self.channels)
+        }
+    }
+}
+
+/// How the video of a title is written.
+enum VideoMode<'a> {
+    Encode { keyframes: &'a [f64] },
+    Copy,
+}
+
+fn title_common(
+    input: &Path,
+    info: &MediaInfo,
+    set: &EncodeSettings,
+    video: VideoMode,
+    audio: &[AudioInput],
+    range: Option<(f64, f64)>,
+    output: &Path,
+) -> Vec<String> {
+    let start = range.map_or(0.0, |(start, _)| start);
+    let mut a = Vec::new();
+    if start > 0.0 {
+        a.extend([s("-ss"), format!("{start:.3}")]);
+    }
+    a.extend([s("-i"), path(input)]);
+    // Separate audio files, positioned against the video's timeline.
+    let mut delays = Vec::new();
+    let mut file_inputs = Vec::new();
+    for au in audio {
+        let Some(file) = &au.file else {
+            delays.push(0.0);
+            file_inputs.push(None);
+            continue;
+        };
+        let lead = au.offset - start;
+        if lead < 0.0 {
+            a.extend([s("-ss"), format!("{:.3}", -lead)]);
+        }
+        a.extend([s("-i"), path(file)]);
+        delays.push(lead.max(0.0));
+        file_inputs.push(Some(file_inputs.iter().flatten().count() + 1));
+    }
+
+    a.extend([s("-map"), s("0:v:0")]);
+    for (au, input) in audio.iter().zip(&file_inputs) {
+        a.extend([s("-map"), format!("{}:a:{}", input.unwrap_or(0), au.index)]);
+    }
+    // Stop with the video even when a separate audio file runs longer.
+    let duration = range.map(|(_, d)| d).or((file_inputs.iter().any(Option::is_some) && info.duration > 0.0).then_some(info.duration - start));
+    if let Some(d) = duration {
+        a.extend([s("-t"), format!("{d:.3}")]);
+    }
+    a.extend([s("-sn"), s("-dn"), s("-map_chapters"), s("-1")]);
+    match video {
+        VideoMode::Encode { keyframes } => {
+            a.extend([s("-vf"), scale_filter(set.video)]);
+            a.extend(video_args(set, set.video_bitrate));
+            if !keyframes.is_empty() {
+                let list: Vec<String> = keyframes.iter().map(|t| format!("{t:.3}")).collect();
+                a.extend([s("-force_key_frames"), list.join(",")]);
+            }
+        }
+        VideoMode::Copy => a.extend([s("-c:v"), s("copy"), s("-bsf:v"), s("h264_metadata=aud=insert")]),
+    }
+    for (n, (au, delay)) in audio.iter().zip(&delays).enumerate() {
+        if au.copy {
+            a.extend([format!("-c:a:{n}"), s("copy")]);
+            continue;
+        }
+        match set.audio {
+            AudioCodec::Ac3 => a.extend([format!("-c:a:{n}"), s("ac3"), format!("-b:a:{n}"), format!("{}k", set.audio_bitrate)]),
+            AudioCodec::Lpcm => a.extend([format!("-c:a:{n}"), s("pcm_bluray"), format!("-sample_fmt:a:{n}"), s("s16")]),
+        }
+        a.extend([format!("-ar:a:{n}"), s("48000"), format!("-ac:a:{n}"), s(au.output_channels())]);
+        if *delay > 0.0 {
+            a.extend([format!("-filter:a:{n}"), format!("adelay={:.0}:all=1", delay * 1000.0)]);
+        }
+    }
+    a.extend(mux_args(output, 1.0));
+    a
+}
+
 /// Transcode a title. `keyframes` are forced IDR positions (chapter starts).
 /// `range` limits the encode to (start, duration) seconds, for previews.
 pub fn title_args(
@@ -105,66 +209,24 @@ pub fn title_args(
     info: &MediaInfo,
     set: &EncodeSettings,
     keyframes: &[f64],
+    audio: &[AudioInput],
     range: Option<(f64, f64)>,
     output: &Path,
 ) -> Vec<String> {
-    let mut a = Vec::new();
-    if let Some((start, _)) = range {
-        a.extend([s("-ss"), format!("{start:.3}")]);
-    }
-    a.extend([s("-i"), path(input), s("-map"), s("0:v:0")]);
-    if let Some((_, duration)) = range {
-        a.extend([s("-t"), format!("{duration:.3}")]);
-    }
-    if info.has_audio() {
-        a.extend([s("-map"), s("0:a:0")]);
-    }
-    a.extend([s("-sn"), s("-dn"), s("-map_chapters"), s("-1"), s("-vf"), scale_filter(set.video)]);
-    a.extend(video_args(set, set.video_bitrate));
-    if !keyframes.is_empty() {
-        let list: Vec<String> = keyframes.iter().map(|t| format!("{t:.3}")).collect();
-        a.extend([s("-force_key_frames"), list.join(",")]);
-    }
-    if info.has_audio() {
-        a.extend(audio_args(set, output_channels(info.audio_channels)));
-    }
-    a.extend(mux_args(output, 1.0));
-    a
+    title_common(input, info, set, VideoMode::Encode { keyframes }, audio, range, output)
 }
 
 /// Copy a compatible H.264 stream without re-encoding, adding the access
-/// unit delimiters Blu-ray requires. AC-3 audio is copied when possible,
-/// other audio is encoded per `set`.
+/// unit delimiters Blu-ray requires.
 pub fn passthrough_args(
     input: &Path,
     info: &MediaInfo,
     set: &EncodeSettings,
-    copy_audio: bool,
+    audio: &[AudioInput],
     range: Option<(f64, f64)>,
     output: &Path,
 ) -> Vec<String> {
-    let mut a = Vec::new();
-    if let Some((start, _)) = range {
-        a.extend([s("-ss"), format!("{start:.3}")]);
-    }
-    a.extend([s("-i"), path(input), s("-map"), s("0:v:0")]);
-    if info.has_audio() {
-        a.extend([s("-map"), s("0:a:0")]);
-    }
-    if let Some((_, duration)) = range {
-        a.extend([s("-t"), format!("{duration:.3}")]);
-    }
-    a.extend([s("-sn"), s("-dn"), s("-map_chapters"), s("-1")]);
-    a.extend([s("-c:v"), s("copy"), s("-bsf:v"), s("h264_metadata=aud=insert")]);
-    if info.has_audio() {
-        if copy_audio {
-            a.extend([s("-c:a"), s("copy")]);
-        } else {
-            a.extend(audio_args(set, output_channels(info.audio_channels)));
-        }
-    }
-    a.extend(mux_args(output, 1.0));
-    a
+    title_common(input, info, set, VideoMode::Copy, audio, range, output)
 }
 
 /// Encode a menu background clip.

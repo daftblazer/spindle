@@ -25,6 +25,30 @@ pub struct MediaInfo {
     pub start_time: f64,
     #[serde(default)]
     pub subtitles: Vec<SubtitleStream>,
+    #[serde(default)]
+    pub audio_streams: Vec<AudioStream>,
+}
+
+/// An audio stream inside a media file.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct AudioStream {
+    /// Index among the file's audio streams (ffmpeg `0:a:N`).
+    pub index: usize,
+    pub codec: String,
+    pub channels: u8,
+    pub sample_rate: u32,
+    /// Bits per second, when known.
+    pub bit_rate: Option<u64>,
+    pub lang: Option<String>,
+    pub title: Option<String>,
+    pub default: bool,
+}
+
+impl AudioStream {
+    /// AC-3 that is valid on a Blu-ray as it is.
+    pub fn is_bluray_ac3(&self) -> bool {
+        self.codec == "ac3" && self.sample_rate == 48000 && self.channels <= 6 && self.bit_rate.is_none_or(|b| b <= 640_000)
+    }
 }
 
 /// A subtitle stream inside a media file.
@@ -47,6 +71,20 @@ impl MediaInfo {
     pub fn has_audio(&self) -> bool {
         self.audio_codec.is_some()
     }
+
+    /// Audio streams; files probed by older versions only list the first.
+    pub fn audio(&self) -> Vec<AudioStream> {
+        if !self.audio_streams.is_empty() || !self.has_audio() {
+            return self.audio_streams.clone();
+        }
+        vec![AudioStream {
+            index: 0,
+            codec: self.audio_codec.clone().unwrap_or_default(),
+            channels: self.audio_channels,
+            lang: self.audio_lang.clone(),
+            ..Default::default()
+        }]
+    }
 }
 
 #[derive(Deserialize)]
@@ -65,6 +103,8 @@ struct ProbeStream {
     avg_frame_rate: Option<String>,
     r_frame_rate: Option<String>,
     channels: Option<u8>,
+    sample_rate: Option<String>,
+    bit_rate: Option<String>,
     duration: Option<String>,
     start_time: Option<String>,
     #[serde(default)]
@@ -129,10 +169,24 @@ fn parse(json: &[u8]) -> Result<MediaInfo> {
                     default: s.disposition.get("default") == Some(&1),
                 });
             }
-            Some("audio") if info.audio_codec.is_none() => {
-                info.audio_codec = s.codec_name.clone();
-                info.audio_channels = s.channels.unwrap_or(2);
-                info.audio_lang = s.tags.get("language").filter(|l| l.len() == 3).cloned();
+            Some("audio") => {
+                let tag = |k: &str| s.tags.iter().find(|(key, _)| key.eq_ignore_ascii_case(k)).map(|(_, v)| v.clone());
+                let stream = AudioStream {
+                    index: info.audio_streams.len(),
+                    codec: s.codec_name.clone().unwrap_or_default(),
+                    channels: s.channels.unwrap_or(2),
+                    sample_rate: s.sample_rate.as_deref().and_then(|r| r.parse().ok()).unwrap_or(0),
+                    bit_rate: s.bit_rate.as_deref().and_then(|r| r.parse().ok()),
+                    lang: tag("language").filter(|l| l.len() == 3 && l != "und"),
+                    title: tag("title"),
+                    default: s.disposition.get("default") == Some(&1),
+                };
+                if info.audio_codec.is_none() {
+                    info.audio_codec = Some(stream.codec.clone());
+                    info.audio_channels = stream.channels;
+                    info.audio_lang = stream.lang.clone();
+                }
+                info.audio_streams.push(stream);
             }
             _ => {}
         }
@@ -151,6 +205,8 @@ mod tests {
             {"codec_type":"video","codec_name":"h264","width":1920,"height":1080,
              "avg_frame_rate":"24000/1001","r_frame_rate":"24000/1001"},
             {"codec_type":"audio","codec_name":"aac","channels":6,"tags":{"language":"eng"}},
+            {"codec_type":"audio","codec_name":"ac3","channels":2,"sample_rate":"48000","bit_rate":"192000",
+             "tags":{"language":"jpn","title":"Commentary"}},
             {"codec_type":"subtitle","codec_name":"subrip","tags":{"language":"fre","title":"Francais"},
              "disposition":{"default":0,"forced":1}},
             {"codec_type":"subtitle","codec_name":"hdmv_pgs_subtitle"}
@@ -162,6 +218,11 @@ mod tests {
         assert_eq!(i.fps, Some((24000, 1001)));
         assert_eq!(i.audio_channels, 6);
         assert_eq!(i.audio_lang.as_deref(), Some("eng"));
+        assert_eq!(i.audio_streams.len(), 2);
+        assert_eq!(i.audio_streams[1].index, 1);
+        assert_eq!(i.audio_streams[1].title.as_deref(), Some("Commentary"));
+        assert!(i.audio_streams[1].is_bluray_ac3());
+        assert!(!i.audio_streams[0].is_bluray_ac3());
         assert!((i.duration - 123.456).abs() < 1e-9);
         assert_eq!(i.subtitles.len(), 2);
         assert_eq!(i.subtitles[0].lang.as_deref(), Some("fre"));

@@ -428,6 +428,7 @@ impl SpindleWindow {
         self.action_enabled("add-chapter-menu", matches!(doc.node(), Node::Title(_)));
         self.action_enabled("choose-thumbnail", matches!(doc.node(), Node::Title(_)));
         self.action_enabled("add-subtitle", matches!(doc.node(), Node::Title(_)));
+        self.action_enabled("add-audio", matches!(doc.node(), Node::Title(_)));
         self.action_enabled("preview-title", matches!(doc.node(), Node::Title(_)));
         self.action_enabled("check-video", matches!(doc.node(), Node::Title(_)));
         self.action_enabled("delete-node", doc.node() != Node::None);
@@ -492,6 +493,23 @@ impl SpindleWindow {
         add("add-chapter-menu", |w| w.add_chapter_menu());
         add("choose-thumbnail", |w| w.state().title_view.choose_thumbnail(w));
         add("add-subtitle", |w| w.add_subtitle_dialog());
+        add("add-audio", |w| {
+            let Node::Title(title) = w.doc().node() else { return };
+            let win = w.clone();
+            w.pick_media(&gettext("Add Audio Track"), &gettext("Audio"), &["audio/*", "video/*"], glib::UserDirectory::Music, move |asset| {
+                let doc = win.doc();
+                let track = doc.project().asset(asset).and_then(external_audio_track);
+                let Some(track) = track else {
+                    win.toast(&gettext("That file has no sound"));
+                    return;
+                };
+                doc.edit(Change::Structure, |p| {
+                    if let Some(t) = p.title_mut(title) {
+                        t.audio.push(track);
+                    }
+                });
+            });
+        });
         add("locate-media", |w| w.locate_media());
         add("preview-title", |w| w.state().title_view.preview(w));
         add("check-video", |w| {

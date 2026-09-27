@@ -2,10 +2,12 @@
 
 //! Project document model (serialized as `.spindle` JSON).
 
+mod audio;
 mod menu;
 mod subtitle;
 mod undo;
 
+pub use audio::*;
 pub use menu::*;
 pub use subtitle::*;
 pub use undo::UndoStack;
@@ -92,7 +94,13 @@ pub struct Title {
     pub end_action: EndAction,
     /// Menu to return to; `None` means the first menu.
     pub return_menu: Option<Id>,
+    /// Language of the only audio track, from projects made before titles
+    /// had several; moved into `audio` on load.
+    #[serde(default, skip_serializing)]
     pub audio_lang: String,
+    /// Audio tracks in disc order; the first one plays by default.
+    #[serde(default)]
+    pub audio: Vec<AudioTrack>,
     /// Frame (seconds) used as this title's thumbnail; `None` picks one
     /// automatically.
     #[serde(default)]
@@ -111,6 +119,11 @@ pub struct Title {
 }
 
 impl Title {
+    /// Audio tracks that go on the disc, in stream order.
+    pub fn disc_audio(&self) -> impl Iterator<Item = &AudioTrack> {
+        self.audio.iter().filter(|t| t.enabled).take(MAX_AUDIO_TRACKS)
+    }
+
     /// Tracks that go on the disc, in stream order.
     pub fn disc_subtitles(&self) -> impl Iterator<Item = &SubtitleTrack> {
         self.subtitles.iter().filter(|t| t.enabled && t.kind() != SubtitleKind::Unsupported).take(32)
@@ -174,6 +187,7 @@ impl Project {
         let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         let mut p: Project =
             serde_json::from_slice(&data).with_context(|| format!("parsing {}", path.display()))?;
+        p.migrate();
         // Resolve asset paths relative to the project file.
         if let Some(dir) = path.parent() {
             for a in &mut p.assets {
@@ -209,6 +223,24 @@ impl Project {
         std::fs::write(&tmp, data).with_context(|| format!("writing {}", tmp.display()))?;
         std::fs::rename(&tmp, path)?;
         Ok(())
+    }
+
+    /// Bring projects saved by older versions up to date.
+    fn migrate(&mut self) {
+        let infos: std::collections::HashMap<Id, MediaInfo> = self.assets.iter().map(|a| (a.id, a.info.clone())).collect();
+        for t in &mut self.titles {
+            let lang = std::mem::take(&mut t.audio_lang);
+            if !t.audio.is_empty() {
+                continue;
+            }
+            // Only the first stream was used before.
+            if let Some(mut track) = infos.get(&t.asset).and_then(|i| embedded_tracks_audio(i).into_iter().find(|a| a.source == AudioSource::Embedded { index: 0 })) {
+                if !lang.is_empty() {
+                    track.lang = normalize_lang(&lang);
+                }
+                t.audio.push(track);
+            }
+        }
     }
 
     /// Every file the project refers to: (asset or subtitle id, path).
@@ -282,7 +314,8 @@ impl Project {
             chapters: auto_chapters(a.info.duration, 300.0),
             end_action: EndAction::default(),
             return_menu: None,
-            audio_lang: a.info.audio_lang.clone().unwrap_or_else(|| "eng".into()),
+            audio_lang: String::new(),
+            audio: embedded_tracks_audio(&a.info),
             poster: None,
             subtitles: {
                 let mut subs = embedded_tracks(&a.info);
@@ -338,6 +371,9 @@ impl Project {
         for m in &mut self.menus {
             m.forget_asset(asset);
         }
+        for t in &mut self.titles {
+            t.audio.retain(|a| !matches!(a.source, AudioSource::External { asset: x, .. } if x == asset));
+        }
     }
 
     pub fn remove_title(&mut self, title: Id) {
@@ -384,6 +420,27 @@ mod tests {
         let json = serde_json::to_string(&p).unwrap();
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(p, back);
+    }
+
+    #[test]
+    fn old_audio_language_becomes_track() {
+        let mut p = Project::default();
+        let asset = new_id();
+        let info = MediaInfo { duration: 10.0, video_codec: Some("h264".into()), audio_codec: Some("aac".into()), audio_channels: 2, ..Default::default() };
+        p.assets.push(Asset { id: asset, path: "/tmp/x.mkv".into(), kind: AssetKind::Video, info });
+        let t = p.ensure_title_for(asset).unwrap();
+        let mut json: serde_json::Value = serde_json::to_value(&p).unwrap();
+        let title = &mut json["titles"][0];
+        title.as_object_mut().unwrap().remove("audio");
+        title["audio_lang"] = "fra".into();
+        let path = std::env::temp_dir().join(format!("spindle-old-{}.spindle", new_id()));
+        std::fs::write(&path, json.to_string()).unwrap();
+        let back = Project::load(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let audio = &back.title(t).unwrap().audio;
+        assert_eq!(audio.len(), 1);
+        assert_eq!(audio[0].lang, "fra");
+        assert_eq!(audio[0].source, AudioSource::Embedded { index: 0 });
     }
 
     #[test]

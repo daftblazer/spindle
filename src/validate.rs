@@ -5,7 +5,7 @@
 //! estimates.
 
 use crate::bluray::AudioCodec;
-use crate::model::{Action, EndAction, FirstPlay, Id, Project, SubtitleSource, SAFE_AREA};
+use crate::model::{Action, AudioSource, EndAction, FirstPlay, Id, Project, SubtitleSource, MAX_AUDIO_TRACKS, SAFE_AREA};
 use gettextrs::gettext;
 use std::collections::HashSet;
 
@@ -65,13 +65,27 @@ fn size_parts(p: &Project) -> (f64, f64) {
     for t in &p.titles {
         let Some(a) = p.asset(t.asset) else { continue };
         let d = a.info.duration;
-        let audio = if a.info.has_audio() { audio_kbps(p, a.info.audio_channels) } else { 0.0 };
+        let own = a.info.audio();
+        let (mut audio, mut extra_audio) = (0.0, 0.0);
+        for track in t.disc_audio() {
+            match track.source {
+                AudioSource::Embedded { index } => {
+                    if let Some(s) = own.iter().find(|s| s.index == index) {
+                        audio += s.bit_rate.filter(|_| s.is_bluray_ac3()).map_or_else(|| audio_kbps(p, s.channels), |b| b as f64 / 1000.0);
+                    }
+                }
+                AudioSource::External { asset, .. } => {
+                    let ch = p.asset(asset).and_then(|a| a.info.audio().first().map(|s| s.channels)).unwrap_or(2);
+                    extra_audio += audio_kbps(p, ch);
+                }
+            }
+        }
         match std::fs::metadata(&a.path) {
-            // Kept video is about the size of the source file.
-            Ok(m) if t.keep_video => fixed += m.len() as f64 * 1.03,
+            // Kept video (with its own audio) is about the size of the source file.
+            Ok(m) if t.keep_video => fixed += m.len() as f64 * 1.03 + d * extra_audio * 1000.0 / 8.0,
             _ => {
                 secs += d;
-                fixed += d * (audio + OVERHEAD_KBPS) * 1000.0 / 8.0;
+                fixed += d * (audio + extra_audio + OVERHEAD_KBPS) * 1000.0 / 8.0;
             }
         }
     }
@@ -175,6 +189,20 @@ pub fn check(p: &Project) -> Vec<Issue> {
                 Some(Target::Title(t.id)),
             ),
             _ => {}
+        }
+        for a in t.disc_audio() {
+            if let AudioSource::External { asset, .. } = a.source {
+                match p.asset(asset) {
+                    Some(f) if f.path.exists() => {}
+                    f => error(
+                        gettext("The audio file of track “{}” of “{}” is missing: {}")
+                            .replacen("{}", &a.name, 1)
+                            .replacen("{}", &t.name, 1)
+                            .replacen("{}", &f.map(|f| f.path.display().to_string()).unwrap_or_default(), 1),
+                        Some(Target::Title(t.id)),
+                    ),
+                }
+            }
         }
         for s in &t.subtitles {
             if let SubtitleSource::External { path } = &s.source {
@@ -294,9 +322,22 @@ pub fn check(p: &Project) -> Vec<Issue> {
         if !titles.contains(&t.id) {
             warn(gettext("Title “{}” can't be reached from any menu.").replace("{}", &t.name), target);
         }
-        if !is_language_code(&t.audio_lang) {
+        for a in t.disc_audio() {
+            if !is_language_code(&a.lang) {
+                warn(
+                    gettext("Audio track “{}” of “{}” has language “{}”; use a three-letter code such as eng.")
+                        .replacen("{}", &a.name, 1)
+                        .replacen("{}", &t.name, 1)
+                        .replacen("{}", &a.lang, 1),
+                    target,
+                );
+            }
+        }
+        if t.audio.iter().filter(|a| a.enabled).count() > MAX_AUDIO_TRACKS {
             warn(
-                gettext("Title “{}” has audio language “{}”; use a three-letter code such as eng.").replacen("{}", &t.name, 1).replacen("{}", &t.audio_lang, 1),
+                gettext("“{}” has more than {} audio tracks; only the first {} go on the disc.")
+                    .replacen("{}", &t.name, 1)
+                    .replace("{}", &MAX_AUDIO_TRACKS.to_string()),
                 target,
             );
         }

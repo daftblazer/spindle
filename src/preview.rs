@@ -5,7 +5,7 @@
 //! an MKV with the subtitle track marked default so any player shows it.
 
 use crate::bluray::ts;
-use crate::bluray::{EsInfo, EsKind, PID_AUDIO_FIRST, PID_PG_FIRST, PID_VIDEO};
+use crate::bluray::{EsInfo, EsKind, PID_PG_FIRST, PID_VIDEO};
 use crate::build::BuildEvent;
 use crate::media::ffmpeg;
 use crate::media::transcode::{self, EncodeSettings};
@@ -48,7 +48,7 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
         };
         let key = crate::media::compat::keyframe_before(&asset.path, start + info.start_time)?;
         start = (key - info.start_time).max(0.0);
-        Some((format, report.copy_audio))
+        Some(format)
     } else {
         None
     };
@@ -66,32 +66,25 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
         let progress = |f: f64| emit(BuildEvent::Progress(f.clamp(0.0, 1.0)));
 
         let tmp = work.join("preview.ts");
-        let (vformat, copy_audio) = match keep {
-            Some((format, copy_audio)) => {
+        let audio = crate::build::title_audio(project, t, &settings, start)?;
+        let inputs: Vec<transcode::AudioInput> = audio.iter().map(|(i, _)| i.clone()).collect();
+        let vformat = match keep {
+            Some(format) => {
                 emit(BuildEvent::Stage(format!("Copying {} seconds of “{}” (original video)", duration.round(), t.name)));
-                let args = transcode::passthrough_args(&asset.path, info, &settings, copy_audio, Some((start, duration)), &tmp);
+                let args = transcode::passthrough_args(&asset.path, info, &settings, &inputs, Some((start, duration)), &tmp);
                 ffmpeg::run(&args, cancel, |secs| progress(secs / duration * 0.8))?;
-                (format, copy_audio)
+                format
             }
             None => {
                 emit(BuildEvent::Stage(format!("Encoding {} seconds of “{}”", duration.round(), t.name)));
-                let args = transcode::title_args(&asset.path, info, &settings, &[], Some((start, duration)), &tmp);
+                let args = transcode::title_args(&asset.path, info, &settings, &[], &inputs, Some((start, duration)), &tmp);
                 ffmpeg::run(&args, cancel, |secs| progress(secs / duration * 0.8))?;
-                (settings.video, false)
+                settings.video
             }
         };
 
         let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(vformat) }];
-        if info.has_audio() {
-            streams.push(EsInfo {
-                pid: PID_AUDIO_FIRST,
-                kind: EsKind::Audio {
-                    codec: if copy_audio { crate::bluray::AudioCodec::Ac3 } else { settings.audio },
-                    channels: if copy_audio { info.audio_channels.max(1) } else { transcode::output_channels(info.audio_channels) },
-                    lang: t.audio_lang.clone(),
-                },
-            });
-        }
+        streams.extend(audio.into_iter().map(|(_, es)| es));
         let mut extra = Vec::new();
         let mut sub_lang = None;
         if let Some(track) = req.subtitle.and_then(|id| t.subtitles.iter().find(|s| s.id == id)) {
@@ -140,8 +133,16 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
             .iter()
             .map(|s| s.to_string())
             .collect();
-        if info.has_audio() {
-            args.extend(["-disposition:a:0".to_string(), "default".to_string()]);
+        let audio_langs: Vec<String> = streams
+            .iter()
+            .filter_map(|s| match &s.kind {
+                EsKind::Audio { lang, .. } => Some(lang.clone()),
+                _ => None,
+            })
+            .collect();
+        for (n, lang) in audio_langs.iter().enumerate() {
+            args.extend([format!("-disposition:a:{n}"), (if n == 0 { "default" } else { "0" }).to_string()]);
+            args.extend([format!("-metadata:s:a:{n}"), format!("language={lang}")]);
         }
         if let Some(lang) = sub_lang {
             args.extend(["-disposition:s:0", "default", "-metadata:s:s:0", &format!("language={lang}")].iter().map(|s| s.to_string()));

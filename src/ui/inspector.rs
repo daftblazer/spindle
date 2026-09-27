@@ -629,6 +629,114 @@ impl Inspector {
         page.add(&g);
     }
 
+    fn audio_group(&self, page: &adw::PreferencesPage, id: Id) {
+        let doc = &self.doc;
+        let p = doc.project();
+        let Some(t) = p.title(id) else { return };
+        let g = group(&gettext("Audio"));
+        g.set_description(Some(&gettext("The first track plays by default; viewers switch with the remote. Compatible AC-3 is copied without re-encoding.")));
+
+        fn track_mut(p: &mut Project, title: Id, track: Id) -> Option<&mut AudioTrack> {
+            p.title_mut(title)?.audio.iter_mut().find(|a| a.id == track)
+        }
+
+        let own = p.asset(t.asset).map(|a| a.info.audio()).unwrap_or_default();
+        let first_enabled = t.audio.iter().find(|a| a.enabled).map(|a| a.id);
+        for (i, track) in t.audio.iter().enumerate() {
+            let tid = track.id;
+            let (stream, origin) = match track.source {
+                AudioSource::Embedded { index } => (own.iter().find(|s| s.index == index).cloned(), gettext("in video")),
+                AudioSource::External { asset, .. } => {
+                    let a = p.asset(asset);
+                    (a.and_then(|a| a.info.audio().into_iter().next()), a.map(|a| a.name()).unwrap_or_default())
+                }
+            };
+            let mut subtitle = format!("{} · {} · {}", language_name(&track.lang), stream.as_ref().map(describe).unwrap_or_default(), origin);
+            if first_enabled == Some(tid) {
+                subtitle.push_str(&format!(" · {}", gettext("default")));
+            }
+            let row = adw::ExpanderRow::builder()
+                .title(glib::markup_escape_text(&track.name).as_str())
+                .subtitle(glib::markup_escape_text(&subtitle).as_str())
+                .show_enable_switch(true)
+                .enable_expansion(track.enabled)
+                .build();
+            if i > 0 {
+                let up = gtk::Button::builder()
+                    .icon_name("go-up-symbolic")
+                    .tooltip_text(gettext("Move Up"))
+                    .valign(gtk::Align::Center)
+                    .css_classes(["flat"])
+                    .build();
+                up.update_property(&[gtk::accessible::Property::Label(&gettext("Move Up"))]);
+                let d = doc.clone();
+                up.connect_clicked(move |_| {
+                    d.edit(Change::Structure, |p| {
+                        if let Some(t) = p.title_mut(id) {
+                            if let Some(i) = t.audio.iter().position(|a| a.id == tid).filter(|i| *i > 0) {
+                                t.audio.swap(i, i - 1);
+                            }
+                        }
+                    });
+                });
+                row.add_suffix(&up);
+            }
+            let d = doc.clone();
+            row.connect_enable_expansion_notify(move |r| {
+                let on = r.enables_expansion();
+                if d.project().title(id).and_then(|t| t.audio.iter().find(|a| a.id == tid)).is_some_and(|a| a.enabled == on) {
+                    return;
+                }
+                d.edit(Change::Structure, |p| {
+                    if let Some(a) = track_mut(p, id, tid) {
+                        a.enabled = on;
+                    }
+                });
+            });
+            let lang = rows::entry(doc, &gettext("Language Code"), &track.lang, Change::Content, move |p, v| {
+                if let Some(a) = track_mut(p, id, tid) {
+                    a.lang = normalize_lang(&v);
+                }
+            });
+            lang.set_tooltip_text(Some(&gettext("ISO 639 code such as eng, fra or jpn")));
+            row.add_row(&lang);
+            row.add_row(&rows::entry(doc, &gettext("Name"), &track.name, Change::Content, move |p, v| {
+                if let Some(a) = track_mut(p, id, tid) {
+                    a.name = v;
+                }
+            }));
+            if let AudioSource::External { offset, .. } = track.source {
+                let delay = rows::spin(doc, &gettext("Delay"), offset, -600.0, 600.0, 0.1, 2, Change::Content, move |p, v| {
+                    if let Some(a) = track_mut(p, id, tid) {
+                        if let AudioSource::External { offset, .. } = &mut a.source {
+                            *offset = v;
+                        }
+                    }
+                });
+                delay.set_subtitle(&gettext("Seconds; negative starts the audio file earlier"));
+                row.add_row(&delay);
+                let remove = adw::ButtonRow::builder().title(gettext("Remove Audio Track")).css_classes(["destructive-action"]).build();
+                let d = doc.clone();
+                remove.connect_activated(move |_| {
+                    d.edit(Change::Structure, |p| {
+                        if let Some(t) = p.title_mut(id) {
+                            t.audio.retain(|a| a.id != tid);
+                        }
+                    });
+                });
+                row.add_row(&remove);
+            }
+            g.add(&row);
+        }
+        if t.audio.is_empty() {
+            g.add(&adw::ActionRow::builder().title(gettext("No audio")).css_classes(["dim-label"]).build());
+        }
+        let add = adw::ButtonRow::builder().title(gettext("Add Audio File…")).start_icon_name("list-add-symbolic").build();
+        add.set_action_name(Some("win.add-audio"));
+        g.add(&add);
+        page.add(&g);
+    }
+
     fn subtitles_group(&self, page: &adw::PreferencesPage, id: Id) {
         let doc = &self.doc;
         let p = doc.project();
@@ -746,11 +854,6 @@ impl Inspector {
                 t.name = v;
             }
         }));
-        g.add(&rows::entry(doc, &gettext("Audio Language"), &t.audio_lang, Change::Content, move |p, v| {
-            if let Some(t) = p.title_mut(id) {
-                t.audio_lang = v;
-            }
-        }));
         if let Some(a) = p.asset(t.asset) {
             let info = &a.info;
             let row = adw::ActionRow::builder()
@@ -804,6 +907,7 @@ impl Inspector {
         }
 
         self.video_group(page, id);
+        self.audio_group(page, id);
         self.subtitles_group(page, id);
 
         let g = group(&gettext("When Finished"));

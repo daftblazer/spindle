@@ -59,6 +59,41 @@ pub struct Builder<'a> {
     done_work: f64,
 }
 
+/// Audio of a title: the ffmpeg inputs and the disc stream of each.
+/// AC-3 that is already Blu-ray compatible is copied rather than
+/// re-encoded (for kept video always, else when the disc uses AC-3), except
+/// in clips starting at `clip_start` > 0: a copied stream cut there keeps
+/// audio from before it.
+pub fn title_audio(p: &Project, t: &Title, set: &EncodeSettings, clip_start: f64) -> Result<Vec<(transcode::AudioInput, EsInfo)>> {
+    let asset = p.asset(t.asset).context("title without video")?;
+    let own = asset.info.audio();
+    let mut out = Vec::new();
+    for track in t.disc_audio() {
+        let input = match track.source {
+            AudioSource::Embedded { index } => {
+                let Some(stream) = own.iter().find(|s| s.index == index) else { continue };
+                let copy = stream.is_bluray_ac3() && (t.keep_video || set.audio == AudioCodec::Ac3) && clip_start <= 0.0;
+                transcode::AudioInput { file: None, index, offset: 0.0, channels: stream.channels, copy }
+            }
+            AudioSource::External { asset, offset } => {
+                let a = p.asset(asset).with_context(|| format!("audio track “{}” of “{}” has no file", track.name, t.name))?;
+                let stream = a.info.audio().into_iter().next().with_context(|| format!("{} has no audio", a.path.display()))?;
+                transcode::AudioInput { file: Some(a.path.clone()), index: stream.index, offset, channels: stream.channels, copy: false }
+            }
+        };
+        let es = EsInfo {
+            pid: PID_AUDIO_FIRST + out.len() as u16,
+            kind: EsKind::Audio {
+                codec: if input.copy { AudioCodec::Ac3 } else { set.audio },
+                channels: input.output_channels(),
+                lang: track.lang.clone(),
+            },
+        };
+        out.push((input, es));
+    }
+    Ok(out)
+}
+
 /// Validate a project before building. Returns human-readable problems.
 /// Problems that stop the build.
 pub fn check(project: &Project) -> Vec<String> {
@@ -365,8 +400,10 @@ impl<'a> Builder<'a> {
         chapters.dedup();
         let duration = asset.info.duration.max(1.0);
 
+        let audio = title_audio(p, t, &self.settings, 0.0)?;
+        let inputs: Vec<transcode::AudioInput> = audio.iter().map(|(i, _)| i.clone()).collect();
         // Either copy the original video or encode it in the disc format.
-        let (vformat, copy_audio) = if t.keep_video {
+        let vformat = if t.keep_video {
             self.stage(format!("Checking the video of “{}”", t.name));
             let report = compat::analyze(&asset.path)?;
             let Some(format) = report.format.filter(|_| report.compatible()) else {
@@ -377,29 +414,19 @@ impl<'a> Builder<'a> {
                 );
             };
             self.stage(format!("Copying the video of “{}”", t.name));
-            let args = transcode::passthrough_args(&asset.path, &asset.info, &self.settings, report.copy_audio, None, &tmp);
+            let args = transcode::passthrough_args(&asset.path, &asset.info, &self.settings, &inputs, None, &tmp);
             self.encode(args, duration)?;
-            (format, report.copy_audio)
+            format
         } else {
             self.stage(format!("Encoding title “{}”", t.name));
-            let args = transcode::title_args(&asset.path, &asset.info, &self.settings, &chapters, None, &tmp);
+            let args = transcode::title_args(&asset.path, &asset.info, &self.settings, &chapters, &inputs, None, &tmp);
             self.encode(args, duration)?;
-            (self.settings.video, false)
+            self.settings.video
         };
 
         self.stage(format!("Multiplexing title “{}”", t.name));
         let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(vformat) }];
-        if asset.info.has_audio() {
-            let mut audio = self.audio_es(&asset.info, &t.audio_lang);
-            if copy_audio {
-                audio.kind = EsKind::Audio {
-                    codec: AudioCodec::Ac3,
-                    channels: asset.info.audio_channels.max(1),
-                    lang: t.audio_lang.clone(),
-                };
-            }
-            streams.push(audio);
-        }
+        streams.extend(audio.into_iter().map(|(_, es)| es));
 
         // Subtitles → PG streams, timed against the encoded video.
         let mut extra = Vec::new();
