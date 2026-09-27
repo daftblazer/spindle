@@ -23,6 +23,49 @@ pub struct Inspector {
     rebuild_queued: Cell<bool>,
     /// The main text row of the current page (label/text/name).
     primary: RefCell<Option<gtk::Widget>>,
+    /// What the page shows, to keep its scroll position when it's rebuilt
+    /// for the same thing.
+    shown: Cell<Option<(Node, Option<Id>)>>,
+}
+
+/// The scrolled window inside a page.
+fn scroller(w: &gtk::Widget) -> Option<gtk::ScrolledWindow> {
+    if let Some(s) = w.downcast_ref::<gtk::ScrolledWindow>() {
+        return Some(s.clone());
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if let Some(s) = scroller(&c) {
+            return Some(s);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
+/// Scroll `page` to `pos` once it has been laid out tall enough.
+fn restore_scroll(page: &adw::PreferencesPage, pos: f64) {
+    let Some(adj) = scroller(page.upcast_ref()).map(|s| s.vadjustment()) else { return };
+    let handler: Rc<Cell<Option<glib::SignalHandlerId>>> = Rc::default();
+    let h = handler.clone();
+    let id = adj.connect_changed(move |adj| {
+        if adj.upper() - adj.page_size() >= pos || adj.upper() > 0.0 {
+            adj.set_value(pos);
+            if adj.upper() - adj.page_size() >= pos {
+                if let Some(id) = h.take() {
+                    adj.disconnect(id);
+                }
+            }
+        }
+    });
+    handler.set(Some(id));
+    // Stop adjusting once the page has settled.
+    let adj2 = adj.clone();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+        if let Some(id) = handler.take() {
+            adj2.disconnect(id);
+        }
+    });
 }
 
 /// A row of icon buttons for alignment actions.
@@ -109,6 +152,7 @@ impl Inspector {
             geometry: RefCell::new(None),
             rebuild_queued: Cell::new(false),
             primary: RefCell::new(None),
+            shown: Cell::new(None),
         });
         let weak = Rc::downgrade(&insp);
         doc.connect(move |c| {
@@ -153,6 +197,11 @@ impl Inspector {
     }
 
     pub fn rebuild(self: &Rc<Self>) {
+        let now = (self.doc.node(), self.doc.item());
+        let scroll = match self.shown.replace(Some(now)) {
+            Some(before) if before == now => self.container.first_child().and_then(|c| scroller(&c)).map(|s| s.vadjustment().value()),
+            _ => None,
+        };
         while let Some(c) = self.container.first_child() {
             self.container.remove(&c);
         }
@@ -197,6 +246,9 @@ impl Inspector {
         self.title.set_title(&title);
         self.title.set_subtitle(&subtitle);
         self.container.append(&page);
+        if let Some(pos) = scroll.filter(|p| *p > 0.0) {
+            restore_scroll(&page, pos);
+        }
     }
 
     fn multi_page(&self, page: &adw::PreferencesPage, n: usize) {
