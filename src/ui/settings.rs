@@ -47,9 +47,22 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     g.set_description(Some(&gettext("All titles and menus are converted to this Blu-ray video format")));
     let formats: Vec<String> = VideoFormat::ALL.iter().map(|f| f.label().to_string()).collect();
     let sel = VideoFormat::ALL.iter().position(|f| *f == d.video).unwrap_or(0);
-    g.add(&rows::combo(doc, &gettext("Format"), &formats, sel, Change::Content, |p, i| {
+    let format_row = rows::combo(doc, &gettext("Format"), &formats, sel, Change::Content, |p, i| {
         p.disc.video = VideoFormat::ALL[i.min(VideoFormat::ALL.len() - 1)];
-    }));
+    });
+    let explain = |f: VideoFormat| {
+        if f.is_4x3() {
+            gettext("For 4:3 televisions: wide video is letterboxed, and so are the menus")
+        } else if f.is_sd() {
+            gettext("Standard definition, 16:9")
+        } else {
+            String::new()
+        }
+    };
+    format_row.set_subtitle(&explain(d.video));
+    format_row.set_subtitle_lines(2);
+    format_row.connect_selected_notify(move |r| r.set_subtitle(&explain(VideoFormat::ALL[(r.selected() as usize).min(VideoFormat::ALL.len() - 1)])));
+    g.add(&format_row);
     let br = rows::spin(doc, &gettext("Average Bitrate"), d.video_bitrate as f64 / 1000.0, 4.0, 35.0, 1.0, 0, Change::Content, |p, v| {
         p.disc.video_bitrate = (v * 1000.0) as u32;
     });

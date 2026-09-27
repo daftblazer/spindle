@@ -111,8 +111,8 @@ pub struct Source<'a> {
 /// matrix) names and the H.264 VUI codes.
 fn colour(v: VideoFormat) -> (&'static str, &'static str, &'static str, [u8; 3]) {
     match v {
-        VideoFormat::I480_2997 => ("smpte170m", "smpte170m", "smpte170m", [6, 6, 6]),
-        VideoFormat::I576_25 => ("bt470bg", "smpte170m", "bt470bg", [5, 6, 5]),
+        VideoFormat::I480_2997 | VideoFormat::I480_2997_4x3 => ("smpte170m", "smpte170m", "smpte170m", [6, 6, 6]),
+        VideoFormat::I576_25 | VideoFormat::I576_25_4x3 => ("bt470bg", "smpte170m", "bt470bg", [5, 6, 5]),
         _ => ("bt709", "bt709", "bt709", [1, 1, 1]),
     }
 }

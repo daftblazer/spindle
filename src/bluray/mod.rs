@@ -34,10 +34,13 @@ pub enum VideoFormat {
     I576_25,
     /// 720×480 interlaced (NTSC DVD resolution).
     I480_2997,
+    /// The SD formats with a 4:3 picture, for 4:3 televisions.
+    I576_25_4x3,
+    I480_2997_4x3,
 }
 
 impl VideoFormat {
-    pub const ALL: [VideoFormat; 10] = [
+    pub const ALL: [VideoFormat; 12] = [
         VideoFormat::P1080_23976,
         VideoFormat::P1080_24,
         VideoFormat::I1080_25,
@@ -48,6 +51,8 @@ impl VideoFormat {
         VideoFormat::P720_5994,
         VideoFormat::I576_25,
         VideoFormat::I480_2997,
+        VideoFormat::I576_25_4x3,
+        VideoFormat::I480_2997_4x3,
     ];
 
     pub fn label(self) -> &'static str {
@@ -62,14 +67,16 @@ impl VideoFormat {
             VideoFormat::P720_5994 => "720p 59.94",
             VideoFormat::I576_25 => "SD 576i 25 (PAL)",
             VideoFormat::I480_2997 => "SD 480i 29.97 (NTSC)",
+            VideoFormat::I576_25_4x3 => "SD 576i 25 (PAL) 4:3",
+            VideoFormat::I480_2997_4x3 => "SD 480i 29.97 (NTSC) 4:3",
         }
     }
 
     pub fn size(self) -> (u32, u32) {
         match self {
             VideoFormat::P720_23976 | VideoFormat::P720_24 | VideoFormat::P720_50 | VideoFormat::P720_5994 => (1280, 720),
-            VideoFormat::I576_25 => (720, 576),
-            VideoFormat::I480_2997 => (720, 480),
+            VideoFormat::I576_25 | VideoFormat::I576_25_4x3 => (720, 576),
+            VideoFormat::I480_2997 | VideoFormat::I480_2997_4x3 => (720, 480),
             _ => (1920, 1080),
         }
     }
@@ -80,8 +87,8 @@ impl VideoFormat {
         match self {
             VideoFormat::P1080_23976 | VideoFormat::P720_23976 => (24000, 1001),
             VideoFormat::P1080_24 | VideoFormat::P720_24 => (24, 1),
-            VideoFormat::I1080_25 | VideoFormat::I576_25 => (25, 1),
-            VideoFormat::I1080_2997 | VideoFormat::I480_2997 => (30000, 1001),
+            VideoFormat::I1080_25 | VideoFormat::I576_25 | VideoFormat::I576_25_4x3 => (25, 1),
+            VideoFormat::I1080_2997 | VideoFormat::I480_2997 | VideoFormat::I480_2997_4x3 => (30000, 1001),
             VideoFormat::P720_50 => (50, 1),
             VideoFormat::P720_5994 => (60000, 1001),
         }
@@ -89,19 +96,40 @@ impl VideoFormat {
 
     /// Coded as fields (1080i and SD).
     pub fn interlaced(self) -> bool {
-        matches!(self, VideoFormat::I1080_25 | VideoFormat::I1080_2997 | VideoFormat::I576_25 | VideoFormat::I480_2997)
+        matches!(self, VideoFormat::I1080_25 | VideoFormat::I1080_2997) || self.is_sd()
     }
 
     pub fn is_sd(self) -> bool {
-        matches!(self, VideoFormat::I576_25 | VideoFormat::I480_2997)
+        matches!(self, VideoFormat::I576_25 | VideoFormat::I480_2997 | VideoFormat::I576_25_4x3 | VideoFormat::I480_2997_4x3)
     }
 
-    /// Pixel aspect ratio for a 16:9 picture.
+    /// A 4:3 picture (only SD can be).
+    pub fn is_4x3(self) -> bool {
+        matches!(self, VideoFormat::I576_25_4x3 | VideoFormat::I480_2997_4x3)
+    }
+
+    /// NTSC resolution (480 lines).
+    fn is_480(self) -> bool {
+        matches!(self, VideoFormat::I480_2997 | VideoFormat::I480_2997_4x3)
+    }
+
+    /// Pixel aspect ratio of the picture (ITU-R BT.601 for SD).
     pub fn sar(self) -> (u32, u32) {
         match self {
             VideoFormat::I480_2997 => (40, 33),
             VideoFormat::I576_25 => (16, 11),
+            VideoFormat::I480_2997_4x3 => (10, 11),
+            VideoFormat::I576_25_4x3 => (12, 11),
             _ => (1, 1),
+        }
+    }
+
+    /// `aspect_ratio` code of clip info: 2 = 4:3, 3 = 16:9.
+    pub fn aspect_code(self) -> u8 {
+        if self.is_4x3() {
+            2
+        } else {
+            3
         }
     }
 
@@ -114,8 +142,8 @@ impl VideoFormat {
     /// `video_format` code used in index/mpls/clpi.
     pub fn format_code(self) -> u8 {
         match self {
-            VideoFormat::I480_2997 => 1,
-            VideoFormat::I576_25 => 2,
+            _ if self.is_sd() && self.is_480() => 1,
+            _ if self.is_sd() => 2,
             VideoFormat::I1080_25 | VideoFormat::I1080_2997 => 4,
             VideoFormat::P720_23976 | VideoFormat::P720_24 | VideoFormat::P720_50 | VideoFormat::P720_5994 => 5,
             _ => 6,

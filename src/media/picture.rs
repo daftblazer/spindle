@@ -358,6 +358,20 @@ mod tests {
     }
 
     #[test]
+    fn standard_sd() {
+        // A 4:3 DVD on a 4:3 NTSC disc fills the active picture.
+        let mut dvd = info(708, 480, (24000, 1001));
+        dvd.sar = Some((160, 177));
+        let p = plan(&dvd, &VideoOptions::default(), VideoFormat::I480_2997_4x3);
+        assert_eq!((p.area.w, p.area.h), (704, 480));
+        assert!(p.filters.contains("setsar=10/11"));
+        assert!(p.pulldown);
+        // 16:9 video is letterboxed on it.
+        let p = plan(&info(1920, 1080, (25, 1)), &VideoOptions::default(), VideoFormat::I576_25_4x3);
+        assert_eq!((p.area.w, p.area.h), (720, 442));
+    }
+
+    #[test]
     fn interlaced_sources() {
         let mut i = info(1920, 1080, (25, 1));
         i.field_order = Some("tt".into());

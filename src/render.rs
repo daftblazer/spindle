@@ -4,6 +4,7 @@
 //! disc builder so that what you see is what ends up on the disc.
 
 use crate::bluray::ig::Bitmap;
+use crate::bluray::VideoFormat;
 use crate::media::thumbnail;
 use crate::model::*;
 use gtk::prelude::*;
@@ -499,19 +500,39 @@ pub fn draw_button(cr: &cairo::Context, project: &Project, images: &ImageCache, 
     }
 }
 
-/// Scale factors from design space to a disc picture (they differ for the
-/// wide pixels of SD formats).
-pub fn disc_scale(width: u32, height: u32) -> (f64, f64) {
-    (width as f64 / DESIGN_WIDTH, height as f64 / DESIGN_HEIGHT)
+/// Where the 16:9 menu design lands on a disc picture: the scale (which
+/// differs across and down for the wide or narrow pixels of SD) and the
+/// offset (4:3 discs show menus letterboxed).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DiscFrame {
+    pub w: u32,
+    pub h: u32,
+    pub sx: f64,
+    pub sy: f64,
+    pub oy: f64,
+}
+
+impl DiscFrame {
+    pub fn of(v: VideoFormat) -> Self {
+        let (w, h) = v.size();
+        let (n, d) = v.sar();
+        // Lines the 16:9 design takes at the picture's full width.
+        let lines = (w as f64 * n as f64 / d as f64 * 9.0 / 16.0).round().min(h as f64);
+        DiscFrame { w, h, sx: w as f64 / DESIGN_WIDTH, sy: lines / DESIGN_HEIGHT, oy: ((h as f64 - lines) / 2.0).floor() }
+    }
+
+    fn apply(&self, cr: &cairo::Context) {
+        cr.translate(0.0, self.oy);
+        cr.scale(self.sx, self.sy);
+    }
 }
 
 /// Button position and bitmap size at disc resolution.
-pub fn button_geometry(item: &MenuItem, disc_w: u32, disc_h: u32) -> (u16, u16, u16, u16) {
-    let (sx, sy) = disc_scale(disc_w, disc_h);
-    let x = (item.rect.x * sx).floor().clamp(0.0, disc_w as f64 - 8.0);
-    let y = (item.rect.y * sy).floor().clamp(0.0, disc_h as f64 - 8.0);
-    let w = (item.rect.w * sx).ceil().clamp(8.0, disc_w as f64 - x);
-    let h = (item.rect.h * sy).ceil().clamp(8.0, disc_h as f64 - y);
+pub fn button_geometry(item: &MenuItem, f: &DiscFrame) -> (u16, u16, u16, u16) {
+    let x = (item.rect.x * f.sx).floor().clamp(0.0, f.w as f64 - 8.0);
+    let y = (f.oy + item.rect.y * f.sy).floor().clamp(0.0, f.h as f64 - 8.0);
+    let w = (item.rect.w * f.sx).ceil().clamp(8.0, f.w as f64 - x);
+    let h = (item.rect.h * f.sy).ceil().clamp(8.0, f.h as f64 - y);
     (x as u16, y as u16, w as u16, h as u16)
 }
 
@@ -541,14 +562,13 @@ fn surface_to_bitmap(surface: &mut cairo::ImageSurface) -> Bitmap {
 }
 
 /// Render one button state as an IG bitmap at disc resolution.
-pub fn render_button_bitmap(project: &Project, images: &ImageCache, item: &MenuItem, b: &ButtonItem, state: ButtonState, disc_w: u32, disc_h: u32) -> Bitmap {
-    let (x, y, w, h) = button_geometry(item, disc_w, disc_h);
+pub fn render_button_bitmap(project: &Project, images: &ImageCache, item: &MenuItem, b: &ButtonItem, state: ButtonState, frame: &DiscFrame) -> Bitmap {
+    let (x, y, w, h) = button_geometry(item, frame);
     let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, w as i32, h as i32).expect("surface");
     {
         let cr = cairo::Context::new(&surface).expect("cairo context");
-        let (sx, sy) = disc_scale(disc_w, disc_h);
         cr.translate(-(x as f64), -(y as f64));
-        cr.scale(sx, sy);
+        frame.apply(&cr);
         draw_button(&cr, project, images, item, b, state);
     }
     surface_to_bitmap(&mut surface)
@@ -576,12 +596,11 @@ pub fn popup_backdrop(cr: &cairo::Context, project: &Project, images: &ImageCach
 
 /// Render everything but the buttons (pop-up menus have no background) as
 /// one IG bitmap, cropped to what is drawn: (x, y, bitmap).
-pub fn render_static_bitmap(project: &Project, menu: &Menu, images: &ImageCache, disc_w: u32, disc_h: u32) -> Option<(u16, u16, Bitmap)> {
-    let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, disc_w as i32, disc_h as i32).ok()?;
+pub fn render_static_bitmap(project: &Project, menu: &Menu, images: &ImageCache, frame: &DiscFrame) -> Option<(u16, u16, Bitmap)> {
+    let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, frame.w as i32, frame.h as i32).ok()?;
     {
         let cr = cairo::Context::new(&surface).ok()?;
-        let (sx, sy) = disc_scale(disc_w, disc_h);
-        cr.scale(sx, sy);
+        frame.apply(&cr);
         draw_static(&cr, project, menu, images, false);
     }
     let full = surface_to_bitmap(&mut surface);
@@ -606,16 +625,19 @@ pub fn render_static_png(
     project: &Project,
     menu: &Menu,
     images: &ImageCache,
-    disc_w: u32,
-    disc_h: u32,
+    frame: &DiscFrame,
     with_background: bool,
     out: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, disc_w as i32, disc_h as i32)?;
+    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, frame.w as i32, frame.h as i32)?;
     {
         let cr = cairo::Context::new(&surface)?;
-        let (sx, sy) = disc_scale(disc_w, disc_h);
-        cr.scale(sx, sy);
+        // Black bars around a letterboxed menu.
+        if with_background {
+            cr.set_source_rgb(0.0, 0.0, 0.0);
+            cr.paint()?;
+        }
+        frame.apply(&cr);
         draw_static(&cr, project, menu, images, with_background);
     }
     let mut f = std::fs::File::create(out)?;
@@ -676,4 +698,20 @@ pub fn menu_thumbnail(project: &Project, menu: &Menu, images: &ImageCache, width
         gtk::gdk::MemoryTexture::new(width, height, gtk::gdk::MemoryFormat::B8g8r8a8Premultiplied, &bytes, stride)
             .upcast(),
     )
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+
+    #[test]
+    fn letterboxes_on_4x3() {
+        let hd = DiscFrame::of(VideoFormat::P1080_23976);
+        assert_eq!((hd.sx, hd.sy, hd.oy), (1.0, 1.0, 0.0));
+        let f = DiscFrame::of(VideoFormat::I480_2997_4x3);
+        // 720 wide pixels of 10:11 → 655 square; 16:9 of that is 368 lines.
+        assert_eq!((f.oy, (f.sy * DESIGN_HEIGHT).round()), (56.0, 368.0));
+        let wide = DiscFrame::of(VideoFormat::I480_2997);
+        assert_eq!(wide.oy, 0.0);
+    }
 }

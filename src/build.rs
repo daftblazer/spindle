@@ -703,7 +703,7 @@ impl<'a> Builder<'a> {
         let popup = p.title_popup(t)?;
         let pages = p.popup_pages(popup);
         let page_ids: Vec<Id> = pages.iter().map(|m| m.id).collect();
-        let (w, h) = self.settings.video.size();
+        let frame = render::DiscFrame::of(self.settings.video);
         let images = ImageCache::new_sync();
         let mut ig_pages = Vec::new();
         for (pi, m) in pages.iter().enumerate() {
@@ -717,7 +717,7 @@ impl<'a> Builder<'a> {
             let id_of = |id: Id| base + items.iter().position(|i| i.id == id).unwrap_or(0) as u16;
             let mut buttons = Vec::new();
             // Everything that isn't a button, as one button nothing leads to.
-            if let Some((x, y, bmp)) = render::render_static_bitmap(p, m, &images, w, h) {
+            if let Some((x, y, bmp)) = render::render_static_bitmap(p, m, &images, &frame) {
                 let id = base + 0xFF;
                 buttons.push(ig::Button {
                     id,
@@ -737,7 +737,7 @@ impl<'a> Builder<'a> {
             }
             for (bi, item) in items.iter().enumerate() {
                 let b = item.button().unwrap();
-                let (x, y, _, _) = render::button_geometry(item, w, h);
+                let (x, y, _, _) = render::button_geometry(item, &frame);
                 buttons.push(ig::Button {
                     id: base + bi as u16,
                     numeric: bi as u16 + 1,
@@ -747,9 +747,9 @@ impl<'a> Builder<'a> {
                     down: id_of(nav[bi][1]),
                     left: id_of(nav[bi][2]),
                     right: id_of(nav[bi][3]),
-                    normal: render::render_button_bitmap(p, &images, item, b, ButtonState::Normal, w, h),
-                    selected: render::render_button_bitmap(p, &images, item, b, ButtonState::Selected, w, h),
-                    activated: render::render_button_bitmap(p, &images, item, b, ButtonState::Activated, w, h),
+                    normal: render::render_button_bitmap(p, &images, item, b, ButtonState::Normal, &frame),
+                    selected: render::render_button_bitmap(p, &images, item, b, ButtonState::Selected, &frame),
+                    activated: render::render_button_bitmap(p, &images, item, b, ButtonState::Activated, &frame),
                     commands: self.popup_commands(b.action, title, &page_ids, marks),
                     auto_action: false,
                 });
@@ -1123,13 +1123,13 @@ impl<'a> Builder<'a> {
     /// Disc menu clip `n`; `done` is the menus' work before it.
     fn build_menu(&self, m: &Menu, n: u32, done: f64) -> Result<(Playlist, ClipInfo)> {
         let p = self.project;
-        let (w, h) = self.settings.video.size();
+        let frame = render::DiscFrame::of(self.settings.video);
         self.tracker.update("menus", TaskState::Running, done, &format!("Drawing “{}”", m.name));
         self.stage(format!("Rendering menu “{}”", m.name));
         let images = ImageCache::new_sync();
         let still = self.work.join(format!("menu-{}.png", clip_name(n)));
         let motion = m.background.video.and_then(|id| p.asset(id));
-        render::render_static_png(p, m, &images, w, h, motion.is_none(), &still)?;
+        render::render_static_png(p, m, &images, &frame, motion.is_none(), &still)?;
 
         // IG buttons. Button ids are unique across the disc so that the
         // player's remembered selection (PSR10) only applies to the menu it
@@ -1141,7 +1141,7 @@ impl<'a> Builder<'a> {
         let mut buttons = Vec::new();
         for (bi, item) in items.iter().enumerate() {
             let b = item.button().unwrap();
-            let (x, y, _, _) = render::button_geometry(item, w, h);
+            let (x, y, _, _) = render::button_geometry(item, &frame);
             buttons.push(ig::Button {
                 id: base + bi as u16,
                 numeric: bi as u16 + 1,
@@ -1151,9 +1151,9 @@ impl<'a> Builder<'a> {
                 down: id_of(nav[bi][1]),
                 left: id_of(nav[bi][2]),
                 right: id_of(nav[bi][3]),
-                normal: render::render_button_bitmap(p, &images, item, b, ButtonState::Normal, w, h),
-                selected: render::render_button_bitmap(p, &images, item, b, ButtonState::Selected, w, h),
-                activated: render::render_button_bitmap(p, &images, item, b, ButtonState::Activated, w, h),
+                normal: render::render_button_bitmap(p, &images, item, b, ButtonState::Normal, &frame),
+                selected: render::render_button_bitmap(p, &images, item, b, ButtonState::Selected, &frame),
+                activated: render::render_button_bitmap(p, &images, item, b, ButtonState::Activated, &frame),
                 commands: self.button_commands(b.action, (n - 1) as usize),
                 auto_action: false,
             });

@@ -49,7 +49,7 @@ fn write_coding_info(w: &mut BitWriter, s: &EsInfo) {
         EsKind::Video(v) => {
             w.bits(4, v.format_code() as u64)
                 .bits(4, v.rate_code() as u64)
-                .bits(4, 3 /* 16:9 */)
+                .bits(4, v.aspect_code() as u64)
                 .zeros(2)
                 .flag(false /* cc */)
                 .zeros(17);

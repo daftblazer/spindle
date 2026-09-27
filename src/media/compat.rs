@@ -66,6 +66,7 @@ struct Stream {
     height: Option<u32>,
     pix_fmt: Option<String>,
     field_order: Option<String>,
+    display_aspect_ratio: Option<String>,
     r_frame_rate: Option<String>,
     avg_frame_rate: Option<String>,
     bit_rate: Option<String>,
@@ -94,7 +95,7 @@ fn rate(s: &Option<String>) -> Option<(u32, u32)> {
 }
 
 /// Map size, rate and scan type onto a Blu-ray format.
-fn bd_format(w: u32, h: u32, fps: (u32, u32), interlaced: bool) -> Option<VideoFormat> {
+fn bd_format(w: u32, h: u32, fps: (u32, u32), interlaced: bool, standard: bool) -> Option<VideoFormat> {
     let r = fps.0 as f64 / fps.1 as f64;
     let near = |x: f64| (r - x).abs() < 0.01;
     match (w, h, interlaced) {
@@ -107,6 +108,8 @@ fn bd_format(w: u32, h: u32, fps: (u32, u32), interlaced: bool) -> Option<VideoF
         (1280, 720, false) if near(24.0) => Some(VideoFormat::P720_24),
         (1280, 720, false) if near(50.0) => Some(VideoFormat::P720_50),
         (1280, 720, false) if near(60000.0 / 1001.0) => Some(VideoFormat::P720_5994),
+        (720, 576, true) if near(25.0) && standard => Some(VideoFormat::I576_25_4x3),
+        (720, 480, true) if near(30000.0 / 1001.0) && standard => Some(VideoFormat::I480_2997_4x3),
         (720, 576, true) if near(25.0) => Some(VideoFormat::I576_25),
         (720, 480, true) if near(30000.0 / 1001.0) => Some(VideoFormat::I480_2997),
         _ => None,
@@ -213,7 +216,9 @@ pub fn analyze(path: &Path) -> Result<Report> {
     let (w, h) = (video.width.unwrap_or(0), video.height.unwrap_or(0));
     let fps = rate(&video.r_frame_rate).or_else(|| rate(&video.avg_frame_rate)).unwrap_or((0, 1));
     let interlaced = matches!(video.field_order.as_deref(), Some("tt" | "bb" | "tb" | "bt"));
-    let format = bd_format(w, h, fps, interlaced);
+    // 4:3 SD when the stream says so.
+    let standard = video.display_aspect_ratio.as_deref() == Some("4:3");
+    let format = bd_format(w, h, fps, interlaced, standard);
     let scan = if interlaced { "i" } else { "p" };
     match format {
         Some(f) => add("Resolution", Level::Pass, f.label().to_string()),
@@ -286,11 +291,13 @@ mod tests {
 
     #[test]
     fn formats() {
-        assert_eq!(bd_format(1920, 1080, (24000, 1001), false), Some(VideoFormat::P1080_23976));
-        assert_eq!(bd_format(1920, 1080, (25, 1), true), Some(VideoFormat::I1080_25));
+        assert_eq!(bd_format(1920, 1080, (24000, 1001), false, false), Some(VideoFormat::P1080_23976));
+        assert_eq!(bd_format(1920, 1080, (25, 1), true, false), Some(VideoFormat::I1080_25));
         // 1080p25 progressive isn't a Blu-ray format.
-        assert_eq!(bd_format(1920, 1080, (25, 1), false), None);
-        assert_eq!(bd_format(1280, 720, (60000, 1001), false), Some(VideoFormat::P720_5994));
-        assert_eq!(bd_format(1280, 720, (30, 1), false), None);
+        assert_eq!(bd_format(1920, 1080, (25, 1), false, false), None);
+        assert_eq!(bd_format(1280, 720, (60000, 1001), false, false), Some(VideoFormat::P720_5994));
+        assert_eq!(bd_format(1280, 720, (30, 1), false, false), None);
+        assert_eq!(bd_format(720, 480, (30000, 1001), true, true), Some(VideoFormat::I480_2997_4x3));
+        assert_eq!(bd_format(720, 576, (25, 1), true, false), Some(VideoFormat::I576_25));
     }
 }
