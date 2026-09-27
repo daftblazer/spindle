@@ -117,6 +117,27 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     g.add(&size_row);
     page.add(&g);
 
+    // Encodes kept from earlier builds.
+    let cache_size = crate::encode_cache::size();
+    if cache_size > 0 {
+        let cg = adw::PreferencesGroup::new();
+        let row = adw::ActionRow::builder()
+            .title(gettext("Earlier Encodes"))
+            .subtitle(gettext("{} GB kept, so rebuilding after changes skips encoding videos again").replace("{}", &format!("{:.1}", cache_size as f64 / 1e9)))
+            .subtitle_lines(2)
+            .build();
+        let clear = gtk::Button::builder().label(gettext("Clear")).valign(gtk::Align::Center).build();
+        let r = row.clone();
+        clear.connect_clicked(move |b| {
+            crate::encode_cache::clear();
+            r.set_subtitle(&gettext("Cleared"));
+            b.set_sensitive(false);
+        });
+        row.add_suffix(&clear);
+        cg.add(&row);
+        page.add(&cg);
+    }
+
     let issues_group = adw::PreferencesGroup::new();
     page.add(&issues_group);
 

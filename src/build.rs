@@ -21,6 +21,7 @@ use crate::bluray::ts::{self, demux::Pes};
 use crate::bluray::{EsInfo, EsKind, PID_AUDIO_FIRST, PID_IG_FIRST, PID_PG_FIRST, PID_VIDEO};
 use crate::bluray::AudioCodec;
 use crate::media::compat;
+use crate::encode_cache;
 use crate::subtitles;
 use crate::media::transcode::{self, EncodeSettings};
 use crate::media::ffmpeg;
@@ -256,6 +257,7 @@ impl<'a> Builder<'a> {
         let (index, objects) = self.navigation();
         layout::write_database(&self.out, &index, &objects, &playlists, &clips)?;
         let _ = std::fs::remove_dir_all(&self.work);
+        encode_cache::trim();
         (self.emit)(BuildEvent::Progress(1.0));
         Ok(self.out.clone())
     }
@@ -567,7 +569,10 @@ impl<'a> Builder<'a> {
         })?;
         self.done_work += duration * 0.1;
         self.progress(0.0);
-        let _ = std::fs::remove_file(input);
+        // Encodes in the cache stay for the next build.
+        if !input.starts_with(encode_cache::dir()) {
+            let _ = std::fs::remove_file(input);
+        }
         Ok(stats)
     }
 
@@ -607,7 +612,7 @@ impl<'a> Builder<'a> {
     fn build_title(&mut self, t: &Title, n: u32) -> Result<(Playlist, ClipInfo)> {
         let p = self.project;
         let asset = p.asset(t.asset).context("title without video")?;
-        let tmp = self.work.join(format!("title-{}.ts", clip_name(n)));
+        let mut tmp = self.work.join(format!("title-{}.ts", clip_name(n)));
         let mut chapters: Vec<f64> = t.chapters.iter().copied().filter(|&c| c > 0.0 && c < asset.info.duration).collect();
         chapters.sort_by(f64::total_cmp);
         chapters.dedup();
@@ -631,10 +636,32 @@ impl<'a> Builder<'a> {
             self.encode(args, duration)?;
             format
         } else {
-            let how = if self.settings.effective_encoder().is_hardware() { " (hardware, for testing)" } else { "" };
-            self.stage(format!("Encoding title “{}”{how}", t.name));
-            let args = transcode::title_args(&asset.path, &asset.info, &self.settings, &chapters, &inputs, None, &tmp);
-            self.encode(args, duration)?;
+            let mut args = transcode::title_args(&asset.path, &asset.info, &self.settings, &chapters, &inputs, None, &tmp);
+            // Reuse an identical earlier encode: the key is the whole command
+            // (without its output) and the files it reads.
+            let mut key: Vec<String> = args[..args.len() - 1].to_vec();
+            key.push(encode_cache::file_id(&asset.path));
+            key.extend(inputs.iter().filter_map(|i| i.file.as_deref()).map(encode_cache::file_id));
+            let cached = encode_cache::entry(&key);
+            if cached.exists() {
+                self.stage(format!("Reusing the earlier encode of “{}”", t.name));
+                encode_cache::touch(&cached);
+                self.done_work += duration;
+                self.progress(0.0);
+            } else {
+                let how = if self.settings.effective_encoder().is_hardware() { " (hardware, for testing)" } else { "" };
+                self.stage(format!("Encoding title “{}”{how}", t.name));
+                std::fs::create_dir_all(encode_cache::dir())?;
+                let part = cached.with_extension("part");
+                *args.last_mut().expect("output") = part.to_string_lossy().into_owned();
+                let res = self.encode(args, duration);
+                if res.is_err() {
+                    let _ = std::fs::remove_file(&part);
+                }
+                res?;
+                std::fs::rename(&part, &cached)?;
+            }
+            tmp = cached;
             self.settings.video
         };
 

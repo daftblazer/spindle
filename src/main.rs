@@ -24,6 +24,7 @@ mod build;
 mod burn;
 mod config;
 mod document;
+mod encode_cache;
 mod media;
 mod model;
 mod preview;
