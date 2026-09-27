@@ -373,11 +373,14 @@ pub struct Background {
     /// Bottom color of a vertical gradient starting at `color`.
     #[serde(default)]
     pub gradient: Option<Rgba>,
+    /// Where in the motion video the loop starts, in seconds.
+    #[serde(default)]
+    pub video_start: f64,
 }
 
 impl Default for Background {
     fn default() -> Self {
-        Background { color: Rgba::new(0.08, 0.09, 0.12, 1.0), image: None, video: None, gradient: None }
+        Background { color: Rgba::new(0.08, 0.09, 0.12, 1.0), image: None, video: None, gradient: None, video_start: 0.0 }
     }
 }
 

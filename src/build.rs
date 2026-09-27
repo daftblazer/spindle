@@ -770,7 +770,7 @@ impl<'a> Builder<'a> {
         let tmp = self.work.join(format!("menu-{}.ts", clip_name(n)));
         let args = transcode::menu_args(
             &still,
-            motion.map(|a| a.path.as_path()),
+            motion.map(|a| (a.path.as_path(), m.background.video_start)),
             audio.map(|a| (a.path.as_path(), &a.info)),
             duration,
             &self.settings,

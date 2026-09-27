@@ -295,6 +295,19 @@ impl Inspector {
         });
         row.set_subtitle(&gettext("Loops behind the menu"));
         g.add(&row);
+        if let Some(a) = m.background.video.and_then(|v| p.asset(v)) {
+            let start = rows::frame(doc, &gettext("Loop Starts At"), a, m.background.video_start, vec![], Change::Structure, move |p, t| {
+                if let Some(m) = p.menu_mut(id) {
+                    m.background.video_start = t;
+                }
+            });
+            start.set_subtitle(&format!(
+                "{} · {}",
+                format_time(m.background.video_start),
+                gettext("the loop lasts the menu's Loop Length")
+            ));
+            g.add(&start);
+        }
         page.add(&g);
 
         let g = group(&gettext("Sound"));

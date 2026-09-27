@@ -297,7 +297,7 @@ pub fn draw_static(cr: &cairo::Context, project: &Project, menu: &Menu, images: 
         cr.fill().ok();
         let full = Rect::new(0.0, 0.0, DESIGN_WIDTH, DESIGN_HEIGHT);
         if let Some(v) = menu.background.video {
-            if let Some(p) = images.get(project, v, 0.0) {
+            if let Some(p) = images.get(project, v, menu.background.video_start) {
                 draw_pixbuf(cr, &p, full, true);
             }
         } else if let Some(img) = menu.background.image {

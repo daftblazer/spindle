@@ -238,7 +238,7 @@ pub fn passthrough_args(
 /// * `audio` – optional audio looped for the menu duration.
 pub fn menu_args(
     still: &Path,
-    motion: Option<&Path>,
+    motion: Option<(&Path, f64)>,
     audio: Option<(&Path, &MediaInfo)>,
     duration: f64,
     set: &EncodeSettings,
@@ -249,7 +249,12 @@ pub fn menu_args(
     let mut a = Vec::new();
     let mut next_input = 0;
     let video_filter;
-    if let Some(m) = motion {
+    if let Some((m, start)) = motion {
+        // Start into the video; if it runs out before the loop ends, it
+        // continues from its beginning.
+        if start > 0.0 {
+            a.extend([s("-ss"), format!("{start:.3}")]);
+        }
         a.extend([s("-stream_loop"), s("-1"), s("-i"), path(m)]);
         a.extend([s("-loop"), s("1"), s("-framerate"), format!("{n}/{d}"), s("-i"), path(still)]);
         next_input = 2;
