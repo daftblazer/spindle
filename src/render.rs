@@ -311,7 +311,11 @@ pub fn draw_shape(cr: &cairo::Context, sh: &ShapeItem, r: Rect) {
     shape_path(cr, sh, r);
     match sh.gradient {
         Some(bottom) => {
-            let g = cairo::LinearGradient::new(0.0, r.y, 0.0, r.y + r.h);
+            let g = if sh.horizontal {
+                cairo::LinearGradient::new(r.x, 0.0, r.x + r.w, 0.0)
+            } else {
+                cairo::LinearGradient::new(0.0, r.y, 0.0, r.y + r.h)
+            };
             g.add_color_stop_rgba(0.0, sh.fill.r as f64, sh.fill.g as f64, sh.fill.b as f64, sh.fill.a as f64);
             g.add_color_stop_rgba(1.0, bottom.r as f64, bottom.g as f64, bottom.b as f64, bottom.a as f64);
             cr.set_source(&g).ok();
@@ -605,6 +609,32 @@ pub fn render_static_png(
 
 /// A small preview of a menu (as the player shows it, without editor
 /// decorations) for lists and thumbnails.
+/// A menu as a player shows it, with the default (or first) button
+/// selected, written to a PNG `width` pixels wide.
+pub fn menu_png(project: &Project, menu: &Menu, images: &ImageCache, width: i32, out: &std::path::Path) -> anyhow::Result<()> {
+    let height = (width as f64 * DESIGN_HEIGHT / DESIGN_WIDTH).round() as i32;
+    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height)?;
+    {
+        let cr = cairo::Context::new(&surface)?;
+        let s = width as f64 / DESIGN_WIDTH;
+        cr.scale(s, s);
+        if menu.popup {
+            popup_backdrop(&cr, project, images);
+        }
+        draw_static(&cr, project, menu, images, true);
+        let selected = menu.default_button.or_else(|| menu.buttons().next().map(|b| b.id));
+        for item in &menu.items {
+            if let Some(b) = item.button() {
+                let state = if Some(item.id) == selected { ButtonState::Selected } else { ButtonState::Normal };
+                draw_button(&cr, project, images, item, b, state);
+            }
+        }
+    }
+    let mut f = std::fs::File::create(out)?;
+    surface.write_to_png(&mut f)?;
+    Ok(())
+}
+
 pub fn menu_thumbnail(project: &Project, menu: &Menu, images: &ImageCache, width: i32) -> Option<gtk::gdk::Texture> {
     let height = (width as f64 * DESIGN_HEIGHT / DESIGN_WIDTH).round() as i32;
     let mut surface = cairo::ImageSurface::create(cairo::Format::ARgb32, width, height).ok()?;

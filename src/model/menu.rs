@@ -248,6 +248,9 @@ pub struct ShapeItem {
     pub stroke_color: Rgba,
     #[serde(default)]
     pub ellipse: bool,
+    /// The gradient runs left to right instead of top to bottom.
+    #[serde(default)]
+    pub horizontal: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -284,7 +287,7 @@ impl ImageItem {
 
 impl ShapeItem {
     pub fn new(fill: Rgba, radius: f64) -> Self {
-        ShapeItem { fill, radius, gradient: None, stroke: 0.0, stroke_color: black(), ellipse: false }
+        ShapeItem { fill, radius, gradient: None, stroke: 0.0, stroke_color: black(), ellipse: false, horizontal: false }
     }
 }
 

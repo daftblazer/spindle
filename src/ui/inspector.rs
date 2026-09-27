@@ -856,10 +856,15 @@ impl Inspector {
                         s.gradient = v.then(|| Rgba::new(c.r * 0.4, c.g * 0.4, c.b * 0.4, c.a));
                     }
                 }));
-                if let Some(bottom) = sh.gradient {
-                    g.add(&rows::color(doc, &gettext("Bottom Color"), bottom, Change::Content, move |p, c| {
+                if let Some(end) = sh.gradient {
+                    g.add(&rows::color(doc, &if sh.horizontal { gettext("Right Color") } else { gettext("Bottom Color") }, end, Change::Content, move |p, c| {
                         if let Some(s) = shape_mut(p, menu, item) {
                             s.gradient = Some(c);
+                        }
+                    }));
+                    g.add(&rows::switch(doc, &gettext("Left to Right"), sh.horizontal, Change::Structure, move |p, v| {
+                        if let Some(s) = shape_mut(p, menu, item) {
+                            s.horizontal = v;
                         }
                     }));
                 }

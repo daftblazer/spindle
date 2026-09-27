@@ -114,22 +114,22 @@ fn new_project_cli(out: &str, files: &[String]) -> glib::ExitCode {
     }
 }
 
-/// `spindle --apply-template show|movie|list THEME PROJECT` rewrites the
+/// `spindle --apply-template STYLE THEME PROJECT [SEASON [DISC]]` rewrites the
 /// project's menus from a template.
-fn template_cli(layout: &str, theme: &str, project: &str) -> glib::ExitCode {
-    let layout = match layout {
-        "show" => templates::Layout::Show,
-        "show-list" => templates::Layout::ShowList,
-        "movie" => templates::Layout::Movie,
-        "list" => templates::Layout::List,
-        _ => {
-            eprintln!("unknown layout {layout} (show, show-list, movie, list)");
-            return glib::ExitCode::FAILURE;
-        }
+fn template_cli(style: &str, theme: &str, project: &str, extra: &[String]) -> glib::ExitCode {
+    let Some(style) = templates::Style::from_id(style) else {
+        let ids: Vec<&str> = templates::Style::ALL.iter().map(|s| s.id()).collect();
+        eprintln!("unknown style {style} ({})", ids.join(", "));
+        return glib::ExitCode::FAILURE;
     };
     let path = std::path::Path::new(project);
     let res = model::Project::load(path).and_then(|mut p| {
-        let opts = templates::Options { layout, theme: theme.parse().unwrap_or(0), title: p.disc.name.clone(), logo: None };
+        let mut opts = templates::Options::new(style, &p.disc.name);
+        if let Ok(t) = theme.parse() {
+            opts.theme = t;
+        }
+        opts.season = extra.first().cloned().unwrap_or_default();
+        opts.disc = extra.get(1).cloned().unwrap_or_default();
         templates::apply(&mut p, &opts);
         p.save(path)
     });
@@ -209,8 +209,30 @@ fn main() -> glib::ExitCode {
             }
         };
     }
-    if args.len() == 5 && args[1] == "--apply-template" {
-        return template_cli(&args[2], &args[3], &args[4]);
+    // --render-menus PROJECT DIR: every menu as a PNG, for reviewing designs.
+    if args.len() == 4 && args[1] == "--render-menus" {
+        let run = || -> anyhow::Result<()> {
+            let p = model::Project::load(std::path::Path::new(&args[2]))?;
+            let dir = std::path::Path::new(&args[3]);
+            std::fs::create_dir_all(dir)?;
+            let images = render::ImageCache::new_sync();
+            for (i, m) in p.menus.iter().enumerate() {
+                let name: String = m.name.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+                render::menu_png(&p, m, &images, 1920, &dir.join(format!("{i:02}-{name}.png")))?;
+            }
+            Ok(())
+        };
+        return match run() {
+            Ok(()) => glib::ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                glib::ExitCode::FAILURE
+            }
+        };
+    }
+    // --apply-template STYLE THEME PROJECT [SEASON [DISC]] (THEME "-" = the style's own)
+    if (5..=7).contains(&args.len()) && args[1] == "--apply-template" {
+        return template_cli(&args[2], &args[3], &args[4], &args[5..]);
     }
 
     // Set up gettext translations

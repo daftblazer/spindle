@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Template chooser: pick a layout and theme, preview every generated menu
-//! and apply it to the project.
+//! Template chooser: pick a category and a style, a color palette and the
+//! title lines, preview every generated menu and apply it to the project.
 
 use crate::document::{Change, Document, Node};
 use crate::model::{Menu, Project};
 use crate::render::{self, ImageCache};
-use crate::templates::{self, Layout, Options, THEMES};
+use crate::templates::{self, Category, Options, Style, THEMES};
 use adw::prelude::*;
 use gettextrs::{gettext, ngettext};
 use gtk::{cairo, glib};
@@ -16,36 +16,84 @@ use std::rc::Rc;
 struct State {
     doc: Rc<Document>,
     images: Rc<ImageCache>,
-    layout: Cell<Layout>,
+    category: Cell<Category>,
+    style: Cell<Style>,
     theme: Cell<usize>,
+    /// The palette was picked by hand (else it follows the style).
+    theme_chosen: Cell<bool>,
     title: RefCell<String>,
+    season: RefCell<String>,
+    disc: RefCell<String>,
     logo: Cell<Option<crate::model::Id>>,
-    layout_pictures: Vec<(Layout, gtk::Picture)>,
+    styles: gtk::FlowBox,
+    style_cards: RefCell<Vec<(Style, gtk::Picture)>>,
+    theme_buttons: Vec<gtk::ToggleButton>,
     pages: gtk::FlowBox,
     summary: gtk::Label,
+    /// Set while updating widgets from code.
+    syncing: Cell<bool>,
 }
 
 impl State {
-    fn options(&self, layout: Layout) -> Options {
-        Options { layout, theme: self.theme.get(), title: self.title.borrow().clone(), logo: self.logo.get() }
+    fn options(&self, style: Style) -> Options {
+        Options {
+            style,
+            theme: if self.theme_chosen.get() { self.theme.get() } else { style.default_theme() },
+            title: self.title.borrow().clone(),
+            season: self.season.borrow().clone(),
+            disc: self.disc.borrow().clone(),
+            logo: self.logo.get(),
+        }
     }
 
-    fn generate(&self, layout: Layout) -> Project {
+    fn generate(&self, style: Style) -> Project {
         let mut p = self.doc.project().clone();
-        templates::apply(&mut p, &self.options(layout));
+        templates::apply(&mut p, &self.options(style));
         p
     }
 
+    /// Style cards for the current category.
+    fn fill_styles(self: &Rc<Self>) {
+        self.styles.remove_all();
+        let mut cards = Vec::new();
+        for style in self.category.get().styles() {
+            let pic = gtk::Picture::builder().content_fit(gtk::ContentFit::Contain).can_shrink(true).height_request(126).css_classes(["template-page"]).build();
+            let v = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).margin_start(6).margin_end(6).margin_top(6).margin_bottom(6).build();
+            v.append(&pic);
+            v.append(&gtk::Label::builder().label(style.name()).xalign(0.0).css_classes(["heading"]).build());
+            v.append(&gtk::Label::builder().label(style.description()).xalign(0.0).wrap(true).lines(3).css_classes(["caption", "dim-label"]).build());
+            self.styles.append(&v);
+            cards.push((style, pic));
+        }
+        *self.style_cards.borrow_mut() = cards;
+        let index = self.category.get().styles().iter().position(|s| *s == self.style.get()).unwrap_or(0);
+        self.syncing.set(true);
+        if let Some(child) = self.styles.child_at_index(index as i32) {
+            self.styles.select_child(&child);
+        }
+        self.syncing.set(false);
+    }
+
+    /// Show the palette in use on the palette buttons.
+    fn sync_theme_buttons(&self) {
+        let theme = self.options(self.style.get()).theme;
+        self.syncing.set(true);
+        if let Some(b) = self.theme_buttons.get(theme) {
+            b.set_active(true);
+        }
+        self.syncing.set(false);
+    }
+
     fn refresh(&self) {
-        for (layout, pic) in &self.layout_pictures {
-            let p = self.generate(*layout);
+        for (style, pic) in self.style_cards.borrow().iter() {
+            let p = self.generate(*style);
             if let Some(m) = p.menus.first() {
                 pic.set_paintable(render::menu_thumbnail(&p, m, &self.images, 480).as_ref());
             }
         }
-        // All menus of the selected layout
+        // All menus of the selected style
         self.pages.remove_all();
-        let p = self.generate(self.layout.get());
+        let p = self.generate(self.style.get());
         for m in &p.menus {
             self.pages.append(&page_card(&p, m, &self.images));
         }
@@ -69,7 +117,7 @@ fn page_card(p: &Project, m: &Menu, images: &ImageCache) -> gtk::Widget {
     adw::Clamp::builder().maximum_size(192).child(&v).build().upcast()
 }
 
-/// Round gradient swatch for a theme.
+/// Round gradient swatch for a palette.
 fn swatch(theme: usize) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::builder().content_width(28).content_height(28).valign(gtk::Align::Center).build();
     area.set_draw_func(move |_, cr, w, h| {
@@ -107,13 +155,20 @@ pub fn present(
     import_image: ImportImage,
     on_applied: impl Fn() + 'static,
 ) {
-    let dialog = adw::Dialog::builder().title(gettext("Menu Templates")).content_width(900).content_height(720).build();
+    let dialog = adw::Dialog::builder().title(gettext("Menu Templates")).content_width(980).content_height(760).build();
     let toolbar = adw::ToolbarView::new();
     let header = adw::HeaderBar::builder().show_end_title_buttons(false).show_start_title_buttons(false).build();
     let cancel = gtk::Button::with_mnemonic(&gettext("_Cancel"));
     let apply = gtk::Button::builder().label(gettext("_Apply")).use_underline(true).css_classes(["suggested-action"]).build();
     header.pack_start(&cancel);
     header.pack_end(&apply);
+
+    // Categories in the header.
+    let categories = adw::ToggleGroup::new();
+    for c in Category::ALL {
+        categories.add(adw::Toggle::builder().label(c.name()).build());
+    }
+    header.set_title_widget(Some(&categories));
     toolbar.add_top_bar(&header);
 
     let has_content = doc.project().menus.iter().any(|m| !m.items.is_empty());
@@ -131,71 +186,58 @@ pub fn present(
         .margin_top(18)
         .margin_bottom(24)
         .build();
-
-    // Layout cards
     let heading = |t: &str| gtk::Label::builder().label(t).xalign(0.0).css_classes(["heading"]).build();
-    body.append(&heading(&gettext("Layout")));
-    let layouts = gtk::FlowBox::builder()
+
+    // Styles of the category
+    body.append(&heading(&gettext("Style")));
+    let styles = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::Single)
         .homogeneous(true)
-        .min_children_per_line(2)
-        .max_children_per_line(4)
+        .min_children_per_line(3)
+        .max_children_per_line(3)
         .column_spacing(12)
         .row_spacing(12)
         .css_classes(["template-layouts"])
         .build();
-    let mut layout_pictures = Vec::new();
-    for layout in Layout::ALL {
-        let pic = gtk::Picture::builder()
-            .content_fit(gtk::ContentFit::Contain)
-            .can_shrink(true)
-            .height_request(112)
-            .css_classes(["template-page"])
-            .build();
-        let v = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).margin_start(6).margin_end(6).margin_top(6).margin_bottom(6).build();
-        v.append(&pic);
-        v.append(&gtk::Label::builder().label(layout.name()).xalign(0.0).css_classes(["heading"]).build());
-        v.append(
-            &gtk::Label::builder()
-                .label(layout.description())
-                .xalign(0.0)
-                .wrap(true)
-                .lines(2)
-                .css_classes(["caption", "dim-label"])
-                .build(),
-        );
-        layouts.append(&v);
-        layout_pictures.push((layout, pic));
-    }
-    body.append(&layouts);
+    body.append(&styles);
 
-    // Themes
-    body.append(&heading(&gettext("Theme")));
-    let themes = gtk::Box::builder().spacing(8).css_classes(["theme-chips"]).build();
+    // Palettes
+    body.append(&heading(&gettext("Colors")));
+    let palettes = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .max_children_per_line(6)
+        .column_spacing(6)
+        .row_spacing(6)
+        .css_classes(["theme-chips"])
+        .build();
     let mut first: Option<gtk::ToggleButton> = None;
     let mut theme_buttons = Vec::new();
     for (i, t) in THEMES.iter().enumerate() {
         let content = gtk::Box::builder().spacing(8).build();
         content.append(&swatch(i));
         content.append(&gtk::Label::new(Some(&gettext(t.name))));
-        let b = gtk::ToggleButton::builder().child(&content).active(i == 0).css_classes(["flat"]).build();
+        let b = gtk::ToggleButton::builder().child(&content).css_classes(["flat"]).build();
         if let Some(f) = &first {
             b.set_group(Some(f));
         } else {
             first = Some(b.clone());
         }
-        themes.append(&b);
+        palettes.append(&b);
         theme_buttons.push(b);
     }
-    body.append(&themes);
+    body.append(&palettes);
 
-    // Title
-    let group = adw::PreferencesGroup::new();
-    let title_row = adw::EntryRow::builder().title(gettext("Title on the Main Menu")).text(doc.project().disc.name.clone()).build();
+    // Title lines
+    let group = adw::PreferencesGroup::builder().title(gettext("Title")).build();
+    let title_row = adw::EntryRow::builder().title(gettext("Name on the Main Menu")).text(doc.project().disc.name.clone()).build();
     group.add(&title_row);
+    let season_row = adw::EntryRow::builder().title(gettext("Season (optional, e.g. “Season 2”)")).build();
+    group.add(&season_row);
+    let disc_row = adw::EntryRow::builder().title(gettext("Disc (optional, e.g. “Disc 1”)")).build();
+    group.add(&disc_row);
     let logo_row = adw::ComboRow::builder()
         .title(gettext("Title Image"))
-        .subtitle(gettext("A logo, e.g. a transparent PNG, shown instead of the title text"))
+        .subtitle(gettext("A logo, e.g. a transparent PNG, shown instead of the name"))
         .build();
     let logo_choices: Rc<RefCell<Vec<crate::model::Id>>> = Rc::new(RefCell::new(Vec::new()));
     let fill_logos = {
@@ -239,33 +281,58 @@ pub fn present(
     toolbar.set_content(Some(&scroller));
     dialog.set_child(Some(&toolbar));
 
+    // A movie for a single title, a show for several.
+    let category = if doc.project().titles.len() == 1 { Category::Movie } else { Category::TvShow };
     let state = Rc::new(State {
         doc: doc.clone(),
         images: images.clone(),
-        layout: Cell::new(Layout::Show),
+        category: Cell::new(category),
+        style: Cell::new(category.styles()[0]),
         theme: Cell::new(0),
+        theme_chosen: Cell::new(false),
         title: RefCell::new(doc.project().disc.name.clone()),
+        season: RefCell::new(String::new()),
+        disc: RefCell::new(String::new()),
         logo: Cell::new(None),
-        layout_pictures,
+        styles: styles.clone(),
+        style_cards: RefCell::new(Vec::new()),
+        theme_buttons: theme_buttons.clone(),
         pages,
         summary,
+        syncing: Cell::new(false),
     });
+    categories.set_active(Category::ALL.iter().position(|c| *c == category).unwrap_or(0) as u32);
 
-    if let Some(child) = layouts.child_at_index(0) {
-        layouts.select_child(&child);
-    }
     let s = state.clone();
-    layouts.connect_selected_children_changed(move |fb| {
+    categories.connect_active_notify(move |g| {
+        let Some(c) = Category::ALL.get(g.active() as usize).copied() else { return };
+        if c == s.category.get() {
+            return;
+        }
+        s.category.set(c);
+        s.style.set(c.styles()[0]);
+        s.fill_styles();
+        s.sync_theme_buttons();
+        s.refresh();
+    });
+    let s = state.clone();
+    styles.connect_selected_children_changed(move |fb| {
+        if s.syncing.get() {
+            return;
+        }
+        let list = s.category.get().styles();
         if let Some(i) = fb.selected_children().first().map(|c| c.index()) {
-            s.layout.set(Layout::ALL[(i as usize).min(Layout::ALL.len() - 1)]);
+            s.style.set(list[(i as usize).min(list.len() - 1)]);
+            s.sync_theme_buttons();
             s.refresh();
         }
     });
     for (i, b) in theme_buttons.iter().enumerate() {
         let s = state.clone();
         b.connect_toggled(move |b| {
-            if b.is_active() {
+            if b.is_active() && !s.syncing.get() {
                 s.theme.set(i);
+                s.theme_chosen.set(true);
                 s.refresh();
             }
         });
@@ -283,11 +350,18 @@ pub fn present(
         let fill = fill_logos.clone();
         import_image(Box::new(move |id| fill(Some(id))));
     });
-    let s = state.clone();
-    title_row.connect_changed(move |r| {
-        *s.title.borrow_mut() = r.text().to_string();
-        s.refresh();
-    });
+    for (row, field) in [(&title_row, 0), (&season_row, 1), (&disc_row, 2)] {
+        let s = state.clone();
+        row.connect_changed(move |r| {
+            let text = r.text().to_string();
+            match field {
+                0 => *s.title.borrow_mut() = text,
+                1 => *s.season.borrow_mut() = text,
+                _ => *s.disc.borrow_mut() = text,
+            }
+            s.refresh();
+        });
+    }
     // Thumbnails arrive asynchronously.
     let weak = Rc::downgrade(&state);
     let pending = Rc::new(Cell::new(false));
@@ -302,6 +376,8 @@ pub fn present(
             s.refresh();
         });
     });
+    state.fill_styles();
+    state.sync_theme_buttons();
     state.refresh();
 
     let d = dialog.clone();
@@ -311,7 +387,7 @@ pub fn present(
     let d = dialog.clone();
     let s = state.clone();
     apply.connect_clicked(move |_| {
-        let opts = s.options(s.layout.get());
+        let opts = s.options(s.style.get());
         let main = s.doc.edit(Change::Structure, |p| templates::apply(p, &opts));
         s.doc.select(Node::Menu(main), None);
         d.close();
