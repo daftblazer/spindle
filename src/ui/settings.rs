@@ -30,6 +30,17 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         Change::Content,
         |p, i| p.first_play = if i == 0 { FirstPlay::FirstMenu } else { FirstPlay::FirstTitle },
     ));
+    let menus: Vec<(crate::model::Id, String)> = doc.project().disc_menus().map(|m| (m.id, m.name.clone())).collect();
+    if menus.len() > 1 {
+        let mut labels = vec![gettext("First Menu")];
+        labels.extend(menus.iter().map(|(_, n)| n.clone()));
+        let sel = d.top_menu.and_then(|t| menus.iter().position(|(id, _)| *id == t)).map_or(0, |i| i + 1);
+        let row = rows::combo(doc, &gettext("Top Menu Key"), &labels, sel, Change::Content, move |p, i| {
+            p.disc.top_menu = i.checked_sub(1).and_then(|i| menus.get(i)).map(|(id, _)| *id);
+        });
+        row.set_subtitle(&gettext("Menu opened by the remote's Top Menu button"));
+        g.add(&row);
+    }
     page.add(&g);
 
     let g = rows::group(&gettext("Video"));

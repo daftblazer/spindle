@@ -133,8 +133,9 @@ fn reachable(p: &Project) -> (HashSet<Id>, HashSet<Id>) {
                 continue;
             }
             let Some(m) = p.menu(id) else { continue };
-            for b in m.buttons().filter_map(|i| i.button()) {
-                match &b.action {
+            let timeout = m.timeout.map(|t| t.action);
+            for action in m.buttons().filter_map(|i| i.button()).map(|b| &b.action).chain(timeout.as_ref()) {
+                match action {
                     Action::ShowMenu(m) => todo_m.push(*m),
                     Action::PlayTitle { title, .. } => todo_t.push(*title),
                     Action::PlayAll => todo_t.extend(p.titles.iter().map(|t| t.id)),
@@ -219,7 +220,12 @@ pub fn check(p: &Project) -> Vec<Issue> {
         }
     }
     for m in &p.menus {
-        for (id, what) in [(m.background.image, gettext("background image")), (m.background.video, gettext("background video")), (m.audio, gettext("music"))] {
+        for (id, what) in [
+            (m.background.image, gettext("background image")),
+            (m.background.video, gettext("background video")),
+            (m.audio, gettext("music")),
+            (m.intro, gettext("intro video")),
+        ] {
             if let Some(a) = id.and_then(|id| p.asset(id)) {
                 if !a.path.exists() {
                     error(

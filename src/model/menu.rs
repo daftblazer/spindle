@@ -396,6 +396,21 @@ pub struct Menu {
     /// menu screen of its own.
     #[serde(default)]
     pub popup: bool,
+    /// Video played before the menu appears.
+    #[serde(default)]
+    pub intro: Option<Id>,
+    /// Play the intro every time the menu is shown, not just the first.
+    #[serde(default)]
+    pub intro_every_time: bool,
+    /// Do something by itself after a while on the menu.
+    #[serde(default)]
+    pub timeout: Option<MenuTimeout>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct MenuTimeout {
+    pub seconds: u32,
+    pub action: Action,
 }
 
 impl Menu {
@@ -409,6 +424,9 @@ impl Menu {
             items: Vec::new(),
             default_button: None,
             popup: false,
+            intro: None,
+            intro_every_time: false,
+            timeout: None,
         }
     }
 
@@ -492,6 +510,17 @@ impl Menu {
 
     /// Drop references to a removed title or menu.
     pub fn forget_target(&mut self, target: Id) {
+        if let Some(t) = self.timeout {
+            let gone = match t.action {
+                Action::PlayTitle { title, .. } => title == target,
+                Action::ShowMenu(m) => m == target,
+                Action::SetLanguage { preset, .. } => preset == target,
+                _ => false,
+            };
+            if gone {
+                self.timeout = None;
+            }
+        }
         for it in &mut self.items {
             if let Some(b) = it.button_mut() {
                 match b.action {
@@ -520,6 +549,9 @@ impl Menu {
         }
         if self.background.video == Some(asset) {
             self.background.video = None;
+        }
+        if self.intro == Some(asset) {
+            self.intro = None;
         }
         if self.audio == Some(asset) {
             self.audio = None;

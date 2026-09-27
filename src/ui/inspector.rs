@@ -321,7 +321,64 @@ impl Inspector {
         g.add(&row);
         page.add(&g);
 
+        self.timing_group(page, id);
         page.add(&delete_button(&gettext("Delete Menu"), "win.delete-node"));
+    }
+
+    /// Intro video and timeout of a menu.
+    fn timing_group(&self, page: &adw::PreferencesPage, id: Id) {
+        let doc = &self.doc;
+        let p = doc.project();
+        let Some(m) = p.menu(id) else { return };
+        let g = group(&gettext("Timing"));
+        let videos = assets_of(&p, &[AssetKind::Video]);
+        let (labels, sel) = optional_choice(&gettext("None"), &videos, m.intro);
+        let intro = rows::combo(doc, &gettext("Intro Video"), &labels, sel, Change::Structure, move |p, i| {
+            if let Some(m) = p.menu_mut(id) {
+                m.intro = pick(&videos, i);
+            }
+        });
+        intro.set_subtitle(&gettext("Plays before the menu appears"));
+        g.add(&intro);
+        if m.intro.is_some() {
+            let every = rows::switch(doc, &gettext("Play Intro Every Time"), m.intro_every_time, Change::Content, move |p, v| {
+                if let Some(m) = p.menu_mut(id) {
+                    m.intro_every_time = v;
+                }
+            });
+            every.set_subtitle(&gettext("Otherwise only the first time the menu is shown"));
+            g.add(&every);
+        }
+        let timeout = rows::switch(doc, &gettext("Timeout"), m.timeout.is_some(), Change::Structure, move |p, v| {
+            let first = p.titles.first().map(|t| Action::PlayTitle { title: t.id, chapter: 0 }).unwrap_or(Action::PlayAll);
+            if let Some(m) = p.menu_mut(id) {
+                m.timeout = v.then_some(MenuTimeout { seconds: 60, action: first });
+            }
+        });
+        timeout.set_subtitle(&gettext("Do something by itself after a while on this menu"));
+        g.add(&timeout);
+        if let Some(t) = m.timeout {
+            g.add(&rows::spin(doc, &gettext("Seconds"), t.seconds as f64, 5.0, 3600.0, 5.0, 0, Change::Content, move |p, v| {
+                if let Some(t) = p.menu_mut(id).and_then(|m| m.timeout.as_mut()) {
+                    t.seconds = v as u32;
+                }
+            }));
+            let mut targets: Vec<(Action, String)> = vec![(Action::PlayAll, gettext("Play All Titles"))];
+            for t in &p.titles {
+                targets.push((Action::PlayTitle { title: t.id, chapter: 0 }, format!("{} {}", gettext("Play"), t.name)));
+            }
+            for mm in p.disc_menus().filter(|x| x.id != id) {
+                targets.push((Action::ShowMenu(mm.id), format!("{} {}", gettext("Show"), mm.name)));
+            }
+            let sel = targets.iter().position(|(a, _)| *a == t.action).unwrap_or(0);
+            let labels: Vec<String> = targets.iter().map(|(_, l)| l.clone()).collect();
+            g.add(&rows::combo(doc, &gettext("Then"), &labels, sel, Change::Content, move |p, i| {
+                if let (Some(t), Some((a, _))) = (p.menu_mut(id).and_then(|m| m.timeout.as_mut()), targets.get(i)) {
+                    t.action = *a;
+                }
+            }));
+        }
+        page.add(&g);
     }
 
     fn geometry_group(&self, page: &adw::PreferencesPage, menu: Id, item: Id, r: Rect) {

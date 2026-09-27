@@ -59,6 +59,8 @@ pub enum Command {
     Compare(Cmp, Operand, Operand),
     /// `gpr = src`
     Move(u16, Operand),
+    /// `gpr += src`
+    Add(u16, Operand),
     /// Select PG (subtitle) stream `number` (1-based) and turn its display
     /// on or off.
     SetPgStream { number: u16, display: bool },
@@ -148,6 +150,12 @@ impl Command {
                 let mut r = Raw::branch(0, 0, &[Operand::Gpr(dst), src]);
                 r.grp = GRP_SET;
                 r.set_opt = 1;
+                r
+            }
+            Command::Add(dst, src) => {
+                let mut r = Raw::branch(0, 0, &[Operand::Gpr(dst), src]);
+                r.grp = GRP_SET;
+                r.set_opt = 3;
                 r
             }
             Command::SetPgStream { number, display } => {

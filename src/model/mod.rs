@@ -49,6 +49,9 @@ pub struct DiscSettings {
     /// Pop-up menu of titles that don't choose their own.
     #[serde(default)]
     pub popup_menu: Option<Id>,
+    /// Menu opened by the remote's Top Menu key (the first when unset).
+    #[serde(default)]
+    pub top_menu: Option<Id>,
 }
 
 impl Default for DiscSettings {
@@ -63,6 +66,7 @@ impl Default for DiscSettings {
             languages: Vec::new(),
             default_language: None,
             popup_menu: None,
+            top_menu: None,
         }
     }
 }
@@ -473,6 +477,9 @@ impl Project {
         }
         if self.disc.popup_menu == Some(menu) {
             self.disc.popup_menu = None;
+        }
+        if self.disc.top_menu == Some(menu) {
+            self.disc.top_menu = None;
         }
     }
 }

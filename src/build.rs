@@ -41,6 +41,8 @@ const GPR_PLAY_ALL: u16 = 2;
 const GPR_PLAY_ALL_MENU: u16 = 3;
 /// Chosen language preset (1-based; 0 when the disc has none).
 const GPR_LANGUAGE: u16 = 4;
+/// First of one flag per menu: its intro has played.
+const GPR_INTRO_FIRST: u16 = 16;
 
 #[derive(Debug, Clone)]
 pub enum BuildEvent {
@@ -152,6 +154,14 @@ impl<'a> Builder<'a> {
         self.menus.iter().position(|m| m.id == id)
     }
 
+    /// Playlist of the intro of disc menu `i`, if it has one. Intros come
+    /// after the menus and titles.
+    fn intro_playlist(&self, i: usize) -> Option<u32> {
+        self.menus[i].intro?;
+        let k = self.menus[..i].iter().filter(|m| m.intro.is_some()).count();
+        Some(1 + (self.menus.len() + self.project.titles.len() + k) as u32)
+    }
+
     fn object_for_title(&self, i: usize) -> u32 {
         1 + self.menus.len() as u32 + i as u32
     }
@@ -193,6 +203,7 @@ impl<'a> Builder<'a> {
             .filter_map(|t| p.asset(t.asset))
             .map(|a| a.info.duration.max(1.0))
             .chain(self.menus.iter().map(|m| self.menu_duration(m)))
+            .chain(self.menus.iter().filter_map(|m| m.intro.and_then(|a| p.asset(a))).map(|a| a.info.duration.max(1.0)))
             .sum::<f64>()
             * 1.1;
 
@@ -219,6 +230,14 @@ impl<'a> Builder<'a> {
             let (pl, ci) = self.build_title(t, n)?;
             playlists.push((n, pl));
             clips.push((n, ci));
+        }
+        for (i, m) in self.menus.clone().into_iter().enumerate() {
+            if let (Some(n), Some(asset)) = (self.intro_playlist(i), m.intro.and_then(|a| p.asset(a))) {
+                self.check_cancel()?;
+                let (pl, ci) = self.build_intro(m, asset, n)?;
+                playlists.push((n, pl));
+                clips.push((n, ci));
+            }
         }
 
         self.stage("Writing disc navigation".into());
@@ -251,13 +270,50 @@ impl<'a> Builder<'a> {
         .collect();
         objects.push(MovieObject { commands: first, ..Default::default() });
 
-        for i in 0..m_count {
-            let pl = 1 + i as u32;
-            objects.push(MovieObject {
-                menu_call_mask: true,
-                commands: vec![Command::PlayPl(Operand::Imm(pl)), Command::Goto(0)],
-                ..Default::default()
-            });
+        for (i, m) in self.menus.iter().enumerate() {
+            let pl = Operand::Imm(1 + i as u32);
+            let mut commands = Vec::new();
+            // Intro: once per disc session (a flag per menu) or every time.
+            if let Some(intro) = self.intro_playlist(i) {
+                if m.intro_every_time {
+                    commands.push(Command::PlayPl(Operand::Imm(intro)));
+                } else {
+                    let flag = GPR_INTRO_FIRST + i as u16;
+                    let after = commands.len() as u32 + 4;
+                    commands.extend([
+                        Command::Compare(Cmp::Ne, Operand::Gpr(flag), Operand::Imm(0)),
+                        Command::Goto(after),
+                        Command::Move(flag, Operand::Imm(1)),
+                        Command::PlayPl(Operand::Imm(intro)),
+                    ]);
+                }
+            }
+            let timeout = m.timeout.filter(|t| t.action != Action::None && t.seconds > 0);
+            match timeout {
+                // A still menu holds for the timeout, then acts.
+                Some(t) if !m.is_motion() => {
+                    commands.push(Command::PlayPl(pl));
+                    commands.extend(self.button_commands(t.action, i));
+                }
+                // A motion menu counts its loops.
+                Some(t) => {
+                    let loops = (t.seconds as f64 / self.menu_duration(m)).ceil().max(1.0) as u32;
+                    commands.push(Command::Move(GPR_TMP, Operand::Imm(0)));
+                    let top = commands.len() as u32;
+                    commands.extend([
+                        Command::PlayPl(pl),
+                        Command::Add(GPR_TMP, Operand::Imm(1)),
+                        Command::Compare(Cmp::Lt, Operand::Gpr(GPR_TMP), Operand::Imm(loops)),
+                        Command::Goto(top),
+                    ]);
+                    commands.extend(self.button_commands(t.action, i));
+                }
+                None => {}
+            }
+            // Loop the menu (also after a timeout that did nothing).
+            let top = commands.len() as u32;
+            commands.extend([Command::PlayPl(pl), Command::Goto(top)]);
+            objects.push(MovieObject { menu_call_mask: true, commands, ..Default::default() });
         }
 
         for (i, t) in p.titles.iter().enumerate() {
@@ -324,7 +380,8 @@ impl<'a> Builder<'a> {
             objects.push(MovieObject { resume_intention: true, commands, ..Default::default() });
         }
 
-        let top = match first_menu {
+        let top_menu = p.disc.top_menu.and_then(|id| self.menu_index(id)).map(object_for_menu).or(first_menu);
+        let top = match top_menu {
             Some(o) => ObjectRef { object_id: o as u16, playback_type: PlaybackType::Interactive },
             None => ObjectRef { object_id: 0xFFFF, playback_type: PlaybackType::Interactive },
         };
@@ -635,6 +692,33 @@ impl<'a> Builder<'a> {
         Ok((pl, ci))
     }
 
+    /// A menu's intro video as its own clip (no buttons).
+    fn build_intro(&mut self, m: &Menu, asset: &Asset, n: u32) -> Result<(Playlist, ClipInfo)> {
+        self.stage(format!("Encoding the intro of menu “{}”", m.name));
+        let tmp = self.work.join(format!("intro-{}.ts", clip_name(n)));
+        let duration = asset.info.duration.max(1.0);
+        let audio: Vec<transcode::AudioInput> = asset
+            .info
+            .audio()
+            .first()
+            .map(|s| transcode::AudioInput { file: None, index: s.index, offset: 0.0, channels: s.channels, copy: false })
+            .into_iter()
+            .collect();
+        let args = transcode::title_args(&asset.path, &asset.info, &self.settings, &[], &audio, None, &tmp);
+        self.encode(args, duration)?;
+        let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(self.settings.video) }];
+        if asset.info.has_audio() {
+            streams.push(self.audio_es(&asset.info, "und"));
+        }
+        let stats = self.remux(&tmp, n, &streams, Vec::new(), duration)?;
+        let (ci, in_t, out_t) = self.clip_info(&stats, streams.clone())?;
+        let pl = Playlist {
+            items: vec![PlayItem { clip_id: clip_name(n), in_time: in_t, out_time: out_t, still: StillMode::None, streams }],
+            marks: vec![Mark { play_item: 0, time: in_t }],
+        };
+        Ok((pl, ci))
+    }
+
     fn build_menu(&mut self, m: &Menu, n: u32) -> Result<(Playlist, ClipInfo)> {
         let p = self.project;
         let (w, h) = self.settings.video.size();
@@ -705,7 +789,11 @@ impl<'a> Builder<'a> {
         }
         let stats = self.remux(&tmp, n, &streams, extra, duration)?;
         let (ci, in_t, out_t) = self.clip_info(&stats, streams.clone())?;
-        let still_mode = if m.is_motion() { StillMode::None } else { StillMode::Infinite };
+        let still_mode = match m.timeout.filter(|t| t.action != Action::None && t.seconds > 0) {
+            _ if m.is_motion() => StillMode::None,
+            Some(t) => StillMode::Time(t.seconds.min(u16::MAX as u32) as u16),
+            None => StillMode::Infinite,
+        };
         let pl = Playlist {
             items: vec![PlayItem { clip_id: clip_name(n), in_time: in_t, out_time: out_t, still: still_mode, streams }],
             marks: vec![Mark { play_item: 0, time: in_t }],
