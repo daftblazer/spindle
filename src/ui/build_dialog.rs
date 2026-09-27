@@ -4,7 +4,8 @@
 //! a worker thread and show progress.
 
 use crate::build::{self, BuildEvent};
-use crate::document::Document;
+use crate::document::{Change, Document, Node};
+use crate::validate::{self, Severity, Target};
 use adw::prelude::*;
 use gettextrs::gettext;
 use gtk::{gio, glib};
@@ -13,20 +14,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-
-pub fn estimated_size_gb(doc: &Document) -> f64 {
-    let p = doc.project();
-    let kbps = p.disc.video_bitrate as f64 + p.disc.audio_bitrate as f64 * 1.1 + 200.0;
-    p.titles
-        .iter()
-        .filter_map(|t| p.asset(t.asset).map(|a| (t, a)))
-        .map(|(t, a)| match std::fs::metadata(&a.path) {
-            // Kept video is about the size of the source file.
-            Ok(m) if t.keep_video => m.len() as f64 * 1.03 / 1e9,
-            _ => a.info.duration * kbps * 1000.0 / 8.0 / 1e9,
-        })
-        .sum()
-}
 
 fn default_output(doc: &Document) -> PathBuf {
     let name = doc.project().disc.name.clone();
@@ -44,7 +31,7 @@ fn default_output(doc: &Document) -> PathBuf {
 }
 
 pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
-    let dialog = adw::Dialog::builder().title(gettext("Build Disc")).content_width(520).content_height(460).build();
+    let dialog = adw::Dialog::builder().title(gettext("Build Disc")).content_width(560).content_height(620).build();
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&adw::HeaderBar::new());
     let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).vhomogeneous(false).build();
@@ -55,16 +42,6 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
 
     // --- setup page
     let page = adw::PreferencesPage::new();
-    let problems = build::check(&doc.project());
-    if !problems.is_empty() {
-        let g = adw::PreferencesGroup::builder().title(gettext("Fix Before Building")).build();
-        for pr in &problems {
-            let row = adw::ActionRow::builder().title(pr.as_str()).title_lines(3).build();
-            row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
-            g.add(&row);
-        }
-        page.add(&g);
-    }
     let g = adw::PreferencesGroup::builder()
         .title(gettext("Output"))
         .description(gettext("Spindle writes a BDMV folder that can be played with VLC or burned to a BD-R with any disc burning tool."))
@@ -77,13 +54,20 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     let choose = gtk::Button::builder().label(gettext("Choose…")).valign(gtk::Align::Center).build();
     folder_row.add_suffix(&choose);
     g.add(&folder_row);
-    let size = estimated_size_gb(doc);
-    let size_row = adw::ActionRow::builder()
-        .title(gettext("Estimated Size"))
-        .subtitle(format!("{size:.2} GB {} ({})", gettext("of video"), if size <= 23.0 { "BD-25" } else if size <= 46.0 { "BD-50" } else { "BD-100" }))
+    let size_row = adw::ActionRow::builder().title(gettext("Estimated Size")).build();
+    let fit_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).build();
+    let fit = gtk::MenuButton::builder()
+        .label(gettext("Fit to Disc"))
+        .valign(gtk::Align::Center)
+        .tooltip_text(gettext("Choose the video bitrate that fills a disc"))
+        .popover(&gtk::Popover::builder().child(&fit_box).build())
         .build();
+    size_row.add_suffix(&fit);
     g.add(&size_row);
     page.add(&g);
+
+    let issues_group = adw::PreferencesGroup::new();
+    page.add(&issues_group);
 
     let bg = adw::PreferencesGroup::new();
     let build_btn = gtk::Button::builder()
@@ -91,11 +75,95 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         .use_underline(true)
         .halign(gtk::Align::Center)
         .css_classes(["suggested-action", "pill"])
-        .sensitive(problems.is_empty())
         .build();
     bg.add(&build_btn);
     page.add(&bg);
     stack.add_named(&page, Some("setup"));
+
+    // Problems and size follow the project (Fit to Disc changes it).
+    let issue_rows: Rc<RefCell<Vec<adw::ActionRow>>> = Rc::default();
+    let refresh: Rc<dyn Fn()> = {
+        let doc = doc.clone();
+        let (dialog, parent) = (dialog.downgrade(), parent.as_ref().clone());
+        let (size_row, fit_box, fit, build_btn, issues_group) = (size_row.clone(), fit_box.clone(), fit.clone(), build_btn.clone(), issues_group.clone());
+        Rc::new(move || {
+            let (issues, bytes, fits) = {
+                let p = doc.project();
+                let fits: Vec<(&'static str, u32)> = validate::DISCS
+                    .iter()
+                    .filter_map(|(name, cap)| Some((*name, validate::fit_bitrate(&p, *cap)?.min(validate::MAX_VIDEO_KBPS))))
+                    .filter(|(_, kbps)| *kbps >= validate::MIN_VIDEO_KBPS)
+                    .collect();
+                (validate::check(&p), validate::estimated_bytes(&p), fits)
+            };
+            let disc = validate::disc_for(bytes).map_or_else(|| gettext("too big for any disc"), |(d, _)| d.to_string());
+            size_row.set_subtitle(&format!("{:.1} GB · {disc}", bytes / 1e9));
+
+            while let Some(c) = fit_box.first_child() {
+                fit_box.remove(&c);
+            }
+            fit.set_visible(!fits.is_empty());
+            for (name, kbps) in fits {
+                let b = gtk::Button::builder()
+                    .label(format!("{name} · {:.1} Mbit/s", kbps as f64 / 1000.0))
+                    .css_classes(["flat"])
+                    .build();
+                let (doc, fit) = (doc.clone(), fit.clone());
+                b.connect_clicked(move |_| {
+                    fit.popdown();
+                    doc.edit(Change::Content, |p| p.disc.video_bitrate = kbps);
+                });
+                fit_box.append(&b);
+            }
+
+            for r in issue_rows.borrow_mut().drain(..) {
+                issues_group.remove(&r);
+            }
+            let errors = issues.iter().filter(|i| i.severity == Severity::Error).count();
+            issues_group.set_visible(!issues.is_empty());
+            issues_group.set_title(&if errors > 0 { gettext("Fix Before Building") } else { gettext("Suggestions") });
+            for issue in issues {
+                let row = adw::ActionRow::builder().title(glib::markup_escape_text(&issue.message).as_str()).title_lines(3).build();
+                let (icon, class) = match issue.severity {
+                    Severity::Error => ("dialog-error-symbolic", "error"),
+                    Severity::Warning => ("dialog-warning-symbolic", "warning"),
+                };
+                row.add_prefix(&gtk::Image::builder().icon_name(icon).css_classes([class]).build());
+                if let Some(target) = issue.target {
+                    row.set_activatable(true);
+                    row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+                    let (doc, dialog, parent) = (doc.clone(), dialog.clone(), parent.clone());
+                    row.connect_activated(move |_| {
+                        if let Some(d) = dialog.upgrade() {
+                            d.close();
+                        }
+                        match target {
+                            Target::Menu(m) => doc.select(Node::Menu(m), None),
+                            Target::Item { menu, item } => doc.select(Node::Menu(menu), Some(item)),
+                            Target::Title(t) => doc.select(Node::Title(t), None),
+                            Target::Settings => {
+                                let _ = WidgetExt::activate_action(&parent, "win.disc-settings", None);
+                            }
+                        }
+                    });
+                }
+                issues_group.add(&row);
+                issue_rows.borrow_mut().push(row);
+            }
+            build_btn.set_sensitive(errors == 0);
+        })
+    };
+    refresh();
+    // The document outlives the dialog, so it only holds a weak reference.
+    let weak = Rc::downgrade(&refresh);
+    doc.connect(move |c| {
+        if let (Some(r), true) = (weak.upgrade(), matches!(c, Change::Content | Change::Structure)) {
+            r();
+        }
+    });
+    dialog.connect_closed(move |_| {
+        let _keep = &refresh;
+    });
 
     // --- progress page
     let status = adw::StatusPage::builder()

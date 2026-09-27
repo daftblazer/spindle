@@ -60,29 +60,13 @@ pub struct Builder<'a> {
 }
 
 /// Validate a project before building. Returns human-readable problems.
+/// Problems that stop the build.
 pub fn check(project: &Project) -> Vec<String> {
-    let mut problems = Vec::new();
-    if project.titles.is_empty() {
-        problems.push("Add at least one title (drag a video into the project).".into());
-    }
-    for t in &project.titles {
-        match project.asset(t.asset) {
-            None => problems.push(format!("Title “{}” has no video.", t.name)),
-            Some(a) if !a.path.exists() => {
-                problems.push(format!("Video file {} is missing.", a.path.display()))
-            }
-            _ => {}
-        }
-    }
-    if project.menus.len() > 255 {
-        problems.push("A disc can have at most 255 menus.".into());
-    }
-    for m in &project.menus {
-        if m.buttons().count() > 255 {
-            problems.push(format!("Menu “{}” has more than 255 buttons.", m.name));
-        }
-    }
-    problems
+    crate::validate::check(project)
+        .into_iter()
+        .filter(|i| i.severity == crate::validate::Severity::Error)
+        .map(|i| i.message)
+        .collect()
 }
 
 fn object_for_menu(i: usize) -> u32 {

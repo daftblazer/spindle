@@ -30,6 +30,7 @@ mod render;
 mod subtitles;
 mod templates;
 mod ui;
+mod validate;
 mod window;
 
 use self::application::SpindleApplication;

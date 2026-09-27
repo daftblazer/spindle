@@ -76,10 +76,10 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         let doc = Rc::downgrade(doc);
         move || {
             let (Some(row), Some(bar), Some(doc)) = (size_row.upgrade(), bar.upgrade(), doc.upgrade()) else { return };
-            let gb = super::build_dialog::estimated_size_gb(&doc);
-            let (disc, cap) = if gb <= 23.0 { ("BD-25", 23.3) } else if gb <= 46.0 { ("BD-50", 46.6) } else { ("BD-100", 93.2) };
-            row.set_subtitle(&format!("{gb:.1} GB · {disc}"));
-            bar.set_value((gb / cap).min(1.0));
+            let bytes = crate::validate::estimated_bytes(&doc.project());
+            let (disc, cap) = crate::validate::disc_for(bytes).unwrap_or(crate::validate::DISCS[2]);
+            row.set_subtitle(&format!("{:.1} GB · {disc}", bytes / 1e9));
+            bar.set_value((bytes / cap).min(1.0));
         }
     };
     update();

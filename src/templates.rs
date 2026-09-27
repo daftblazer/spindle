@@ -182,7 +182,8 @@ impl Ctx {
 
     /// Previous / home / next buttons along the bottom of a page.
     fn nav_bar(&self, m: &mut Menu, prev: Option<Id>, home: Option<(Id, String)>, next: Option<Id>) {
-        let y = 960.0;
+        // Bottom edge stays inside the title-safe area.
+        let y = 944.0;
         let (w, h) = (320.0, 76.0);
         if let Some(p) = prev {
             m.items.push(self.button(&gettext("‹ Previous"), Action::ShowMenu(p), Rect::new(200.0, y, w, h), 34, Align::Center, Highlight::Underline));
@@ -566,6 +567,10 @@ mod tests {
             }
             assert!(m.buttons().count() > 0, "menu {} has no buttons", m.name);
         }
+        // Templates produce no warnings (the test videos don't exist, so
+        // only missing-file errors are expected).
+        let warnings: Vec<_> = crate::validate::check(p).into_iter().filter(|i| i.severity == crate::validate::Severity::Warning).collect();
+        assert!(warnings.is_empty(), "{warnings:#?}");
     }
 
     #[test]
