@@ -119,8 +119,20 @@ fn new_project_cli(out: &str, files: &[String]) -> glib::ExitCode {
 
 /// `spindle --apply-template STYLE THEME PROJECT [SEASON [DISC]]` rewrites the
 /// project's menus from a template.
+/// STYLE can also be a `.spindle-template` file or the name of a saved one.
 fn template_cli(style: &str, theme: &str, project: &str, extra: &[String]) -> glib::ExitCode {
-    let Some(style) = templates::Style::from_id(style) else {
+    let custom = if style.ends_with(".spindle-template") {
+        match templates::custom::load(std::path::Path::new(style)) {
+            Ok(t) => Some(std::sync::Arc::new(t)),
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                return glib::ExitCode::FAILURE;
+            }
+        }
+    } else {
+        templates::custom::find(style).map(std::sync::Arc::new)
+    };
+    let Some(style) = templates::Style::from_id(style).or(custom.as_ref().map(|_| templates::Style::Classic)) else {
         let ids: Vec<&str> = templates::Style::ALL.iter().map(|s| s.id()).collect();
         eprintln!("unknown style {style} ({})", ids.join(", "));
         return glib::ExitCode::FAILURE;
@@ -128,6 +140,7 @@ fn template_cli(style: &str, theme: &str, project: &str, extra: &[String]) -> gl
     let path = std::path::Path::new(project);
     let res = model::Project::load(path).and_then(|mut p| {
         let mut opts = templates::Options::new(style, &p.disc.name);
+        opts.custom = custom;
         if let Ok(t) = theme.parse() {
             opts.theme = t;
         }
@@ -268,6 +281,34 @@ fn main() -> glib::ExitCode {
         };
     }
     // --apply-template STYLE THEME PROJECT [SEASON [DISC]] (THEME "-" = the style's own)
+    // --save-template PROJECT OUT.spindle-template NAME [DESCRIPTION]: save the
+    // project's main menu and episode pages as a custom template.
+    if (5..=6).contains(&args.len()) && args[1] == "--save-template" {
+        let res = model::Project::load(std::path::Path::new(&args[2]))
+            .and_then(|p| templates::custom::from_project(&p, &args[4], args.get(5).map_or("", String::as_str), ""))
+            .and_then(|t| templates::custom::save(&t, std::path::Path::new(&args[3])));
+        return match res {
+            Ok(()) => glib::ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                glib::ExitCode::FAILURE
+            }
+        };
+    }
+    // --install-template FILE: add a template to the ones in the app.
+    if args.len() == 3 && args[1] == "--install-template" {
+        let res = templates::custom::load(std::path::Path::new(&args[2])).and_then(|t| templates::custom::install(&t));
+        return match res {
+            Ok(path) => {
+                println!("{}", path.display());
+                glib::ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                glib::ExitCode::FAILURE
+            }
+        };
+    }
     if (5..=7).contains(&args.len()) && args[1] == "--apply-template" {
         return template_cli(&args[2], &args[3], &args[4], &args[5..]);
     }

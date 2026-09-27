@@ -448,6 +448,10 @@
         <attribute name="action">win.regenerate-episodes</attribute>
       </item>
       <item>
+        <attribute name="label" translatable="yes">Save Menus as Te_mplate…</attribute>
+        <attribute name="action">win.save-template</attribute>
+      </item>
+      <item>
         <attribute name="label" translatable="yes">_Disc Settings</attribute>
         <attribute name="action">win.disc-settings</attribute>
       </item>

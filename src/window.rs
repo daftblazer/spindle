@@ -495,6 +495,14 @@ impl SpindleWindow {
         add("build", |w| ui::build_dialog::present(&w.doc(), w));
         add("disc-settings", |w| ui::settings::present(&w.doc(), w));
         add("regenerate-episodes", |w| ui::regenerate::present(&w.doc(), w));
+        add("save-template", |w| {
+            let win = w.downgrade();
+            ui::save_template::present(&w.doc(), w, move |msg| {
+                if let Some(w) = win.upgrade() {
+                    w.toast(&msg);
+                }
+            });
+        });
         add("burn-image", |w| {
             let filter = gtk::FileFilter::new();
             filter.set_name(Some(&gettext("Disc Images")));

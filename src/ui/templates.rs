@@ -6,7 +6,9 @@
 use crate::document::{Change, Document, Node};
 use crate::model::{Menu, Project};
 use crate::render::{self, ImageCache};
-use crate::templates::{self, Category, Options, Style, THEMES};
+use crate::templates::{self, custom, Category, Options, Style, THEMES};
+use std::path::PathBuf;
+use std::sync::Arc;
 use adw::prelude::*;
 use gettextrs::{gettext, ngettext};
 use gtk::{cairo, glib};
@@ -32,6 +34,15 @@ struct State {
     summary: gtk::Label,
     /// Set while updating widgets from code.
     syncing: Cell<bool>,
+    /// Showing the saved templates rather than a category.
+    custom_mode: Cell<bool>,
+    customs: RefCell<Vec<(PathBuf, Arc<custom::CustomTemplate>)>>,
+    custom_index: Cell<usize>,
+    custom_cards: RefCell<Vec<(Arc<custom::CustomTemplate>, gtk::Picture)>>,
+    /// Palette choice (not for saved templates, which have their own).
+    palette_box: gtk::Box,
+    custom_actions: gtk::Box,
+    apply_button: gtk::Button,
 }
 
 impl State {
@@ -43,13 +54,68 @@ impl State {
             season: self.season.borrow().clone(),
             disc: self.disc.borrow().clone(),
             logo: self.logo.get(),
+            custom: if self.custom_mode.get() { self.selected_custom() } else { None },
         }
     }
 
+    fn selected_custom(&self) -> Option<Arc<custom::CustomTemplate>> {
+        self.customs.borrow().get(self.custom_index.get()).map(|(_, t)| t.clone())
+    }
+
     fn generate(&self, style: Style) -> Project {
+        self.generate_with(&self.options(style))
+    }
+
+    fn generate_with(&self, opts: &Options) -> Project {
         let mut p = self.doc.project().clone();
-        templates::apply(&mut p, &self.options(style));
+        templates::apply(&mut p, opts);
         p
+    }
+
+    fn reload_customs(&self) {
+        *self.customs.borrow_mut() = custom::library().into_iter().map(|(p, t)| (p, Arc::new(t))).collect();
+        let n = self.customs.borrow().len();
+        self.custom_index.set(self.custom_index.get().min(n.saturating_sub(1)));
+    }
+
+    /// Cards for the saved templates.
+    fn fill_customs(self: &Rc<Self>) {
+        self.styles.remove_all();
+        let mut cards = Vec::new();
+        for (_, t) in self.customs.borrow().iter() {
+            let pic = gtk::Picture::builder().content_fit(gtk::ContentFit::Contain).can_shrink(true).height_request(126).css_classes(["template-page"]).build();
+            let v = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).margin_start(6).margin_end(6).margin_top(6).margin_bottom(6).build();
+            v.append(&pic);
+            v.append(&gtk::Label::builder().label(&t.name).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).css_classes(["heading"]).build());
+            let mut about = t.description.clone();
+            if !t.author.is_empty() {
+                about = if about.is_empty() { gettext("By {}").replace("{}", &t.author) } else { format!("{about} · {}", gettext("By {}").replace("{}", &t.author)) };
+            }
+            v.append(&gtk::Label::builder().label(&about).xalign(0.0).wrap(true).lines(3).css_classes(["caption", "dim-label"]).build());
+            self.styles.append(&v);
+            cards.push((t.clone(), pic));
+        }
+        *self.custom_cards.borrow_mut() = cards;
+        self.syncing.set(true);
+        if let Some(child) = self.styles.child_at_index(self.custom_index.get() as i32) {
+            self.styles.select_child(&child);
+        }
+        self.syncing.set(false);
+    }
+
+    /// Switch between the built-in categories and the saved templates.
+    fn show_mode(self: &Rc<Self>) {
+        let custom = self.custom_mode.get();
+        self.palette_box.set_visible(!custom);
+        self.custom_actions.set_visible(custom);
+        if custom {
+            self.reload_customs();
+            self.fill_customs();
+        } else {
+            self.fill_styles();
+        }
+        self.apply_button.set_sensitive(!custom || !self.customs.borrow().is_empty());
+        self.refresh();
     }
 
     /// Style cards for the current category.
@@ -85,10 +151,24 @@ impl State {
     }
 
     fn refresh(&self) {
-        for (style, pic) in self.style_cards.borrow().iter() {
-            let p = self.generate(*style);
-            if let Some(m) = p.menus.first() {
-                pic.set_paintable(render::menu_thumbnail(&p, m, &self.images, 480).as_ref());
+        if self.custom_mode.get() {
+            for (t, pic) in self.custom_cards.borrow().iter() {
+                let p = self.generate_with(&Options { custom: Some(t.clone()), ..self.options(Style::Classic) });
+                if let Some(m) = p.menus.first() {
+                    pic.set_paintable(render::menu_thumbnail(&p, m, &self.images, 480).as_ref());
+                }
+            }
+            if self.customs.borrow().is_empty() {
+                self.pages.remove_all();
+                self.summary.set_label(&gettext("No saved templates yet. Save your menus with Save Menus as Template, or import a template file."));
+                return;
+            }
+        } else {
+            for (style, pic) in self.style_cards.borrow().iter() {
+                let p = self.generate(*style);
+                if let Some(m) = p.menus.first() {
+                    pic.set_paintable(render::menu_thumbnail(&p, m, &self.images, 480).as_ref());
+                }
             }
         }
         // All menus of the selected style
@@ -168,6 +248,7 @@ pub fn present(
     for c in Category::ALL {
         categories.add(adw::Toggle::builder().label(c.name()).build());
     }
+    categories.add(adw::Toggle::builder().label(gettext("My Templates")).build());
     header.set_title_widget(Some(&categories));
     toolbar.add_top_bar(&header);
 
@@ -201,8 +282,19 @@ pub fn present(
         .build();
     body.append(&styles);
 
+    // Saved templates: bring in, share, delete.
+    let custom_actions = gtk::Box::builder().spacing(12).visible(false).build();
+    let import_template = gtk::Button::builder().label(gettext("_Import…")).use_underline(true).css_classes(["pill"]).build();
+    let export_template = gtk::Button::builder().label(gettext("_Export…")).use_underline(true).css_classes(["pill"]).build();
+    let remove_template = gtk::Button::builder().label(gettext("_Remove")).use_underline(true).css_classes(["pill", "destructive-action"]).build();
+    custom_actions.append(&import_template);
+    custom_actions.append(&export_template);
+    custom_actions.append(&remove_template);
+    body.append(&custom_actions);
+
     // Palettes
-    body.append(&heading(&gettext("Colors")));
+    let palette_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(24).build();
+    palette_box.append(&heading(&gettext("Colors")));
     let palettes = gtk::FlowBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .max_children_per_line(6)
@@ -225,7 +317,8 @@ pub fn present(
         palettes.append(&b);
         theme_buttons.push(b);
     }
-    body.append(&palettes);
+    palette_box.append(&palettes);
+    body.append(&palette_box);
 
     // Title lines
     let group = adw::PreferencesGroup::builder().title(gettext("Title")).build();
@@ -300,24 +393,42 @@ pub fn present(
         pages,
         summary,
         syncing: Cell::new(false),
+        custom_mode: Cell::new(false),
+        customs: RefCell::default(),
+        custom_index: Cell::new(0),
+        custom_cards: RefCell::default(),
+        palette_box,
+        custom_actions,
+        apply_button: apply.clone(),
     });
     categories.set_active(Category::ALL.iter().position(|c| *c == category).unwrap_or(0) as u32);
 
     let s = state.clone();
     categories.connect_active_notify(move |g| {
-        let Some(c) = Category::ALL.get(g.active() as usize).copied() else { return };
-        if c == s.category.get() {
+        let Some(c) = Category::ALL.get(g.active() as usize).copied() else {
+            s.custom_mode.set(true);
+            s.show_mode();
+            return;
+        };
+        if c == s.category.get() && !s.custom_mode.get() {
             return;
         }
+        s.custom_mode.set(false);
         s.category.set(c);
         s.style.set(c.styles()[0]);
-        s.fill_styles();
+        s.show_mode();
         s.sync_theme_buttons();
-        s.refresh();
     });
     let s = state.clone();
     styles.connect_selected_children_changed(move |fb| {
         if s.syncing.get() {
+            return;
+        }
+        if s.custom_mode.get() {
+            if let Some(i) = fb.selected_children().first().map(|c| c.index()) {
+                s.custom_index.set(i.max(0) as usize);
+                s.refresh();
+            }
             return;
         }
         let list = s.category.get().styles();
@@ -380,6 +491,61 @@ pub fn present(
     state.sync_theme_buttons();
     state.refresh();
 
+    {
+        let (s, d) = (state.clone(), dialog.clone());
+        import_template.connect_clicked(move |_| {
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some(&gettext("Spindle Templates")));
+            filter.add_pattern(&format!("*.{}", custom::EXTENSION));
+            let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&filter);
+            let fd = gtk::FileDialog::builder().title(gettext("Import Template")).filters(&filters).modal(true).build();
+            let s = s.clone();
+            let root = d.root().and_downcast::<gtk::Window>();
+            fd.open(root.as_ref(), gtk::gio::Cancellable::NONE, move |res| {
+                let Some(path) = res.ok().and_then(|f| f.path()) else { return };
+                let result = custom::load(&crate::media::portal::real_path(&path)).and_then(|t| custom::install(&t).map(|_| t.name));
+                match result {
+                    Ok(name) => {
+                        s.reload_customs();
+                        let i = s.customs.borrow().iter().position(|(_, t)| t.name == name).unwrap_or(0);
+                        s.custom_index.set(i);
+                        s.show_mode();
+                    }
+                    Err(e) => s.summary.set_label(&e.to_string()),
+                }
+            });
+        });
+    }
+    {
+        let (s, d) = (state.clone(), dialog.clone());
+        let summary = state.summary.clone();
+        export_template.connect_clicked(move |_| {
+            let Some(t) = s.selected_custom() else { return };
+            let summary = summary.clone();
+            super::save_template::export_file(&d, (*t).clone(), Rc::new(move |msg| summary.set_label(&msg)));
+        });
+    }
+    {
+        let (s, d) = (state.clone(), dialog.clone());
+        remove_template.connect_clicked(move |_| {
+            let Some((path, t)) = s.customs.borrow().get(s.custom_index.get()).cloned() else { return };
+            let ask = adw::AlertDialog::builder()
+                .heading(gettext("Remove “{}”?").replace("{}", &t.name))
+                .body(gettext("The template is removed from Spindle. Projects made with it keep their menus."))
+                .build();
+            ask.add_responses(&[("cancel", &gettext("_Cancel")), ("remove", &gettext("_Remove"))]);
+            ask.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+            let s = s.clone();
+            ask.connect_response(None, move |_, r| {
+                if r == "remove" {
+                    let _ = std::fs::remove_file(&path);
+                    s.show_mode();
+                }
+            });
+            ask.present(Some(&d));
+        });
+    }
     let d = dialog.clone();
     cancel.connect_clicked(move |_| {
         d.close();
@@ -393,5 +559,9 @@ pub fn present(
         d.close();
         on_applied();
     });
+    #[cfg(debug_assertions)]
+    if std::env::var("SPINDLE_SCREENSHOT_MY_TEMPLATES").is_ok() {
+        categories.set_active(Category::ALL.len() as u32);
+    }
     dialog.present(Some(parent));
 }

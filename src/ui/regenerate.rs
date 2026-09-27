@@ -5,7 +5,9 @@
 
 use crate::document::{Change, Document, Node};
 use crate::model::Id;
+use crate::templates::custom::{self, CustomTemplate};
 use crate::templates::{self, Category, Options, Style, THEMES};
+use std::sync::Arc;
 use adw::prelude::*;
 use gettextrs::{gettext, ngettext};
 use gtk::glib;
@@ -31,25 +33,41 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
             "Makes the episode pages again for the titles as they are now. Your other menus stay as they are, and buttons that led to the old pages lead to the new ones.",
         ))
         .build();
+    // The built-in styles, then the saved templates.
     let styles = Category::TvShow.styles();
+    let customs: Vec<Arc<CustomTemplate>> = custom::library().into_iter().map(|(_, t)| Arc::new(t)).collect();
+    let mut names: Vec<String> = styles.iter().map(|s| s.name()).collect();
+    names.extend(customs.iter().map(|t| t.name.clone()));
+    let selected = match &last.custom {
+        Some(c) => customs.iter().position(|t| t.name == c.name).map(|i| styles.len() + i),
+        None => styles.iter().position(|s| *s == last.style),
+    };
     let style_row = adw::ComboRow::builder()
         .title(gettext("Style"))
-        .model(&gtk::StringList::new(&styles.iter().map(|s| s.name()).collect::<Vec<_>>().iter().map(String::as_str).collect::<Vec<_>>()))
-        .selected(styles.iter().position(|s| *s == last.style).unwrap_or(0) as u32)
+        .model(&gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>()))
+        .selected(selected.unwrap_or(0) as u32)
         .build();
-    let describe = {
-        let styles = styles.clone();
-        move |r: &adw::ComboRow| r.set_subtitle(&styles[(r.selected() as usize).min(styles.len() - 1)].description())
-    };
-    describe(&style_row);
-    style_row.set_subtitle_lines(2);
-    style_row.connect_selected_notify(describe);
-    g.add(&style_row);
     let theme_row = adw::ComboRow::builder()
         .title(gettext("Palette"))
         .model(&gtk::StringList::new(&THEMES.iter().map(|t| t.name).collect::<Vec<_>>()))
         .selected(last.theme as u32)
         .build();
+    let describe = {
+        let (styles, customs, theme_row) = (styles.clone(), customs.clone(), theme_row.clone());
+        move |r: &adw::ComboRow| {
+            let i = r.selected() as usize;
+            let (text, own_colours) = match styles.get(i) {
+                Some(s) => (s.description(), false),
+                None => (customs.get(i - styles.len()).map(|t| t.description.clone()).unwrap_or_default(), true),
+            };
+            r.set_subtitle(&text);
+            theme_row.set_visible(!own_colours);
+        }
+    };
+    describe(&style_row);
+    style_row.set_subtitle_lines(2);
+    style_row.connect_selected_notify(describe);
+    g.add(&style_row);
     g.add(&theme_row);
     let season = adw::EntryRow::builder().title(gettext("Season (optional)")).text(&last.season).build();
     let disc = adw::EntryRow::builder().title(gettext("Disc (optional)")).text(&last.disc).build();
@@ -94,9 +112,11 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
 
     let (doc, d) = (doc.clone(), dialog.clone());
     go.connect_clicked(move |_| {
-        let style: Style = styles[(style_row.selected() as usize).min(styles.len() - 1)];
+        let i = style_row.selected() as usize;
+        let style: Style = styles.get(i).copied().unwrap_or(Style::Classic);
         let opts = Options {
             style,
+            custom: i.checked_sub(styles.len()).and_then(|k| customs.get(k).cloned()),
             theme: (theme_row.selected() as usize).min(THEMES.len() - 1),
             season: season.text().to_string(),
             disc: disc.text().to_string(),

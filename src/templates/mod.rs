@@ -4,6 +4,7 @@
 //! project's titles. A template is a style (layout and typography, grouped
 //! by category) in a color palette, with optional season and disc lines.
 
+pub mod custom;
 mod movie;
 mod show;
 
@@ -338,11 +339,40 @@ pub struct Options {
     pub disc: String,
     /// Image (e.g. a transparent PNG logo) shown instead of the name.
     pub logo: Option<Id>,
+    /// A saved template to use instead of `style` and `theme`.
+    pub custom: Option<std::sync::Arc<custom::CustomTemplate>>,
 }
 
 impl Options {
     pub fn new(style: Style, title: &str) -> Self {
-        Options { style, theme: style.default_theme(), title: title.into(), season: String::new(), disc: String::new(), logo: None }
+        Options { style, theme: style.default_theme(), title: title.into(), season: String::new(), disc: String::new(), logo: None, custom: None }
+    }
+
+    fn ctx(&self) -> Ctx {
+        match &self.custom {
+            Some(c) => Ctx::custom(c),
+            None => Ctx::new(self.style, self.theme),
+        }
+    }
+
+    /// Recorded in the project, to make the pages again later.
+    fn record(&self) -> String {
+        match &self.custom {
+            Some(c) => format!("custom:{}", c.name),
+            None => self.style.id().into(),
+        }
+    }
+}
+
+/// The menus of the chosen style or custom template.
+fn build(opts: &Options, input: Input, images: &std::collections::HashMap<Id, Id>) -> Output {
+    if let Some(c) = &opts.custom {
+        return custom::build(c, input, images);
+    }
+    match opts.style.category() {
+        Category::TvShow => show::build(opts.style, input),
+        Category::Movie => movie::build(opts.style, input),
+        Category::Collection => collection(input),
     }
 }
 
@@ -353,14 +383,14 @@ const EPISODE_ROWS: usize = 7;
 
 struct Ctx {
     theme: Theme,
-    heading: &'static str,
-    body: &'static str,
+    heading: String,
+    body: String,
 }
 
 impl Ctx {
     fn new(style: Style, theme: usize) -> Self {
         let (heading, body) = style.fonts();
-        Ctx { theme: THEMES[theme.min(THEMES.len() - 1)], heading, body }
+        Ctx { theme: THEMES[theme.min(THEMES.len() - 1)], heading: heading.into(), body: body.into() }
     }
 
     /// A menu with the palette's gradient background.
@@ -849,7 +879,8 @@ fn short(s: &str, max: usize) -> String {
 /// Replace the project's menus with a generated set. Titles, assets and
 /// disc settings are kept. Returns the id of the main menu.
 pub fn apply(p: &mut Project, opts: &Options) -> Id {
-    let cx = Ctx::new(opts.style, opts.theme);
+    let images = opts.custom.as_ref().map(|c| custom::install_images(p, c)).unwrap_or_default();
+    let cx = opts.ctx();
     let name = if opts.title.trim().is_empty() { p.disc.name.clone() } else { opts.title.clone() };
 
     // Setup menu for choosing audio and subtitles, when there is a choice.
@@ -871,12 +902,8 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
         main,
         setup: setup.as_ref().map(|m| m.id),
     };
-    let out = match opts.style.category() {
-        Category::TvShow => show::build(opts.style, input),
-        Category::Movie => movie::build(opts.style, input),
-        Category::Collection => collection(input),
-    };
-    let cx = Ctx::new(opts.style, opts.theme);
+    let out = build(opts, input, &images);
+    let cx = opts.ctx();
     let page_ids: Vec<Id> = out.menus.iter().skip(1).map(|m| m.id).collect();
     let mut menus = out.menus;
 
@@ -910,7 +937,7 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
     }
     p.first_play = FirstPlay::FirstMenu;
     p.template = Some(TemplateInfo {
-        style: opts.style.id().into(),
+        style: opts.record(),
         theme: opts.theme,
         title: opts.title.clone(),
         season: opts.season.clone(),
@@ -939,7 +966,7 @@ fn episodes(p: &Project) -> Vec<Episode> {
 /// The episode pages of the project: those the last template made, or
 /// menus named like them.
 pub fn episode_pages(p: &Project) -> Vec<Id> {
-    if let Some(t) = p.template.as_ref().filter(|t| Style::from_id(&t.style).is_some_and(|s| s.category() == Category::TvShow)) {
+    if let Some(t) = p.template.as_ref().filter(|t| t.style.starts_with("custom:") || Style::from_id(&t.style).is_some_and(|s| s.category() == Category::TvShow)) {
         let ids: Vec<Id> = t.pages.iter().copied().filter(|id| p.menu(*id).is_some()).collect();
         if !ids.is_empty() {
             return ids;
@@ -963,6 +990,7 @@ pub fn last_options(p: &Project) -> Options {
             season: t.season.clone(),
             disc: t.disc.clone(),
             logo: None,
+            custom: t.style.strip_prefix("custom:").and_then(custom::find).map(std::sync::Arc::new),
         },
         None => Options { theme: detect_theme(p), ..Options::new(Style::Classic, &p.disc.name) },
     }
@@ -979,12 +1007,13 @@ pub fn regenerate_pages(p: &mut Project, opts: &Options, old: &[Id]) -> Vec<Id> 
         .map(|t| t.main)
         .filter(|m| p.menu(*m).is_some() && !old.contains(m))
         .or_else(|| p.menus.iter().find(|m| !m.popup && !old.contains(&m.id)).map(|m| m.id));
-    let cx = Ctx::new(opts.style, opts.theme);
+    let images = opts.custom.as_ref().map(|c| custom::install_images(p, c)).unwrap_or_default();
+    let cx = opts.ctx();
     let temp_main = cx.menu(&gettext("Main Menu"));
     let temp_id = temp_main.id;
     let name = if opts.title.trim().is_empty() { p.disc.name.clone() } else { opts.title.clone() };
     let input = Input { p, cx, name, season: opts.season.clone(), disc: opts.disc.clone(), episodes: episodes(p), main: temp_main, setup: None };
-    let out = show::build(opts.style, input);
+    let out = build(opts, input, &images);
     // The main menu comes first; the rest are the pages.
     let mut pages: Vec<Menu> = out.menus.into_iter().skip(1).collect();
     let home = |id: Id| (id == temp_id).then_some(main).flatten();
@@ -1020,7 +1049,7 @@ pub fn regenerate_pages(p: &mut Project, opts: &Options, old: &[Id]) -> Vec<Id> 
         main: main.unwrap_or(temp_id),
         pages: vec![],
     });
-    info.style = opts.style.id().into();
+    info.style = opts.record();
     info.theme = opts.theme;
     info.season = opts.season.clone();
     info.disc = opts.disc.clone();
@@ -1150,6 +1179,50 @@ mod tests {
             }
         }
         assert!(p.titles.iter().all(|t| t.return_menu.is_some_and(|m| p.menu(m).is_some())));
+    }
+
+    #[test]
+    fn styles_survive_saving_as_custom_templates() {
+        for style in Category::TvShow.styles() {
+            let mut src = project(8);
+            apply(&mut src, &Options { season: "Season 2".into(), ..opts(style, style.default_theme()) });
+            let t = custom::from_project(&src, "Mine", "", "").unwrap_or_else(|e| panic!("{style:?}: {e}"));
+            // Through the file format and back.
+            let json = serde_json::to_string(&t).unwrap();
+            let t: custom::CustomTemplate = serde_json::from_str(&json).unwrap();
+            let lower = json.to_lowercase();
+            assert!(lower.contains("{title}") && lower.contains("{edition}"), "{style:?}: placeholders");
+
+            // The same show again: the same menus, item for item.
+            let mut again = project(8);
+            let with = |c: &custom::CustomTemplate| Options { season: "Season 2".into(), custom: Some(std::sync::Arc::new(c.clone())), ..opts(style, 0) };
+            apply(&mut again, &with(&t));
+            assert_eq!(again.menus.len(), src.menus.len(), "{style:?}");
+            for (a, b) in again.menus.iter().zip(&src.menus) {
+                assert_eq!(a.items.len(), b.items.len(), "{style:?}: {}", a.name);
+                assert_eq!(a.buttons().count(), b.buttons().count(), "{style:?}: {}", a.name);
+            }
+            check(&again);
+
+            // More episodes than one page holds.
+            let mut big = project(30);
+            apply(&mut big, &with(&t));
+            let pages = episode_pages(&big);
+            assert!(pages.len() >= 2, "{style:?}");
+            let played: usize = pages.iter().map(|id| big.menu(*id).unwrap().buttons().filter(|b| matches!(b.button().unwrap().action, Action::PlayTitle { .. })).count()).sum();
+            assert_eq!(played, 30, "{style:?}: every episode has a button");
+            for id in &pages[1..pages.len() - 1] {
+                let m = big.menu(*id).unwrap();
+                let links = m.buttons().filter(|b| matches!(b.button().unwrap().action, Action::ShowMenu(_))).count();
+                assert!(links >= 3, "{style:?}: middle pages have Previous, Next and Main Menu");
+            }
+            // It can make the pages again, too.
+            let old = episode_pages(&big);
+            let o = last_options(&big);
+            assert!(o.custom.is_none() || o.custom.as_ref().unwrap().name == "Mine");
+            regenerate_pages(&mut big, &with(&t), &old);
+            check(&big);
+        }
     }
 
     #[test]

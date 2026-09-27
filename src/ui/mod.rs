@@ -13,6 +13,7 @@ pub mod media_bin;
 pub mod player;
 pub mod preview_dialog;
 pub mod regenerate;
+pub mod save_template;
 pub mod rows;
 pub mod settings;
 pub mod sidebar;

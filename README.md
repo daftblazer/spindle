@@ -52,6 +52,11 @@ imported logo instead of the title text. **Regenerate Episode Menus**
 makes the episode pages again (after adding episodes, or in another style)
 while keeping every other menu and relinking the buttons that led to them.
 
+Your own designs can be saved as **custom templates** (Save Menus as
+Template…), used on other shows, and exported as a single
+`.spindle-template` file to share. See
+[docs/custom-templates.md](docs/custom-templates.md) for the format.
+
 ### Titles
 
 - Chapters placed at the playhead or generated at an interval, and
@@ -154,6 +159,10 @@ spindle --burn "Show Season 2.iso" /dev/sr0                  # burn and verify
 Template styles: `show`, `show-list`, `showcase`, `minimal`, `streaming`,
 `split`, `broadcast`, `movie`, `movie-showcase`, `movie-minimal`, `list`. The
 theme is a palette number from 0 to 10, or `-` for the style's own.
+
+Custom templates: `--save-template PROJECT OUT.spindle-template NAME
+[DESCRIPTION]`, `--install-template FILE`, and a `.spindle-template` file (or
+a saved template's name) in place of the style for `--apply-template`.
 
 Other commands: `--preview PROJECT TITLE START SECONDS [SUBTITLE]`,
 `--check-video FILE`, `--make-image FOLDER IMAGE [LABEL]`,
