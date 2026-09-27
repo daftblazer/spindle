@@ -55,6 +55,8 @@ pub struct DiscSettings {
     /// Video encoder; hardware ones are for test discs.
     #[serde(default)]
     pub encoder: crate::media::hwenc::VideoEncoder,
+    #[serde(default)]
+    pub quality: crate::media::transcode::Quality,
 }
 
 impl Default for DiscSettings {
@@ -71,6 +73,7 @@ impl Default for DiscSettings {
             popup_menu: None,
             top_menu: None,
             encoder: Default::default(),
+            quality: Default::default(),
         }
     }
 }

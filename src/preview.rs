@@ -59,6 +59,7 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
         audio: project.disc.audio,
         audio_bitrate: project.disc.audio_bitrate,
         encoder: project.disc.encoder,
+        quality: project.disc.quality,
     };
 
     let work = preview_dir().join(format!("work-{}", crate::model::new_id()));
@@ -78,7 +79,7 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
             }
             None => {
                 emit(BuildEvent::Stage(format!("Encoding {} seconds of “{}”", duration.round(), t.name)));
-                let args = transcode::title_args(&asset.path, info, &settings, &[], &inputs, Some((start, duration)), &tmp);
+                let args = transcode::title_args(&asset.path, info, &settings, &[], &inputs, Some((start, duration)), &transcode::Pass::Only, &tmp);
                 ffmpeg::run(&args, cancel, |secs| progress(secs / duration * 0.8))?;
                 settings.video
             }

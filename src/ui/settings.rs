@@ -55,6 +55,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     });
     br.set_subtitle(&gettext("Mbit/s — about 18 fits two hours on a BD-25"));
     g.add(&br);
+    quality_row(doc, &g, d.quality);
     encoder_rows(doc, &g, d.encoder);
     page.add(&g);
 
@@ -105,6 +106,25 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
 
     dialog.add(&page);
     dialog.present(Some(parent));
+}
+
+/// Encoding speed against picture quality.
+fn quality_row(doc: &Rc<Document>, g: &adw::PreferencesGroup, current: crate::media::transcode::Quality) {
+    use crate::media::transcode::Quality;
+    let labels = [gettext("Fast"), gettext("Balanced"), gettext("Best")];
+    let explain = |q: Quality| match q {
+        Quality::Fast => gettext("Quick to encode, for drafts"),
+        Quality::Balanced => gettext("A good picture in a reasonable time"),
+        Quality::Best => gettext("Two passes: the best picture for the bitrate and sizes that match the estimate; takes about three times as long"),
+    };
+    let sel = Quality::ALL.iter().position(|q| *q == current).unwrap_or(1);
+    let row = rows::combo(doc, &gettext("Quality"), &labels, sel, Change::Content, |p, i| {
+        p.disc.quality = Quality::ALL[i.min(Quality::ALL.len() - 1)];
+    });
+    row.set_subtitle(&explain(current));
+    row.set_subtitle_lines(3);
+    row.connect_selected_notify(move |r| r.set_subtitle(&explain(Quality::ALL[(r.selected() as usize).min(2)])));
+    g.add(&row);
 }
 
 /// Video encoder choice, with the warning that hardware is for testing.

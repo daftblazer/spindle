@@ -14,6 +14,40 @@ pub struct EncodeSettings {
     pub audio: AudioCodec,
     pub audio_bitrate: u32,
     pub encoder: VideoEncoder,
+    pub quality: Quality,
+}
+
+/// Speed against quality for x264.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default)]
+pub enum Quality {
+    /// Quick drafts.
+    Fast,
+    #[default]
+    Balanced,
+    /// Slower preset and two passes: the best picture for the bitrate, and
+    /// sizes that match the estimate closely.
+    Best,
+}
+
+impl Quality {
+    pub const ALL: [Quality; 3] = [Quality::Fast, Quality::Balanced, Quality::Best];
+
+    fn preset(self) -> &'static str {
+        match self {
+            Quality::Fast => "veryfast",
+            Quality::Balanced => "medium",
+            Quality::Best => "slow",
+        }
+    }
+}
+
+/// One-pass encoding, or one of the two passes (sharing a log file).
+#[derive(Debug, Clone)]
+pub enum Pass {
+    Only,
+    /// Analyse the video only; nothing is written.
+    First(PathBuf),
+    Second(PathBuf),
 }
 
 impl EncodeSettings {
@@ -134,7 +168,7 @@ fn video_args(set: &EncodeSettings, bitrate: u32) -> Vec<String> {
         s("-c:v"),
         s("libx264"),
         s("-preset"),
-        s("medium"),
+        s(set.quality.preset()),
         s("-profile:v"),
         s("high"),
         s("-level:v"),
@@ -207,6 +241,7 @@ enum VideoMode<'a> {
     Copy,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn title_common(
     input: &Path,
     info: &MediaInfo,
@@ -214,6 +249,7 @@ fn title_common(
     video: VideoMode,
     audio: &[AudioInput],
     range: Option<(f64, f64)>,
+    pass: &Pass,
     output: &Path,
 ) -> Vec<String> {
     let start = range.map_or(0.0, |(start, _)| start);
@@ -261,6 +297,11 @@ fn title_common(
                 let list: Vec<String> = keyframes.iter().map(|t| format!("{t:.3}")).collect();
                 a.extend([s("-force_key_frames"), list.join(",")]);
             }
+            match pass {
+                Pass::Only => {}
+                Pass::First(log) => a.extend([s("-pass"), s("1"), s("-passlogfile"), path(log)]),
+                Pass::Second(log) => a.extend([s("-pass"), s("2"), s("-passlogfile"), path(log)]),
+            }
         }
         VideoMode::Copy => a.extend([s("-c:v"), s("copy"), s("-bsf:v"), s("h264_metadata=aud=insert")]),
     }
@@ -278,12 +319,18 @@ fn title_common(
             a.extend([format!("-filter:a:{n}"), format!("adelay={:.0}:all=1", delay * 1000.0)]);
         }
     }
+    if matches!(pass, Pass::First(_)) {
+        // The first pass only looks at the video.
+        a.extend([s("-an"), s("-f"), s("null"), s("-")]);
+        return a;
+    }
     a.extend(mux_args(output, 1.0));
     a
 }
 
 /// Transcode a title. `keyframes` are forced IDR positions (chapter starts).
 /// `range` limits the encode to (start, duration) seconds, for previews.
+#[allow(clippy::too_many_arguments)]
 pub fn title_args(
     input: &Path,
     info: &MediaInfo,
@@ -291,9 +338,10 @@ pub fn title_args(
     keyframes: &[f64],
     audio: &[AudioInput],
     range: Option<(f64, f64)>,
+    pass: &Pass,
     output: &Path,
 ) -> Vec<String> {
-    title_common(input, info, set, VideoMode::Encode { keyframes }, audio, range, output)
+    title_common(input, info, set, VideoMode::Encode { keyframes }, audio, range, pass, output)
 }
 
 /// Copy a compatible H.264 stream without re-encoding, adding the access
@@ -306,7 +354,7 @@ pub fn passthrough_args(
     range: Option<(f64, f64)>,
     output: &Path,
 ) -> Vec<String> {
-    title_common(input, info, set, VideoMode::Copy, audio, range, output)
+    title_common(input, info, set, VideoMode::Copy, audio, range, &Pass::Only, output)
 }
 
 /// Encode a menu background clip.
@@ -371,7 +419,7 @@ mod tests {
     use super::*;
 
     fn settings(video: VideoFormat, encoder: VideoEncoder) -> EncodeSettings {
-        EncodeSettings { video, video_bitrate: 18_000, audio: AudioCodec::Ac3, audio_bitrate: 448, encoder }
+        EncodeSettings { video, video_bitrate: 18_000, audio: AudioCodec::Ac3, audio_bitrate: 448, encoder, quality: Quality::Balanced }
     }
 
     fn arg_after<'a>(a: &'a [String], key: &str) -> Option<&'a str> {
@@ -383,7 +431,7 @@ mod tests {
         let info = MediaInfo { duration: 60.0, video_codec: Some("h264".into()), ..Default::default() };
         let out = Path::new("/tmp/out.ts");
         let vaapi = settings(VideoFormat::P1080_23976, VideoEncoder::Vaapi);
-        let a = title_args(Path::new("/tmp/in.mkv"), &info, &vaapi, &[10.0], &[], None, out);
+        let a = title_args(Path::new("/tmp/in.mkv"), &info, &vaapi, &[10.0], &[], None, &Pass::Only, out);
         assert_eq!(arg_after(&a, "-c:v"), Some("h264_vaapi"));
         assert_eq!(arg_after(&a, "-g"), Some("23"));
         assert!(arg_after(&a, "-vf").unwrap().ends_with("hwupload"));
@@ -396,17 +444,32 @@ mod tests {
         }
 
         let nvenc = settings(VideoFormat::P720_5994, VideoEncoder::Nvenc);
-        let a = title_args(Path::new("/tmp/in.mkv"), &info, &nvenc, &[], &[], None, out);
+        let a = title_args(Path::new("/tmp/in.mkv"), &info, &nvenc, &[], &[], None, &Pass::Only, out);
         assert_eq!(arg_after(&a, "-c:v"), Some("h264_nvenc"));
         assert_eq!(arg_after(&a, "-g"), Some("59"));
         assert!(!a.iter().any(|x| x == "-vaapi_device"));
 
         // 1080i can't be made in hardware; menus are always x264.
         let interlaced = settings(VideoFormat::I1080_25, VideoEncoder::Vaapi);
-        let a = title_args(Path::new("/tmp/in.mkv"), &info, &interlaced, &[], &[], None, out);
+        let a = title_args(Path::new("/tmp/in.mkv"), &info, &interlaced, &[], &[], None, &Pass::Only, out);
         assert_eq!(arg_after(&a, "-c:v"), Some("libx264"));
         let a = menu_args(Path::new("/tmp/still.png"), None, None, 1.0, &vaapi, out);
         assert_eq!(arg_after(&a, "-c:v"), Some("libx264"));
         assert!(!a.iter().any(|x| x == "-vaapi_device"));
+    }
+
+    #[test]
+    fn two_pass() {
+        let info = MediaInfo { duration: 60.0, video_codec: Some("h264".into()), audio_codec: Some("aac".into()), ..Default::default() };
+        let set = EncodeSettings { quality: Quality::Best, ..settings(VideoFormat::P1080_23976, VideoEncoder::Software) };
+        let log = Path::new("/tmp/pass");
+        let audio = [AudioInput { file: None, index: 0, offset: 0.0, channels: 2, copy: false }];
+        let first = title_args(Path::new("/tmp/in.mkv"), &info, &set, &[], &audio, None, &Pass::First(log.into()), Path::new("/tmp/o.ts"));
+        assert_eq!(arg_after(&first, "-pass"), Some("1"));
+        assert_eq!(arg_after(&first, "-preset"), Some("slow"));
+        assert!(first.ends_with(&["-an".into(), "-f".into(), "null".into(), "-".into()]));
+        let second = title_args(Path::new("/tmp/in.mkv"), &info, &set, &[], &audio, None, &Pass::Second(log.into()), Path::new("/tmp/o.ts"));
+        assert_eq!(arg_after(&second, "-pass"), Some("2"));
+        assert_eq!(second.last().map(String::as_str), Some("/tmp/o.ts"));
     }
 }

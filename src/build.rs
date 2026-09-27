@@ -141,6 +141,7 @@ impl<'a> Builder<'a> {
             audio: project.disc.audio,
             audio_bitrate: project.disc.audio_bitrate,
             encoder: project.disc.encoder,
+            quality: project.disc.quality,
         };
         Builder {
             project,
@@ -166,6 +167,11 @@ impl<'a> Builder<'a> {
         self.menus[i].intro?;
         let k = self.menus[..i].iter().filter(|m| m.intro.is_some()).count();
         Some(1 + (self.menus.len() + self.project.titles.len() + k) as u32)
+    }
+
+    /// Titles are encoded in two passes (Best quality with x264).
+    fn two_pass(&self) -> bool {
+        self.settings.quality == transcode::Quality::Best && !self.settings.effective_encoder().is_hardware()
     }
 
     fn object_for_title(&self, i: usize) -> u32 {
@@ -210,11 +216,12 @@ impl<'a> Builder<'a> {
         }
         let p = self.project;
         // Work units: seconds of media to encode, plus 10% for remuxing.
+        let passes = if self.two_pass() { 2.0 } else { 1.0 };
         self.total_work = p
             .titles
             .iter()
-            .filter_map(|t| p.asset(t.asset))
-            .map(|a| a.info.duration.max(1.0))
+            .filter_map(|t| p.asset(t.asset).map(|a| (t, a)))
+            .map(|(t, a)| a.info.duration.max(1.0) * if t.keep_video { 1.0 } else { passes })
             .chain(self.menus.iter().map(|m| self.menu_duration(m)))
             .chain(self.menus.iter().filter_map(|m| m.intro.and_then(|a| p.asset(a))).map(|a| a.info.duration.max(1.0)))
             .sum::<f64>()
@@ -636,20 +643,39 @@ impl<'a> Builder<'a> {
             self.encode(args, duration)?;
             format
         } else {
-            let mut args = transcode::title_args(&asset.path, &asset.info, &self.settings, &chapters, &inputs, None, &tmp);
+            let log = self.work.join(format!("pass-{}", clip_name(n)));
+            let two_pass = self.two_pass();
+            let pass = if two_pass { transcode::Pass::Second(log.clone()) } else { transcode::Pass::Only };
+            let mut args = transcode::title_args(&asset.path, &asset.info, &self.settings, &chapters, &inputs, None, &pass, &tmp);
             // Reuse an identical earlier encode: the key is the whole command
-            // (without its output) and the files it reads.
-            let mut key: Vec<String> = args[..args.len() - 1].to_vec();
+            // (without its output or pass log) and the files it reads.
+            let mut key: Vec<String> = args[..args.len() - 1]
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i == 0 || args[i - 1] != "-passlogfile")
+                .map(|(_, a)| a.clone())
+                .collect();
             key.push(encode_cache::file_id(&asset.path));
             key.extend(inputs.iter().filter_map(|i| i.file.as_deref()).map(encode_cache::file_id));
             let cached = encode_cache::entry(&key);
             if cached.exists() {
                 self.stage(format!("Reusing the earlier encode of “{}”", t.name));
                 encode_cache::touch(&cached);
-                self.done_work += duration;
+                self.done_work += duration * if two_pass { 2.0 } else { 1.0 };
                 self.progress(0.0);
             } else {
-                let how = if self.settings.effective_encoder().is_hardware() { " (hardware, for testing)" } else { "" };
+                if two_pass {
+                    self.stage(format!("Analysing title “{}” (pass 1 of 2)", t.name));
+                    let first = transcode::title_args(&asset.path, &asset.info, &self.settings, &chapters, &inputs, None, &transcode::Pass::First(log.clone()), &tmp);
+                    self.encode(first, duration)?;
+                }
+                let how = if self.settings.effective_encoder().is_hardware() {
+                    " (hardware, for testing)"
+                } else if two_pass {
+                    " (pass 2 of 2)"
+                } else {
+                    ""
+                };
                 self.stage(format!("Encoding title “{}”{how}", t.name));
                 std::fs::create_dir_all(encode_cache::dir())?;
                 let part = cached.with_extension("part");
@@ -744,7 +770,7 @@ impl<'a> Builder<'a> {
             .map(|s| transcode::AudioInput { file: None, index: s.index, offset: 0.0, channels: s.channels, copy: false })
             .into_iter()
             .collect();
-        let args = transcode::title_args(&asset.path, &asset.info, &self.settings, &[], &audio, None, &tmp);
+        let args = transcode::title_args(&asset.path, &asset.info, &self.settings, &[], &audio, None, &transcode::Pass::Only, &tmp);
         self.encode(args, duration)?;
         let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(self.settings.video) }];
         if asset.info.has_audio() {
