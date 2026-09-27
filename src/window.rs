@@ -411,6 +411,7 @@ impl SpindleWindow {
                 doc.project().menu(m).and_then(|m| m.item(i)).is_some_and(|i| matches!(i.kind, ItemKind::Text(_) | ItemKind::Image(_)))
             });
         self.action_enabled("replace-with-image", single_visual);
+        self.action_enabled("menu-background-image", in_menu);
         for a in ["add-button", "add-text", "add-image", "add-button-grid", "select-all"] {
             self.action_enabled(a, editing);
         }
@@ -499,6 +500,18 @@ impl SpindleWindow {
             });
         });
         add("replace-with-image", |w| w.replace_with_image());
+        add("menu-background-image", |w| {
+            let Some(menu) = w.doc().current_menu() else { return };
+            let win = w.clone();
+            w.pick_image(move |asset| {
+                win.doc().edit(Change::Structure, |p| {
+                    if let Some(m) = p.menu_mut(menu) {
+                        m.background.image = Some(asset);
+                        m.background.video = None;
+                    }
+                });
+            });
+        });
         add("add-button-grid", |w| w.add_title_buttons());
         add("delete-item", |w| w.edit_selection(|m, ids| m.items.retain(|i| !ids.contains(&i.id))));
         add("duplicate-item", |w| {

@@ -56,6 +56,17 @@ fn align_bar(distribute: bool) -> gtk::Box {
     bar
 }
 
+/// Small "open file" button placed after a combo row.
+fn pick_button(tooltip: &str, action: &str) -> gtk::Button {
+    gtk::Button::builder()
+        .icon_name("document-open-symbolic")
+        .tooltip_text(tooltip)
+        .action_name(action)
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build()
+}
+
 fn delete_button(label: &str, action: &str) -> adw::PreferencesGroup {
     let g = adw::PreferencesGroup::new();
     let b = gtk::Button::builder()
@@ -247,11 +258,14 @@ impl Inspector {
         }
         let images = assets_of(&p, &[AssetKind::Image]);
         let (labels, sel) = optional_choice(&gettext("None"), &images, m.background.image);
-        g.add(&rows::combo(doc, &gettext("Image"), &labels, sel, Change::Content, move |p, i| {
+        let image_row = rows::combo(doc, &gettext("Image"), &labels, sel, Change::Content, move |p, i| {
             if let Some(m) = p.menu_mut(id) {
                 m.background.image = pick(&images, i);
             }
-        }));
+        });
+        image_row.set_subtitle(&gettext("Fills the screen behind everything"));
+        image_row.add_suffix(&pick_button(&gettext("Choose Image File…"), "win.menu-background-image"));
+        g.add(&image_row);
         let videos = assets_of(&p, &[AssetKind::Video]);
         let (labels, sel) = optional_choice(&gettext("None"), &videos, m.background.video);
         let row = rows::combo(doc, &gettext("Motion Video"), &labels, sel, Change::Content, move |p, i| {
