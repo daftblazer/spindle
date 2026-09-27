@@ -128,6 +128,8 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         .build();
     size_row.add_suffix(&fit);
     g.add(&size_row);
+    let time_row = adw::ActionRow::builder().title(gettext("Estimated Time")).subtitle_lines(2).build();
+    g.add(&time_row);
     page.add(&g);
 
     // Encodes kept from earlier builds.
@@ -171,7 +173,8 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         let doc = doc.clone();
         let (burning, options) = (burning.clone(), Rc::downgrade(&burn_options));
         let (dialog, parent) = (dialog.downgrade(), parent.as_ref().clone());
-        let (size_row, fit_box, fit, build_btn, issues_group) = (size_row.clone(), fit_box.clone(), fit.clone(), build_btn.clone(), issues_group.clone());
+        let (size_row, time_row, fit_box, fit, build_btn, issues_group) =
+            (size_row.clone(), time_row.clone(), fit_box.clone(), fit.clone(), build_btn.clone(), issues_group.clone());
         Rc::new(move || {
             let (issues, bytes, fits) = {
                 let p = doc.project();
@@ -184,6 +187,12 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
             };
             let disc = validate::disc_for(bytes).map_or_else(|| gettext("too big for any disc"), |(d, _)| d.to_string());
             size_row.set_subtitle(&format!("{:.1} GB · {disc}", bytes / 1e9));
+            let (secs, measured) = build::estimate_seconds(&doc.project());
+            let mut time = if secs < 60.0 { gettext("Under a minute") } else { gettext("About {}").replace("{}", &super::build_progress::duration_text(secs)) };
+            if !measured && secs >= 60.0 {
+                time.push_str(&format!(" · {}", gettext("a rough guess until Spindle has timed a build on this computer")));
+            }
+            time_row.set_subtitle(&time);
 
             while let Some(c) = fit_box.first_child() {
                 fit_box.remove(&c);

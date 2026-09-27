@@ -422,6 +422,9 @@ impl<'a> Builder<'a> {
         if workers > 1 {
             self.log(format!("Encoding {workers} titles at a time"));
         }
+        // Seconds of video encoded (not reused or copied), for the speed.
+        let encoded = Mutex::new(0.0);
+        let started = std::time::Instant::now();
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 scope.spawn(|| loop {
@@ -434,7 +437,10 @@ impl<'a> Builder<'a> {
                         Job::Intro(i) => (intro_key(i), self.build_intro(i)),
                     };
                     match res {
-                        Ok(r) => results.lock().unwrap().push(r),
+                        Ok((r, secs)) => {
+                            *encoded.lock().unwrap() += secs;
+                            results.lock().unwrap().push(r);
+                        }
                         Err(e) => {
                             // The first failure stops the others.
                             if !self.stop.swap(true, Ordering::Relaxed) || self.cancel.load(Ordering::Relaxed) {
@@ -451,6 +457,7 @@ impl<'a> Builder<'a> {
             return Err(e);
         }
         self.check_cancel()?;
+        encode_cache::record_speed(&speed_key(&self.settings), encoded.into_inner().unwrap(), started.elapsed().as_secs_f64());
         for (n, pl, ci) in results.into_inner().unwrap() {
             playlists.push((n, pl));
             clips.push((n, ci));
@@ -905,7 +912,8 @@ impl<'a> Builder<'a> {
         Ok(work + duration)
     }
 
-    fn build_title(&self, t: &Title, i: usize) -> Result<(u32, Playlist, ClipInfo)> {
+    /// Build title `i`; also returns the seconds of video it encoded.
+    fn build_title(&self, t: &Title, i: usize) -> Result<((u32, Playlist, ClipInfo), f64)> {
         let p = self.project;
         let n = self.title_clip(i);
         let key = title_key(i);
@@ -914,6 +922,7 @@ impl<'a> Builder<'a> {
         let (asset, duration) = (*asset, *duration);
         let inputs: Vec<transcode::AudioInput> = audio.iter().map(|(i, _)| i.clone()).collect();
         let mut work = 0.0;
+        let mut encoded = 0.0;
         // Either copy the original video or encode it in the disc format.
         let (tmp, vformat) = match &plan.encode {
             None => {
@@ -939,6 +948,7 @@ impl<'a> Builder<'a> {
                     let res = self.encode_title(t, &key, &plan, args, cached, n);
                     self.release(cached);
                     work += res?;
+                    encoded = duration;
                 } else {
                     self.stage(format!("Reusing the earlier encode of “{}”", t.name));
                     self.tracker.update(&key, TaskState::Running, 0.0, "Reusing the earlier encode");
@@ -1013,11 +1023,12 @@ impl<'a> Builder<'a> {
             }],
             marks,
         };
-        Ok((n, pl, ci))
+        Ok(((n, pl, ci), encoded))
     }
 
-    /// The intro video of disc menu `i` as its own clip (no buttons).
-    fn build_intro(&self, i: usize) -> Result<(u32, Playlist, ClipInfo)> {
+    /// The intro video of disc menu `i` as its own clip (no buttons), and
+    /// the seconds of video encoded.
+    fn build_intro(&self, i: usize) -> Result<((u32, Playlist, ClipInfo), f64)> {
         let m = self.menus[i];
         let n = self.intro_playlist(i).context("menu without intro")?;
         let asset = m.intro.and_then(|a| self.project.asset(a)).context("intro video is missing")?;
@@ -1045,7 +1056,7 @@ impl<'a> Builder<'a> {
             items: vec![PlayItem { clip_id: clip_name(n), in_time: in_t, out_time: out_t, still: StillMode::None, streams }],
             marks: vec![Mark { play_item: 0, time: in_t }],
         };
-        Ok((n, pl, ci))
+        Ok(((n, pl, ci), duration))
     }
 
     /// Disc menu clip `n`; `done` is the menus' work before it.
@@ -1133,6 +1144,60 @@ impl<'a> Builder<'a> {
         };
         Ok((pl, ci))
     }
+}
+
+/// Key of the encoding speeds remembered for `set`.
+fn speed_key(set: &EncodeSettings) -> String {
+    format!("{:?}/{:?}/{}", set.effective_encoder(), set.quality, set.video.size().1)
+}
+
+/// A guess at the encoding speed (seconds of video per second) before
+/// Spindle has measured one on this computer.
+fn default_speed(set: &EncodeSettings) -> f64 {
+    let (n, d) = set.video.fps();
+    let fps_rate = n as f64 / d as f64;
+    let pixels = {
+        let (w, h) = set.video.size();
+        (w * h) as f64 / (1920.0 * 1080.0)
+    };
+    let fps = if set.effective_encoder().is_hardware() {
+        250.0
+    } else {
+        let cores = std::thread::available_parallelism().map_or(4, |n| n.get()) as f64;
+        let per_core = match set.quality {
+            transcode::Quality::Fast => 6.0,
+            transcode::Quality::Balanced => 1.8,
+            // Slower preset, plus the first pass.
+            transcode::Quality::Best => 0.9 / 1.3,
+        };
+        cores.min(32.0) * per_core
+    };
+    fps / pixels.max(0.1) / fps_rate
+}
+
+/// How long building `project` should take, in seconds, and whether that
+/// is based on builds measured on this computer.
+pub fn estimate_seconds(project: &Project) -> (f64, bool) {
+    let cancel = AtomicBool::new(false);
+    let emit = |_: BuildEvent| {};
+    let b = Builder::new(project, Path::new("/"), &cancel, &emit);
+    let (mut encode, mut other) = (0.0, 0.0);
+    for (i, t) in project.titles.iter().enumerate() {
+        let Ok(plan) = b.title_plan(t, b.title_clip(i)) else { continue };
+        match &plan.encode {
+            // Copying and muxing run at disk speed.
+            None => other += plan.duration / 40.0,
+            Some((_, cached)) if cached.exists() => other += plan.duration / 100.0,
+            Some(_) => encode += plan.duration,
+        }
+    }
+    for m in &b.menus {
+        other += 3.0 + b.menu_duration(m) / 5.0;
+        encode += m.intro.and_then(|a| project.asset(a)).map_or(0.0, |a| a.info.duration);
+    }
+    let measured = encode_cache::speed(&speed_key(&b.settings));
+    let speed = measured.unwrap_or_else(|| default_speed(&b.settings));
+    (encode / speed + other, measured.is_some())
 }
 
 /// Convenience wrapper used by the UI and the command line.

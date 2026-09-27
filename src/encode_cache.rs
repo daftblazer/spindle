@@ -95,6 +95,36 @@ pub fn clear() {
     let _ = std::fs::remove_dir_all(dir());
 }
 
+/// Measured encoding speeds, for time estimates: seconds of video encoded
+/// per second, by encoder, quality and picture height.
+fn speeds_file() -> PathBuf {
+    crate::media::cache_dir().join("speeds.json")
+}
+
+fn speeds() -> std::collections::HashMap<String, f64> {
+    std::fs::read(speeds_file()).ok().and_then(|d| serde_json::from_slice(&d).ok()).unwrap_or_default()
+}
+
+/// Remember that `secs` of video took `wall` seconds to encode with the
+/// settings summarised by `key`.
+pub fn record_speed(key: &str, secs: f64, wall: f64) {
+    if secs < 20.0 || wall < 1.0 {
+        return;
+    }
+    let mut all = speeds();
+    let speed = secs / wall;
+    // Lean towards the latest build, which reflects the computer as it is.
+    let v = all.get(key).map_or(speed, |old| old * 0.3 + speed * 0.7);
+    all.insert(key.to_string(), v);
+    if let Ok(data) = serde_json::to_vec(&all) {
+        let _ = std::fs::write(speeds_file(), data);
+    }
+}
+
+pub fn speed(key: &str) -> Option<f64> {
+    speeds().get(key).copied().filter(|v| *v > 0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
