@@ -897,41 +897,14 @@ impl SpindleWindow {
         let doc = self.doc();
         let Node::Title(tid) = doc.node() else { return };
         let menu_id = doc.edit(Change::Structure, |p| {
-            let t = p.title(tid)?.clone();
             let back_to = p.first_menu().map(|m| m.id);
-            let mut m = Menu::new(&format!("{} – {}", t.name, gettext("Chapters")));
-            m.items.push(MenuItem::new_text(&t.name, Rect::new(160.0, 70.0, 1600.0, 130.0)));
-            let starts: Vec<f64> = std::iter::once(0.0).chain(t.chapters.iter().copied()).collect();
-            let shown = starts.len().min(12);
-            for (i, rect) in grid_layout(shown, true).into_iter().enumerate() {
-                let mut item = MenuItem::new_button(
-                    &format!("{} {}", gettext("Chapter"), i + 1),
-                    Action::PlayTitle { title: tid, chapter: i as u32 },
-                    Rect::new(rect.x, rect.y - 40.0, rect.w, rect.h),
-                );
-                if let Some(b) = item.button_mut() {
-                    b.thumbnail = Some(t.asset);
-                    b.thumbnail_time = starts[i] + 2.0;
-                    b.text.font = "Cantarell Bold 26".into();
-                }
-                m.items.push(item);
-            }
-            if let Some(back) = back_to {
-                m.items.push(MenuItem::new_button(
-                    &gettext("Back"),
-                    Action::ShowMenu(back),
-                    Rect::new(DESIGN_WIDTH / 2.0 - 200.0, DESIGN_HEIGHT - 150.0, 400.0, 80.0),
-                ));
-            }
-            let id = m.id;
-            p.menus.push(m);
-            Some(id)
+            let pages = crate::templates::chapter_menus(p, tid, back_to);
+            let first = pages.first().map(|m| m.id);
+            p.menus.extend(pages);
+            first
         });
         if let Some(id) = menu_id {
             doc.select(Node::Menu(id), None);
-            if doc.project().titles.iter().find(|t| t.id == tid).is_some_and(|t| t.chapters.len() + 1 > 12) {
-                self.toast(&gettext("Only the first 12 chapters were added"));
-            }
         }
     }
 

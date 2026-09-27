@@ -371,6 +371,34 @@ impl Ctx {
 }
 
 
+/// The theme the project's menus were made with (by background color).
+pub fn detect_theme(p: &Project) -> usize {
+    p.first_menu()
+        .and_then(|m| THEMES.iter().position(|t| t.top == m.background.color))
+        .unwrap_or(0)
+}
+
+/// Paginated scene selection for a title, in the project's theme; buttons
+/// on the last row lead back to `home`. Returns the pages.
+pub fn chapter_menus(p: &Project, title: Id, home: Option<Id>) -> Vec<Menu> {
+    let cx = Ctx { theme: THEMES[detect_theme(p)] };
+    let Some(t) = p.title(title) else { return vec![] };
+    let starts: Vec<f64> = std::iter::once(0.0).chain(t.chapters.iter().copied()).collect();
+    let duration = p.asset(t.asset).map_or(0.0, |a| a.info.duration);
+    let entries: Vec<(String, Action, Id, f64)> = starts
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
+            let label = format!("{} {} · {}", gettext("Chapter"), i + 1, crate::ui::rows::format_time(c));
+            // A frame a little into the chapter, avoiding black cuts.
+            let frame = (c + 3.0).min((duration - 0.5).max(c));
+            (label, Action::PlayTitle { title, chapter: i as u32 }, t.asset, frame)
+        })
+        .collect();
+    let back = home.and_then(|h| p.menu(h)).map(|m| (m.id, m.name.clone()));
+    cx.grid_pages(&format!("{} – {}", t.name, gettext("Chapters")), &entries, back, "")
+}
+
 /// Drop leading episode numbering such as "E01 - ", "S01E02 ", "1x03. "
 /// or "03 " from a file-derived name.
 pub fn episode_name(name: &str) -> String {
@@ -720,6 +748,30 @@ mod tests {
             let reaches_setup = p.menus.iter().any(|m| m.buttons().any(|b| b.button().unwrap().action == Action::ShowMenu(setup.id)));
             assert!(reaches_setup, "{layout:?}");
         }
+    }
+
+    #[test]
+    fn chapter_menu_pages() {
+        let mut p = project(1);
+        let t = p.titles[0].id;
+        p.titles[0].chapters = (1..14).map(|i| i as f64 * 60.0).collect();
+        let main = apply(&mut p, &Options { layout: Layout::List, theme: 2, title: "Film".into(), logo: None });
+        let pages = chapter_menus(&p, t, Some(main));
+        assert_eq!(pages.len(), 3);
+        assert_eq!(pages[0].background.color, THEMES[2].top);
+        let chapters: Vec<u32> = pages
+            .iter()
+            .flat_map(|m| m.buttons().filter_map(|b| match b.button().unwrap().action {
+                Action::PlayTitle { chapter, .. } => Some(chapter),
+                _ => None,
+            }))
+            .collect();
+        assert_eq!(chapters, (0..14).collect::<Vec<_>>());
+        // Linked in from the main menu, the pages pass the template checks.
+        p.menus.extend(pages.clone());
+        let first = pages[0].id;
+        p.menus[0].items.push(MenuItem::new_button("Chapters", Action::ShowMenu(first), Rect::new(200.0, 900.0, 300.0, 80.0)));
+        check(&p);
     }
 
     #[test]
