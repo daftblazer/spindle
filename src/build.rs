@@ -29,7 +29,8 @@ use crate::model::*;
 use crate::render::{self, ButtonState, ImageCache};
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 /// Seconds a still menu clip lasts before the player holds its last frame.
 const STILL_MENU_SECONDS: f64 = 1.0;
@@ -50,7 +51,112 @@ pub enum BuildEvent {
     Stage(String),
     Progress(f64),
     Log(String),
+    /// A step of the build, listed before it starts. Steps are shown by
+    /// `group`, then in the order they were added.
+    AddTask { key: String, name: String, group: TaskGroup },
+    Task { key: String, state: TaskState, detail: String, fraction: f64 },
     Finished(Result<PathBuf, String>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TaskGroup {
+    Menus,
+    Titles,
+    Disc,
+    Image,
+    Burn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskState {
+    Waiting,
+    Running,
+    Done,
+    Failed,
+}
+
+/// Work done on each step, for the overall progress. Work is measured in
+/// seconds of media to encode (a pass over it), plus 10% for remuxing.
+struct Tracker<'a> {
+    emit: &'a (dyn Fn(BuildEvent) + Sync),
+    /// (key, total, done, state)
+    tasks: Mutex<Vec<(String, f64, f64, TaskState)>>,
+}
+
+impl Tracker<'_> {
+    fn add(&self, key: &str, name: &str, group: TaskGroup, work: f64) {
+        self.tasks.lock().unwrap().push((key.into(), work.max(1e-3), 0.0, TaskState::Waiting));
+        (self.emit)(BuildEvent::AddTask { key: key.into(), name: name.into(), group });
+    }
+
+    /// Set a step's work done so far (at most its total) and describe it.
+    fn update(&self, key: &str, state: TaskState, done: f64, detail: &str) {
+        let (fraction, overall) = {
+            let mut tasks = self.tasks.lock().unwrap();
+            let mut fraction = 0.0;
+            if let Some(t) = tasks.iter_mut().find(|t| t.0 == key) {
+                t.2 = if state == TaskState::Done { t.1 } else { done.clamp(0.0, t.1) };
+                t.3 = state;
+                fraction = t.2 / t.1;
+            }
+            let (total, done) = tasks.iter().fold((0.0, 0.0), |(a, b), t| (a + t.1, b + t.2));
+            (fraction, done / total.max(1e-3))
+        };
+        (self.emit)(BuildEvent::Task { key: key.into(), state, detail: detail.into(), fraction });
+        (self.emit)(BuildEvent::Progress(overall.clamp(0.0, 1.0)));
+    }
+}
+
+/// How many titles are encoded at once. x264 already uses every core for
+/// one 1080p stream up to about eight; more cores are shared out.
+pub fn parallel_jobs(set: &EncodeSettings) -> usize {
+    if let Some(n) = std::env::var("SPINDLE_JOBS").ok().and_then(|n| n.parse::<usize>().ok()) {
+        return n.clamp(1, 16);
+    }
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    if set.effective_encoder().is_hardware() {
+        2
+    } else {
+        (cores / 8).clamp(1, 3)
+    }
+}
+
+/// A title or menu intro, encoded by one of the workers.
+enum Job {
+    Title(usize),
+    Intro(usize),
+}
+
+fn title_key(i: usize) -> String {
+    format!("title-{i}")
+}
+
+fn intro_key(i: usize) -> String {
+    format!("intro-{i}")
+}
+
+/// What building a title involves.
+struct TitlePlan<'p> {
+    asset: &'p Asset,
+    /// Chapter starts after the first, in seconds.
+    chapters: Vec<f64>,
+    duration: f64,
+    audio: Vec<(transcode::AudioInput, EsInfo)>,
+    /// The encode command and its cache entry; `None` keeps the video.
+    encode: Option<(Vec<String>, PathBuf)>,
+}
+
+impl TitlePlan<'_> {
+    /// Work units of the title (see [`Tracker`]).
+    fn work(&self, two_pass: bool) -> f64 {
+        let passes = match &self.encode {
+            None => 1.0,
+            Some((_, cached)) if cached.exists() => 0.0,
+            Some(_) if two_pass => 2.0,
+            Some(_) => 1.0,
+        };
+        self.duration * (passes + 0.1)
+    }
 }
 
 pub struct Builder<'a> {
@@ -61,10 +167,14 @@ pub struct Builder<'a> {
     out: PathBuf,
     work: PathBuf,
     cancel: &'a AtomicBool,
-    emit: &'a dyn Fn(BuildEvent),
+    /// Set when the build is cancelled or a step fails, to stop the others.
+    stop: AtomicBool,
+    emit: &'a (dyn Fn(BuildEvent) + Sync),
     settings: EncodeSettings,
-    total_work: f64,
-    done_work: f64,
+    tracker: Tracker<'a>,
+    /// Cache entries being encoded; titles with the same encode wait for
+    /// the first and reuse it.
+    encoding: (Mutex<std::collections::HashSet<PathBuf>>, std::sync::Condvar),
 }
 
 /// Audio of a title: the ffmpeg inputs and the disc stream of each.
@@ -134,7 +244,7 @@ fn object_for_menu(i: usize) -> u32 {
 }
 
 impl<'a> Builder<'a> {
-    pub fn new(project: &'a Project, out: &Path, cancel: &'a AtomicBool, emit: &'a dyn Fn(BuildEvent)) -> Self {
+    pub fn new(project: &'a Project, out: &Path, cancel: &'a AtomicBool, emit: &'a (dyn Fn(BuildEvent) + Sync)) -> Self {
         let settings = EncodeSettings {
             video: project.disc.video,
             video_bitrate: project.disc.video_bitrate,
@@ -149,10 +259,11 @@ impl<'a> Builder<'a> {
             out: out.to_path_buf(),
             work: out.join(".spindle-work"),
             cancel,
+            stop: AtomicBool::new(false),
             emit,
             settings,
-            total_work: 1.0,
-            done_work: 0.0,
+            tracker: Tracker { emit, tasks: Mutex::new(Vec::new()) },
+            encoding: Default::default(),
         }
     }
 
@@ -179,19 +290,21 @@ impl<'a> Builder<'a> {
     }
 
     fn check_cancel(&self) -> Result<()> {
-        if self.cancel.load(Ordering::Relaxed) {
+        if self.stop.load(Ordering::Relaxed) || self.cancel.load(Ordering::Relaxed) {
             bail!("cancelled");
         }
         Ok(())
     }
 
+    fn log(&self, s: String) {
+        (self.emit)(BuildEvent::Log(s));
+    }
+
+    /// Log a step and show it as the headline (for the command line and
+    /// older consumers; the build dialog shows the steps themselves).
     fn stage(&self, s: String) {
         (self.emit)(BuildEvent::Log(s.clone()));
         (self.emit)(BuildEvent::Stage(s));
-    }
-
-    fn progress(&self, extra: f64) {
-        (self.emit)(BuildEvent::Progress(((self.done_work + extra) / self.total_work).clamp(0.0, 1.0)));
     }
 
     fn menu_duration(&self, m: &Menu) -> f64 {
@@ -202,7 +315,7 @@ impl<'a> Builder<'a> {
         }
     }
 
-    pub fn run(mut self) -> Result<PathBuf> {
+    pub fn run(self) -> Result<PathBuf> {
         let problems = check(self.project);
         if !problems.is_empty() {
             bail!("{}", problems.join("\n"));
@@ -212,61 +325,143 @@ impl<'a> Builder<'a> {
             if !crate::media::hwenc::available().contains(&encoder) {
                 bail!("The {} video encoder doesn't work on this computer. Choose Software in Disc Settings.", encoder.label());
             }
-            (self.emit)(BuildEvent::Log(format!("Using {} video encoding: for test discs only, the quality is lower than Software", encoder.label())));
+            self.log(format!("Using {} video encoding: for test discs only, the quality is lower than Software", encoder.label()));
         }
         let p = self.project;
-        // Work units: seconds of media to encode, plus 10% for remuxing.
-        let passes = if self.two_pass() { 2.0 } else { 1.0 };
-        self.total_work = p
-            .titles
-            .iter()
-            .filter_map(|t| p.asset(t.asset).map(|a| (t, a)))
-            .map(|(t, a)| a.info.duration.max(1.0) * if t.keep_video { 1.0 } else { passes })
-            .chain(self.menus.iter().map(|m| self.menu_duration(m)))
-            .chain(self.menus.iter().filter_map(|m| m.intro.and_then(|a| p.asset(a))).map(|a| a.info.duration.max(1.0)))
-            .sum::<f64>()
-            * 1.1;
 
-        std::fs::create_dir_all(&self.work)
-            .with_context(|| format!("creating {}", self.work.display()))?;
+        // The steps, with their share of the work.
+        if !self.menus.is_empty() {
+            let work: f64 = self.menus.iter().map(|m| self.menu_duration(m) * 1.1).sum();
+            self.tracker.add("menus", "Menus", TaskGroup::Menus, work);
+        }
+        let mut jobs = Vec::new();
+        for (i, t) in p.titles.iter().enumerate() {
+            let work = self.title_plan(t, self.title_clip(i)).map_or(1.0, |plan| plan.work(self.two_pass()));
+            self.tracker.add(&title_key(i), &t.name, TaskGroup::Titles, work);
+            jobs.push(Job::Title(i));
+        }
+        for (i, m) in self.menus.iter().enumerate() {
+            if let (Some(_), Some(a)) = (self.intro_playlist(i), m.intro.and_then(|a| p.asset(a))) {
+                let name = format!("Intro of “{}”", m.name);
+                self.tracker.add(&intro_key(i), &name, TaskGroup::Titles, a.info.duration.max(1.0) * 1.1);
+                jobs.push(Job::Intro(i));
+            }
+        }
+        self.tracker.add("nav", "Disc Navigation", TaskGroup::Disc, 0.5);
+
+        std::fs::create_dir_all(&self.work).with_context(|| format!("creating {}", self.work.display()))?;
         if layout::bdmv_dir(&self.out).exists() {
             std::fs::remove_dir_all(layout::bdmv_dir(&self.out))?;
         }
         layout::create_dirs(&self.out)?;
 
-        let mut playlists = Vec::new();
-        let mut clips = Vec::new();
-
-        for (i, m) in self.menus.clone().into_iter().enumerate() {
-            self.check_cancel()?;
-            let n = 1 + i as u32;
-            let (pl, ci) = self.build_menu(m, n)?;
-            playlists.push((n, pl));
-            clips.push((n, ci));
-        }
-        for (i, t) in p.titles.iter().enumerate() {
-            self.check_cancel()?;
-            let n = 1 + (self.menus.len() + i) as u32;
-            let (pl, ci) = self.build_title(t, n)?;
-            playlists.push((n, pl));
-            clips.push((n, ci));
-        }
-        for (i, m) in self.menus.clone().into_iter().enumerate() {
-            if let (Some(n), Some(asset)) = (self.intro_playlist(i), m.intro.and_then(|a| p.asset(a))) {
-                self.check_cancel()?;
-                let (pl, ci) = self.build_intro(m, asset, n)?;
-                playlists.push((n, pl));
-                clips.push((n, ci));
+        let finished = AtomicBool::new(false);
+        let result = std::thread::scope(|scope| {
+            // Pass a cancel from the user on to every step.
+            scope.spawn(|| {
+                while !finished.load(Ordering::Relaxed) {
+                    if self.cancel.load(Ordering::Relaxed) {
+                        self.stop.store(true, Ordering::Relaxed);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            });
+            let r = self.run_steps(&jobs);
+            finished.store(true, Ordering::Relaxed);
+            r
+        });
+        let (mut playlists, mut clips) = match result {
+            Ok(v) => v,
+            Err(e) => {
+                // Steps that were under way stopped with the failure.
+                let running: Vec<String> = self.tracker.tasks.lock().unwrap().iter().filter(|t| t.3 == TaskState::Running).map(|t| t.0.clone()).collect();
+                for key in running {
+                    (self.emit)(BuildEvent::Task { key, state: TaskState::Waiting, detail: "Stopped".into(), fraction: 0.0 });
+                }
+                return Err(e);
             }
-        }
+        };
+        playlists.sort_by_key(|(n, _)| *n);
+        clips.sort_by_key(|(n, _)| *n);
 
+        self.tracker.update("nav", TaskState::Running, 0.0, "Writing");
         self.stage("Writing disc navigation".into());
         let (index, objects) = self.navigation();
         layout::write_database(&self.out, &index, &objects, &playlists, &clips)?;
+        self.tracker.update("nav", TaskState::Done, 0.0, &format!("{} playlists", playlists.len()));
         let _ = std::fs::remove_dir_all(&self.work);
         encode_cache::trim();
         (self.emit)(BuildEvent::Progress(1.0));
         Ok(self.out.clone())
+    }
+
+    /// Menus, then the titles and intros (several at once when the
+    /// computer has the cores for it).
+    #[allow(clippy::type_complexity)]
+    fn run_steps(&self, jobs: &[Job]) -> Result<(Vec<(u32, Playlist)>, Vec<(u32, ClipInfo)>)> {
+        let mut playlists = Vec::new();
+        let mut clips = Vec::new();
+        if !self.menus.is_empty() {
+            let mut done = 0.0;
+            for (i, m) in self.menus.iter().enumerate() {
+                self.check_cancel()?;
+                let n = 1 + i as u32;
+                let (pl, ci) = self.build_menu(m, n, done).inspect_err(|_| self.fail("menus"))?;
+                done += self.menu_duration(m) * 1.1;
+                playlists.push((n, pl));
+                clips.push((n, ci));
+            }
+            let count = self.menus.len();
+            self.tracker.update("menus", TaskState::Done, 0.0, &if count == 1 { "1 menu".to_string() } else { format!("{count} menus") });
+        }
+
+        let next = AtomicUsize::new(0);
+        let results = Mutex::new(Vec::new());
+        let error: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+        let workers = parallel_jobs(&self.settings).min(jobs.len());
+        if workers > 1 {
+            self.log(format!("Encoding {workers} titles at a time"));
+        }
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| loop {
+                    if self.stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let Some(job) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) else { break };
+                    let (key, res) = match *job {
+                        Job::Title(i) => (title_key(i), self.build_title(&self.project.titles[i], i)),
+                        Job::Intro(i) => (intro_key(i), self.build_intro(i)),
+                    };
+                    match res {
+                        Ok(r) => results.lock().unwrap().push(r),
+                        Err(e) => {
+                            // The first failure stops the others.
+                            if !self.stop.swap(true, Ordering::Relaxed) || self.cancel.load(Ordering::Relaxed) {
+                                self.fail(&key);
+                                error.lock().unwrap().get_or_insert(e);
+                            }
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        if let Some(e) = error.into_inner().unwrap() {
+            return Err(e);
+        }
+        self.check_cancel()?;
+        for (n, pl, ci) in results.into_inner().unwrap() {
+            playlists.push((n, pl));
+            clips.push((n, ci));
+        }
+        Ok((playlists, clips))
+    }
+
+    fn fail(&self, key: &str) {
+        if !self.cancel.load(Ordering::Relaxed) {
+            self.tracker.update(key, TaskState::Failed, 0.0, "Failed");
+        }
     }
 
     fn navigation(&self) -> (Index, Vec<MovieObject>) {
@@ -552,30 +747,34 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn encode(&mut self, args: Vec<String>, duration: f64) -> Result<()> {
-        let emit = self.emit;
-        let (done, total) = (self.done_work, self.total_work);
-        ffmpeg::run(&args, self.cancel, |t| {
-            emit(BuildEvent::Progress(((done + t.min(duration)) / total).clamp(0.0, 1.0)));
-        })?;
-        self.done_work += duration;
-        Ok(())
+    /// Run ffmpeg for step `key`, whose work so far is `base`; `detail`
+    /// describes what it does.
+    fn encode(&self, key: &str, args: Vec<String>, duration: f64, base: f64, detail: &str) -> Result<()> {
+        self.tracker.update(key, TaskState::Running, base, detail);
+        ffmpeg::run_status(&args, &self.stop, |s| {
+            let speed = s.fps.map(|f| format!(" · {f:.0} fps")).unwrap_or_default();
+            self.tracker.update(key, TaskState::Running, base + s.time.min(duration), &format!("{detail}{speed}"));
+        })
     }
 
-    fn remux(&mut self, input: &Path, n: u32, streams: &[EsInfo], extra: Vec<(usize, Pes)>, duration: f64) -> Result<ts::mux::MuxStats> {
+    /// Mux `input` into clip `n` for step `key`; `work` is the step's work
+    /// so far and the clip's duration.
+    fn remux(&self, key: &str, input: &Path, n: u32, streams: &[EsInfo], extra: Vec<(usize, Pes)>, work: (f64, f64)) -> Result<ts::mux::MuxStats> {
+        let (base, duration) = work;
         let out = layout::stream_path(&self.out, n);
-        let emit = self.emit;
-        let cancel = self.cancel;
-        let (done, total) = (self.done_work, self.total_work);
         let mut first: Option<u64> = None;
+        self.tracker.update(key, TaskState::Running, base, "Multiplexing");
+        let mut last = std::time::Instant::now();
         let stats = ts::remux(input, &out, streams, extra, |t90| {
-            let f = *first.get_or_insert(t90);
-            let secs = (t90.saturating_sub(f)) as f64 / 90_000.0;
-            emit(BuildEvent::Progress(((done + secs.min(duration) * 0.1) / total).clamp(0.0, 1.0)));
-            !cancel.load(Ordering::Relaxed)
+            // Limit the updates; this is called for every packet.
+            if last.elapsed().as_millis() >= 250 {
+                last = std::time::Instant::now();
+                let f = *first.get_or_insert(t90);
+                let secs = (t90.saturating_sub(f)) as f64 / 90_000.0;
+                self.tracker.update(key, TaskState::Running, base + secs.min(duration) * 0.1, "Multiplexing");
+            }
+            !self.stop.load(Ordering::Relaxed)
         })?;
-        self.done_work += duration * 0.1;
-        self.progress(0.0);
         // Encodes in the cache stay for the next build.
         if !input.starts_with(encode_cache::dir()) {
             let _ = std::fs::remove_file(input);
@@ -616,37 +815,25 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn build_title(&mut self, t: &Title, n: u32) -> Result<(Playlist, ClipInfo)> {
+    /// Clip number of title `i`.
+    fn title_clip(&self, i: usize) -> u32 {
+        1 + (self.menus.len() + i) as u32
+    }
+
+    /// What building title `t` as clip `n` involves.
+    fn title_plan<'p>(&'p self, t: &Title, n: u32) -> Result<TitlePlan<'p>> {
         let p = self.project;
         let asset = p.asset(t.asset).context("title without video")?;
-        let mut tmp = self.work.join(format!("title-{}.ts", clip_name(n)));
         let mut chapters: Vec<f64> = t.chapters.iter().copied().filter(|&c| c > 0.0 && c < asset.info.duration).collect();
         chapters.sort_by(f64::total_cmp);
         chapters.dedup();
-        let duration = asset.info.duration.max(1.0);
-
         let audio = title_audio(p, t, &self.settings, 0.0)?;
-        let inputs: Vec<transcode::AudioInput> = audio.iter().map(|(i, _)| i.clone()).collect();
-        // Either copy the original video or encode it in the disc format.
-        let vformat = if t.keep_video {
-            self.stage(format!("Checking the video of “{}”", t.name));
-            let report = compat::analyze(&asset.path)?;
-            let Some(format) = report.format.filter(|_| report.compatible()) else {
-                bail!(
-                    "“{}” can't keep its original video ({}). Turn off “Keep Original Video” to re-encode it.",
-                    t.name,
-                    report.summary()
-                );
-            };
-            self.stage(format!("Copying the video of “{}”", t.name));
-            let args = transcode::passthrough_args(&asset.path, &asset.info, &self.settings, &inputs, None, &tmp);
-            self.encode(args, duration)?;
-            format
+        let encode = if t.keep_video {
+            None
         } else {
-            let log = self.work.join(format!("pass-{}", clip_name(n)));
-            let two_pass = self.two_pass();
-            let pass = if two_pass { transcode::Pass::Second(log.clone()) } else { transcode::Pass::Only };
-            let mut args = transcode::title_args(&asset.path, &asset.info, &self.settings, &chapters, &inputs, None, &pass, &tmp);
+            let inputs: Vec<transcode::AudioInput> = audio.iter().map(|(i, _)| i.clone()).collect();
+            let pass = if self.two_pass() { transcode::Pass::Second(self.work.join(format!("pass-{}", clip_name(n)))) } else { transcode::Pass::Only };
+            let args = transcode::title_args(&asset.path, &asset.info, &self.settings, &chapters, &inputs, None, &pass, Path::new("out.ts"));
             // Reuse an identical earlier encode: the key is the whole command
             // (without its output or pass log) and the files it reads.
             let mut key: Vec<String> = args[..args.len() - 1]
@@ -657,43 +844,112 @@ impl<'a> Builder<'a> {
                 .collect();
             key.push(encode_cache::file_id(&asset.path));
             key.extend(inputs.iter().filter_map(|i| i.file.as_deref()).map(encode_cache::file_id));
-            let cached = encode_cache::entry(&key);
-            if cached.exists() {
-                self.stage(format!("Reusing the earlier encode of “{}”", t.name));
-                encode_cache::touch(&cached);
-                self.done_work += duration * if two_pass { 2.0 } else { 1.0 };
-                self.progress(0.0);
-            } else {
-                if two_pass {
-                    self.stage(format!("Analysing title “{}” (pass 1 of 2)", t.name));
-                    let first = transcode::title_args(&asset.path, &asset.info, &self.settings, &chapters, &inputs, None, &transcode::Pass::First(log.clone()), &tmp);
-                    self.encode(first, duration)?;
-                }
-                let how = if self.settings.effective_encoder().is_hardware() {
-                    " (hardware, for testing)"
-                } else if two_pass {
-                    " (pass 2 of 2)"
-                } else {
-                    ""
+            Some((args, encode_cache::entry(&key)))
+        };
+        Ok(TitlePlan { asset, chapters, duration: asset.info.duration.max(1.0), audio, encode })
+    }
+
+    /// Take on encoding cache entry `cached`: false when it already exists
+    /// (after waiting for another title making the same encode).
+    fn claim(&self, cached: &Path) -> Result<bool> {
+        let (lock, cond) = &self.encoding;
+        let mut busy = lock.lock().unwrap();
+        while busy.contains(cached) {
+            self.check_cancel()?;
+            busy = cond.wait_timeout(busy, std::time::Duration::from_millis(200)).unwrap().0;
+        }
+        if cached.exists() {
+            return Ok(false);
+        }
+        busy.insert(cached.to_path_buf());
+        Ok(true)
+    }
+
+    fn release(&self, cached: &Path) {
+        let (lock, cond) = &self.encoding;
+        lock.lock().unwrap().remove(cached);
+        cond.notify_all();
+    }
+
+    /// Encode title `t` into cache entry `cached`; returns the work done.
+    fn encode_title(&self, t: &Title, key: &str, plan: &TitlePlan, args: &[String], cached: &Path, n: u32) -> Result<f64> {
+        let (asset, duration) = (plan.asset, plan.duration);
+        let inputs: Vec<transcode::AudioInput> = plan.audio.iter().map(|(i, _)| i.clone()).collect();
+        let two_pass = self.two_pass();
+        let log = self.work.join(format!("pass-{}", clip_name(n)));
+        let mut work = 0.0;
+        if two_pass {
+            self.stage(format!("Analysing title “{}” (pass 1 of 2)", t.name));
+            let first = transcode::title_args(&asset.path, &asset.info, &self.settings, &plan.chapters, &inputs, None, &transcode::Pass::First(log), &self.work.join("null.ts"));
+            self.encode(key, first, duration, 0.0, "Analysing · pass 1 of 2")?;
+            work += duration;
+        }
+        let detail = if self.settings.effective_encoder().is_hardware() {
+            "Encoding (hardware, for testing)"
+        } else if two_pass {
+            "Encoding · pass 2 of 2"
+        } else {
+            "Encoding"
+        };
+        self.stage(format!("Encoding title “{}”", t.name));
+        std::fs::create_dir_all(encode_cache::dir())?;
+        let part = cached.with_extension("part");
+        let mut args = args.to_vec();
+        *args.last_mut().expect("output") = part.to_string_lossy().into_owned();
+        let res = self.encode(key, args, duration, work, detail);
+        if res.is_err() {
+            let _ = std::fs::remove_file(&part);
+        }
+        res?;
+        std::fs::rename(&part, cached).with_context(|| format!("saving the encode of “{}”", t.name))?;
+        Ok(work + duration)
+    }
+
+    fn build_title(&self, t: &Title, i: usize) -> Result<(u32, Playlist, ClipInfo)> {
+        let p = self.project;
+        let n = self.title_clip(i);
+        let key = title_key(i);
+        let plan = self.title_plan(t, n)?;
+        let TitlePlan { asset, chapters, duration, audio, .. } = &plan;
+        let (asset, duration) = (*asset, *duration);
+        let inputs: Vec<transcode::AudioInput> = audio.iter().map(|(i, _)| i.clone()).collect();
+        let mut work = 0.0;
+        // Either copy the original video or encode it in the disc format.
+        let (tmp, vformat) = match &plan.encode {
+            None => {
+                self.tracker.update(&key, TaskState::Running, 0.0, "Checking the video");
+                self.stage(format!("Checking the video of “{}”", t.name));
+                let report = compat::analyze(&asset.path)?;
+                let Some(format) = report.format.filter(|_| report.compatible()) else {
+                    bail!(
+                        "“{}” can't keep its original video ({}). Turn off “Keep Original Video” to re-encode it.",
+                        t.name,
+                        report.summary()
+                    );
                 };
-                self.stage(format!("Encoding title “{}”{how}", t.name));
-                std::fs::create_dir_all(encode_cache::dir())?;
-                let part = cached.with_extension("part");
-                *args.last_mut().expect("output") = part.to_string_lossy().into_owned();
-                let res = self.encode(args, duration);
-                if res.is_err() {
-                    let _ = std::fs::remove_file(&part);
-                }
-                res?;
-                std::fs::rename(&part, &cached)?;
+                self.stage(format!("Copying the video of “{}”", t.name));
+                let tmp = self.work.join(format!("title-{}.ts", clip_name(n)));
+                let args = transcode::passthrough_args(&asset.path, &asset.info, &self.settings, &inputs, None, &tmp);
+                self.encode(&key, args, duration, 0.0, "Copying the original video")?;
+                work += duration;
+                (tmp, format)
             }
-            tmp = cached;
-            self.settings.video
+            Some((args, cached)) => {
+                if self.claim(cached)? {
+                    let res = self.encode_title(t, &key, &plan, args, cached, n);
+                    self.release(cached);
+                    work += res?;
+                } else {
+                    self.stage(format!("Reusing the earlier encode of “{}”", t.name));
+                    self.tracker.update(&key, TaskState::Running, 0.0, "Reusing the earlier encode");
+                    encode_cache::touch(cached);
+                }
+                (cached.clone(), self.settings.video)
+            }
         };
 
-        self.stage(format!("Multiplexing title “{}”", t.name));
         let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(vformat) }];
-        streams.extend(audio.into_iter().map(|(_, es)| es));
+        streams.extend(audio.iter().map(|(_, es)| es.clone()));
 
         // Subtitles → PG streams, timed against the encoded video.
         let mut extra = Vec::new();
@@ -702,6 +958,7 @@ impl<'a> Builder<'a> {
             let first_pts = ts::first_video_pts(&tmp)?;
             for (i, track) in tracks.iter().enumerate() {
                 self.check_cancel()?;
+                self.tracker.update(&key, TaskState::Running, work, &format!("Converting subtitles “{}”", track.name));
                 self.stage(format!("Converting subtitles “{}” ({}) for “{}”", track.name, track.lang, t.name));
                 let images = subtitles::prepare(
                     track,
@@ -709,34 +966,35 @@ impl<'a> Builder<'a> {
                     &asset.info,
                     vformat,
                     &p.disc.subtitle_style,
-                    &self.work.join("subtitles"),
+                    &self.work.join(format!("subtitles-{}", clip_name(n))),
                     None,
-                    self.cancel,
+                    &self.stop,
                 )
                 .with_context(|| format!("subtitle track “{}” of “{}”", track.name, t.name))?;
                 let pes = subtitles::pgs::encode(&images, vformat, |secs| {
                     (secs >= 0.0).then(|| first_pts + (secs * 90_000.0).round() as u64)
                 })?;
-                (self.emit)(BuildEvent::Log(format!("  {} subtitle images", images.len())));
+                self.log(format!("  “{}”: {} subtitle images in “{}”", t.name, images.len(), track.name));
                 let index = streams.len();
                 streams.push(EsInfo { pid: PID_PG_FIRST + i as u16, kind: EsKind::Pg { lang: track.lang.clone() } });
                 extra.extend(pes.into_iter().map(|p| (index, p)));
             }
-            self.stage(format!("Multiplexing title “{}”", t.name));
         }
 
         // Pop-up menu: one display set at the start of the clip. (Players
         // treat each repeat as a new menu, resetting it mid-use.)
-        let index = n as usize - 1 - self.menus.len();
-        if let Some(menu) = self.popup_menu(t, index, 1 + chapters.len()) {
-            self.stage(format!("Adding the pop-up menu to “{}”", t.name));
+        if let Some(menu) = self.popup_menu(t, i, 1 + chapters.len()) {
+            self.tracker.update(&key, TaskState::Running, work, "Adding the pop-up menu");
             let first_pts = ts::first_video_pts(&tmp)?;
             let ig_index = streams.len();
             streams.push(EsInfo { pid: PID_IG_FIRST, kind: EsKind::Ig { lang: "und".into() } });
             extra.extend(ig::encode(&menu, first_pts)?.into_iter().map(|p| (ig_index, p)));
         }
-        let stats = self.remux(&tmp, n, &streams, extra, duration)?;
+        self.stage(format!("Multiplexing title “{}”", t.name));
+        let stats = self.remux(&key, &tmp, n, &streams, extra, (work, duration)).with_context(|| format!("multiplexing “{}”", t.name))?;
         let (ci, in_t, out_t) = self.clip_info(&stats, streams.clone())?;
+        let size = std::fs::metadata(layout::stream_path(&self.out, n)).map_or(0, |m| m.len());
+        self.tracker.update(&key, TaskState::Done, 0.0, &format!("{:.2} GB", size as f64 / 1e9));
 
         let mut marks = vec![Mark { play_item: 0, time: in_t }];
         for c in chapters {
@@ -755,11 +1013,15 @@ impl<'a> Builder<'a> {
             }],
             marks,
         };
-        Ok((pl, ci))
+        Ok((n, pl, ci))
     }
 
-    /// A menu's intro video as its own clip (no buttons).
-    fn build_intro(&mut self, m: &Menu, asset: &Asset, n: u32) -> Result<(Playlist, ClipInfo)> {
+    /// The intro video of disc menu `i` as its own clip (no buttons).
+    fn build_intro(&self, i: usize) -> Result<(u32, Playlist, ClipInfo)> {
+        let m = self.menus[i];
+        let n = self.intro_playlist(i).context("menu without intro")?;
+        let asset = m.intro.and_then(|a| self.project.asset(a)).context("intro video is missing")?;
+        let key = intro_key(i);
         self.stage(format!("Encoding the intro of menu “{}”", m.name));
         let tmp = self.work.join(format!("intro-{}.ts", clip_name(n)));
         let duration = asset.info.duration.max(1.0);
@@ -771,23 +1033,26 @@ impl<'a> Builder<'a> {
             .into_iter()
             .collect();
         let args = transcode::title_args(&asset.path, &asset.info, &self.settings, &[], &audio, None, &transcode::Pass::Only, &tmp);
-        self.encode(args, duration)?;
+        self.encode(&key, args, duration, 0.0, "Encoding")?;
         let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(self.settings.video) }];
         if asset.info.has_audio() {
             streams.push(self.audio_es(&asset.info, "und"));
         }
-        let stats = self.remux(&tmp, n, &streams, Vec::new(), duration)?;
+        let stats = self.remux(&key, &tmp, n, &streams, Vec::new(), (duration, duration))?;
         let (ci, in_t, out_t) = self.clip_info(&stats, streams.clone())?;
+        self.tracker.update(&key, TaskState::Done, 0.0, "Done");
         let pl = Playlist {
             items: vec![PlayItem { clip_id: clip_name(n), in_time: in_t, out_time: out_t, still: StillMode::None, streams }],
             marks: vec![Mark { play_item: 0, time: in_t }],
         };
-        Ok((pl, ci))
+        Ok((n, pl, ci))
     }
 
-    fn build_menu(&mut self, m: &Menu, n: u32) -> Result<(Playlist, ClipInfo)> {
+    /// Disc menu clip `n`; `done` is the menus' work before it.
+    fn build_menu(&self, m: &Menu, n: u32, done: f64) -> Result<(Playlist, ClipInfo)> {
         let p = self.project;
         let (w, h) = self.settings.video.size();
+        self.tracker.update("menus", TaskState::Running, done, &format!("Drawing “{}”", m.name));
         self.stage(format!("Rendering menu “{}”", m.name));
         let images = ImageCache::new_sync();
         let still = self.work.join(format!("menu-{}.png", clip_name(n)));
@@ -838,7 +1103,7 @@ impl<'a> Builder<'a> {
             &self.settings,
             &tmp,
         );
-        self.encode(args, duration)?;
+        self.encode("menus", args, duration, done, &format!("Encoding “{}”", m.name))?;
 
         self.stage(format!("Multiplexing menu “{}”", m.name));
         let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(self.settings.video) }];
@@ -855,7 +1120,7 @@ impl<'a> Builder<'a> {
             streams.push(EsInfo { pid: PID_IG_FIRST, kind: EsKind::Ig { lang: "und".into() } });
             extra = ig::encode(&ig_menu, first_pts)?.into_iter().map(|p| (ig_index, p)).collect();
         }
-        let stats = self.remux(&tmp, n, &streams, extra, duration)?;
+        let stats = self.remux("menus", &tmp, n, &streams, extra, (done + duration, duration))?;
         let (ci, in_t, out_t) = self.clip_info(&stats, streams.clone())?;
         let still_mode = match m.timeout.filter(|t| t.action != Action::None && t.seconds > 0) {
             _ if m.is_motion() => StillMode::None,
@@ -878,7 +1143,7 @@ pub fn is_image(out: &Path) -> bool {
 
 /// Build the disc into a folder, or into a UDF image when `out` ends in
 /// ".iso" (built in a temporary folder next to it, which is then removed).
-pub fn build(project: &Project, out: &Path, cancel: &AtomicBool, emit: &dyn Fn(BuildEvent)) -> Result<PathBuf> {
+pub fn build(project: &Project, out: &Path, cancel: &AtomicBool, emit: &(dyn Fn(BuildEvent) + Sync)) -> Result<PathBuf> {
     if !is_image(out) {
         let res = Builder::new(project, out, cancel, emit).run();
         // A failed or cancelled build leaves no work files behind.
@@ -892,13 +1157,20 @@ pub fn build(project: &Project, out: &Path, cancel: &AtomicBool, emit: &dyn Fn(B
         BuildEvent::Progress(p) => emit(BuildEvent::Progress(p * 0.9)),
         ev => emit(ev),
     };
+    let task = |state, detail: &str, fraction| emit(BuildEvent::Task { key: "image".into(), state, detail: detail.into(), fraction });
+    emit(BuildEvent::AddTask { key: "image".into(), name: "Disc Image".into(), group: TaskGroup::Image });
     let result = (|| -> Result<()> {
         Builder::new(project, &folder, cancel, &scaled).run()?;
         emit(BuildEvent::Stage("Writing disc image".into()));
+        task(TaskState::Running, "Writing", 0.0);
         crate::bluray::udf::write_image(&folder, out, &project.disc.name, |f| {
             emit(BuildEvent::Progress(0.9 + f * 0.1));
+            task(TaskState::Running, "Writing", f);
             !cancel.load(Ordering::Relaxed)
-        })
+        })?;
+        let size = std::fs::metadata(out).map_or(0, |m| m.len());
+        task(TaskState::Done, &format!("{:.2} GB", size as f64 / 1e9), 1.0);
+        Ok(())
     })();
     let _ = std::fs::remove_dir_all(&folder);
     if result.is_err() {

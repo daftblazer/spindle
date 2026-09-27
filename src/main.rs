@@ -62,13 +62,13 @@ fn build_cli(project: &str, out: &str) -> glib::ExitCode {
         }
     };
     let cancel = std::sync::atomic::AtomicBool::new(false);
-    let last = std::cell::Cell::new(-1i32);
+    let last = std::sync::atomic::AtomicI32::new(-1);
     let emit = |ev: build::BuildEvent| match ev {
         build::BuildEvent::Log(l) => eprintln!("{l}"),
         build::BuildEvent::Progress(p) => {
             let pct = (p * 100.0) as i32;
-            if pct / 5 != last.get() / 5 {
-                last.set(pct);
+            if pct / 5 != last.load(std::sync::atomic::Ordering::Relaxed) / 5 {
+                last.store(pct, std::sync::atomic::Ordering::Relaxed);
                 eprintln!("  {pct}%");
             }
         }

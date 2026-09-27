@@ -112,3 +112,13 @@ button.small {
 .player-bottom scale trough {
   background-color: alpha(white, 0.3);
 }
+
+progressbar.task-bar > trough,
+progressbar.task-bar > trough > progress {
+  min-height: 4px;
+  border-radius: 99px;
+}
+
+progressbar.task-bar > trough {
+  background-color: alpha(currentColor, 0.12);
+}

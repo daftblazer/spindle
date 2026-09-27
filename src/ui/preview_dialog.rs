@@ -170,7 +170,7 @@ pub fn present(doc: &Rc<Document>, title: Id, start: f64, parent: &impl IsA<gtk:
                 match ev {
                     BuildEvent::Stage(s) => status.set_description(Some(&glib::markup_escape_text(&s))),
                     BuildEvent::Progress(p) => bar.set_fraction(p),
-                    BuildEvent::Log(_) => {}
+                    BuildEvent::Log(_) | BuildEvent::AddTask { .. } | BuildEvent::Task { .. } => {}
                     BuildEvent::Finished(res) => {
                         match res {
                             Ok(path) => {

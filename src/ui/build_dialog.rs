@@ -265,33 +265,8 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         let _keep = &refresh;
     });
 
-    // --- progress page
-    let status = adw::StatusPage::builder()
-        .icon_name("media-optical-symbolic")
-        .title(gettext("Building Disc…"))
-        .build();
-    status.add_css_class("compact");
-    let pbox = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(12)
-        .margin_start(24)
-        .margin_end(24)
-        .build();
-    let bar = gtk::ProgressBar::builder().show_text(true).build();
-    pbox.append(&bar);
-    let log = gtk::TextView::builder().editable(false).monospace(true).wrap_mode(gtk::WrapMode::WordChar).build();
-    let scroller = gtk::ScrolledWindow::builder().min_content_height(120).child(&log).build();
-    let expander = gtk::Expander::builder().label(gettext("Details")).child(&scroller).build();
-    pbox.append(&expander);
-    let cancel_btn = gtk::Button::builder()
-        .label(gettext("_Cancel"))
-        .use_underline(true)
-        .halign(gtk::Align::Center)
-        .css_classes(["pill"])
-        .build();
-    pbox.append(&cancel_btn);
-    status.set_child(Some(&pbox));
-    stack.add_named(&status, Some("progress"));
+    // --- progress page (rebuilt for every build)
+    let progress: Rc<RefCell<Option<Rc<super::build_progress::ProgressView>>>> = Rc::default();
 
     // --- result page
     let result = adw::StatusPage::new();
@@ -354,11 +329,6 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
 
     let cancel = Arc::new(AtomicBool::new(false));
     let c = cancel.clone();
-    cancel_btn.connect_clicked(move |b| {
-        c.store(true, Ordering::Relaxed);
-        b.set_sensitive(false);
-    });
-    let c = cancel.clone();
     dialog.connect_closed(move |_| c.store(true, Ordering::Relaxed));
     let d = dialog.clone();
     close_btn.connect_clicked(move |_| {
@@ -382,14 +352,32 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     build_btn.connect_clicked(move |_| {
         let target = if burning.get() { burn_options.target() } else { None };
         let start = {
-            let (doc, output, cancel, stack, status, bar, log, result, open_btn) =
-                (doc.clone(), output.clone(), cancel.clone(), stack.clone(), status.clone(), bar.clone(), log.clone(), result.clone(), open_btn.clone());
+            let (doc, output, cancel, stack, progress, result, open_btn) =
+                (doc.clone(), output.clone(), cancel.clone(), stack.clone(), progress.clone(), result.clone(), open_btn.clone());
             let (details, details_view, copy_btn) = (details.clone(), details_view.clone(), copy_btn.clone());
             let target = target.clone();
             move || {
         let target = target.clone();
-        stack.set_visible_child_name("progress");
         let project = doc.project().clone();
+        let name = if project.disc.name.is_empty() { gettext("Disc") } else { project.disc.name.clone() };
+        let view = super::build_progress::ProgressView::new(&if target.is_some() {
+            gettext("Building and Burning “{}”").replace("{}", &name)
+        } else {
+            gettext("Building “{}”").replace("{}", &name)
+        });
+        {
+            let c = cancel.clone();
+            view.cancel_button().connect_clicked(move |b| {
+                c.store(true, Ordering::Relaxed);
+                b.set_sensitive(false);
+            });
+        }
+        if let Some(old) = stack.child_by_name("progress") {
+            stack.remove(&old);
+        }
+        stack.add_named(view.widget(), Some("progress"));
+        stack.set_visible_child_name("progress");
+        *progress.borrow_mut() = Some(view.clone());
         let out = output.borrow().clone();
         if target.is_none() {
             if let Some(settings) = crate::app_settings() {
@@ -415,6 +403,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                         BuildEvent::Finished(_) => {}
                         ev => emit(ev),
                     };
+                    super::burn::add_tasks(t, &emit);
                     let r = build::build(&project, &image, &cancel, &scaled).and_then(|_| super::burn::run(&image, t, &cancel, &emit, 0.6));
                     let _ = std::fs::remove_file(&image);
                     r.map(|_| t.drive.clone())
@@ -423,15 +412,13 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
             .map_err(|e| format!("{e:#}"));
             emit(BuildEvent::Finished(res));
         });
-        let (status, bar, log, result, stack, open_btn) =
-            (status.clone(), bar.clone(), log.clone(), result.clone(), stack.clone(), open_btn.clone());
+        let (result, stack, open_btn) = (result.clone(), stack.clone(), open_btn.clone());
         let (details, details_view, copy_btn) = (details.clone(), details_view.clone(), copy_btn.clone());
         glib::spawn_future_local(async move {
             let mut stage = String::new();
             // Full error and log for the Details section.
             let explain = |e: &str, stage: &str| {
-                let buf = log.buffer();
-                let log_text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+                let log_text = view.log_text();
                 details_view.buffer().set_text(&format!(
                     "Spindle {}\nFailed while: {stage}\n\n{e}\n\n--- Build log ---\n{log_text}",
                     crate::config::VERSION
@@ -440,20 +427,15 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                 copy_btn.set_visible(true);
             };
             while let Ok(ev) = rx.recv().await {
+                if !matches!(ev, BuildEvent::Finished(_)) {
+                    if let BuildEvent::Stage(s) = &ev {
+                        stage = s.clone();
+                    }
+                    view.handle(&ev);
+                    continue;
+                }
+                view.finish();
                 match ev {
-                    BuildEvent::Stage(s) => {
-                        status.set_description(Some(&s));
-                        stage = s;
-                    }
-                    BuildEvent::Progress(p) => {
-                        bar.set_fraction(p);
-                        bar.set_text(Some(&format!("{:.0} %", p * 100.0)));
-                    }
-                    BuildEvent::Log(l) => {
-                        let buf = log.buffer();
-                        let mut end = buf.end_iter();
-                        buf.insert(&mut end, &format!("{l}\n"));
-                    }
                     BuildEvent::Finished(res) if target.is_some() => {
                         if let Err(e) = &res {
                             if !e.contains("cancelled") {
@@ -491,6 +473,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                         stack.set_visible_child_name("result");
                         break;
                     }
+                    _ => {}
                 }
             }
         });

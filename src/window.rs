@@ -327,7 +327,8 @@ impl SpindleWindow {
         let win = self.clone();
         {
             let win2 = win.clone();
-            glib::timeout_add_seconds_local_once(5, move || {
+            let delay = std::env::var("SPINDLE_SCREENSHOT_DELAY").ok().and_then(|d| d.parse().ok()).unwrap_or(5);
+            glib::timeout_add_seconds_local_once(delay, move || {
                 let paintable = gtk::WidgetPaintable::new(Some(&win2));
                 let snapshot = gtk::Snapshot::new();
                 paintable.snapshot(&snapshot, win2.width() as f64, win2.height() as f64);

@@ -3,6 +3,7 @@
 //! Editor UI components.
 
 pub mod build_dialog;
+pub mod build_progress;
 pub mod burn;
 pub mod canvas;
 pub mod compat_dialog;

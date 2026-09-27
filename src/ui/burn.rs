@@ -4,7 +4,7 @@
 //! burning and verifying an image, for the Build dialog and for burning an
 //! existing image.
 
-use crate::build::BuildEvent;
+use crate::build::{BuildEvent, TaskGroup, TaskState};
 use crate::burn::{self, Disc, DiscState, Drive};
 use adw::prelude::*;
 use gettextrs::gettext;
@@ -207,15 +207,44 @@ fn describe_disc(d: &Disc) -> (String, bool) {
 
 /// Burn `image` to `target` (then verify and eject), reporting progress
 /// from `start` to 1.0. Runs on a worker thread.
+/// List the burning steps (before the build, so they show from the start).
+pub fn add_tasks(target: &Target, emit: &dyn Fn(BuildEvent)) {
+    let name = if target.erases { gettext("Erase and Burn") } else { gettext("Burn") };
+    emit(BuildEvent::AddTask { key: "burn".into(), name, group: TaskGroup::Burn });
+    if target.verify {
+        emit(BuildEvent::AddTask { key: "verify".into(), name: gettext("Verify"), group: TaskGroup::Burn });
+    }
+}
+
 pub fn run(image: &Path, target: &Target, cancel: &AtomicBool, emit: &dyn Fn(BuildEvent), start: f64) -> anyhow::Result<()> {
+    let task = |key: &str, state, detail: String, fraction| emit(BuildEvent::Task { key: key.into(), state, detail, fraction });
+    let fail = |key: &str| {
+        if !cancel.load(Ordering::Relaxed) {
+            task(key, TaskState::Failed, gettext("Failed"), 0.0);
+        }
+    };
     let span = if target.verify { (1.0 - start) * 0.6 } else { 1.0 - start };
     emit(BuildEvent::Stage(if target.erases { gettext("Erasing and burning the disc") } else { gettext("Burning the disc") }));
     emit(BuildEvent::Log(format!("Burning {} to {}", image.display(), target.drive.display())));
-    burn::burn(image, &target.drive, cancel, |f| emit(BuildEvent::Progress(start + f * span)))?;
+    let size = std::fs::metadata(image).map_or(0, |m| m.len()) as f64;
+    let writing = |f: f64| format!("{:.1} of {:.1} GB", f * size / 1e9, size / 1e9);
+    task("burn", TaskState::Running, gettext("Starting"), 0.0);
+    burn::burn(image, &target.drive, cancel, |f| {
+        emit(BuildEvent::Progress(start + f * span));
+        task("burn", TaskState::Running, writing(f), f);
+    })
+    .inspect_err(|_| fail("burn"))?;
+    task("burn", TaskState::Done, format!("{:.1} GB", size / 1e9), 1.0);
     if target.verify {
         emit(BuildEvent::Stage(gettext("Verifying the disc")));
         let from = start + span;
-        burn::verify(image, &target.drive, cancel, |f| emit(BuildEvent::Progress(from + f * (1.0 - from))))?;
+        task("verify", TaskState::Running, gettext("Reading the disc back"), 0.0);
+        burn::verify(image, &target.drive, cancel, |f| {
+            emit(BuildEvent::Progress(from + f * (1.0 - from)));
+            task("verify", TaskState::Running, gettext("Reading the disc back"), f);
+        })
+        .inspect_err(|_| fail("verify"))?;
+        task("verify", TaskState::Done, gettext("The disc matches the image"), 1.0);
         emit(BuildEvent::Log("The disc matches the image".into()));
     }
     if target.eject {
@@ -282,15 +311,6 @@ pub fn present_image(parent: &impl IsA<gtk::Widget>, image: PathBuf) {
     update();
     options.connect_changed(update);
 
-    let status = adw::StatusPage::builder().icon_name("media-optical-symbolic").title(gettext("Burning…")).build();
-    status.add_css_class("compact");
-    let pbox = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(12).margin_start(24).margin_end(24).build();
-    let bar = gtk::ProgressBar::builder().show_text(true).build();
-    pbox.append(&bar);
-    let cancel_btn = gtk::Button::builder().label(gettext("_Cancel")).use_underline(true).halign(gtk::Align::Center).css_classes(["pill"]).build();
-    pbox.append(&cancel_btn);
-    status.set_child(Some(&pbox));
-    stack.add_named(&status, Some("progress"));
     let result = adw::StatusPage::new();
     result.add_css_class("compact");
     let close_btn = gtk::Button::builder().label(gettext("_Close")).use_underline(true).halign(gtk::Align::Center).css_classes(["pill"]).build();
@@ -299,10 +319,7 @@ pub fn present_image(parent: &impl IsA<gtk::Widget>, image: PathBuf) {
 
     let cancel = Arc::new(AtomicBool::new(false));
     let c = cancel.clone();
-    cancel_btn.connect_clicked(move |b| {
-        c.store(true, Ordering::Relaxed);
-        b.set_sensitive(false);
-    });
+    dialog.connect_closed(move |_| c.store(true, Ordering::Relaxed));
     let d = dialog.clone();
     close_btn.connect_clicked(move |_| {
         d.close();
@@ -310,8 +327,19 @@ pub fn present_image(parent: &impl IsA<gtk::Widget>, image: PathBuf) {
     let d = dialog.clone();
     burn_btn.connect_clicked(move |_| {
         let Some(target) = options.target() else { return };
-        let (stack, status, bar, result, cancel, image) = (stack.clone(), status.clone(), bar.clone(), result.clone(), cancel.clone(), image.clone());
+        let (stack, result, cancel, image) = (stack.clone(), result.clone(), cancel.clone(), image.clone());
         confirm_erase(&d, &target.clone(), move || {
+            let name = image.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let view = super::build_progress::ProgressView::new(&gettext("Burning “{}”").replace("{}", &name));
+            let c = cancel.clone();
+            view.cancel_button().connect_clicked(move |b| {
+                c.store(true, Ordering::Relaxed);
+                b.set_sensitive(false);
+            });
+            if let Some(old) = stack.child_by_name("progress") {
+                stack.remove(&old);
+            }
+            stack.add_named(view.widget(), Some("progress"));
             stack.set_visible_child_name("progress");
             let (tx, rx) = async_channel::unbounded::<BuildEvent>();
             let (target, cancel, image) = (target.clone(), cancel.clone(), image.clone());
@@ -319,25 +347,20 @@ pub fn present_image(parent: &impl IsA<gtk::Widget>, image: PathBuf) {
                 let emit = |ev: BuildEvent| {
                     let _ = tx.send_blocking(ev);
                 };
+                add_tasks(&target, &emit);
                 let res = run(&image, &target, &cancel, &emit, 0.0).map(|_| image.clone()).map_err(|e| format!("{e:#}"));
                 emit(BuildEvent::Finished(res));
             });
-            let (stack, status, bar, result) = (stack.clone(), status.clone(), bar.clone(), result.clone());
+            let (stack, result) = (stack.clone(), result.clone());
             glib::spawn_future_local(async move {
                 while let Ok(ev) = rx.recv().await {
-                    match ev {
-                        BuildEvent::Stage(s) => status.set_description(Some(&s)),
-                        BuildEvent::Progress(p) => {
-                            bar.set_fraction(p);
-                            bar.set_text(Some(&format!("{:.0} %", p * 100.0)));
-                        }
-                        BuildEvent::Log(_) => {}
-                        BuildEvent::Finished(res) => {
-                            show_result(&result, res.map(|_| ()));
-                            stack.set_visible_child_name("result");
-                            break;
-                        }
+                    if let BuildEvent::Finished(res) = ev {
+                        view.finish();
+                        show_result(&result, res.map(|_| ()));
+                        stack.set_visible_child_name("result");
+                        break;
                     }
+                    view.handle(&ev);
                 }
             });
         });
