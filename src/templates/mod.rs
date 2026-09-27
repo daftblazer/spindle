@@ -200,6 +200,8 @@ pub enum Style {
     ClassicList,
     /// Full-screen artwork fading into the title; large episode cards.
     Showcase,
+    /// Showcase with a list of episodes over the artwork.
+    ShowcaseList,
     /// Centred type on a plain background; a two-column episode list.
     Minimal,
     /// Artwork top right, title and buttons left; episodes as rows.
@@ -215,10 +217,11 @@ pub enum Style {
 }
 
 impl Style {
-    pub const ALL: [Style; 11] = [
+    pub const ALL: [Style; 12] = [
         Style::Classic,
         Style::ClassicList,
         Style::Showcase,
+        Style::ShowcaseList,
         Style::Minimal,
         Style::Streaming,
         Style::Split,
@@ -231,7 +234,14 @@ impl Style {
 
     pub fn category(self) -> Category {
         match self {
-            Style::Classic | Style::ClassicList | Style::Showcase | Style::Minimal | Style::Streaming | Style::Split | Style::Broadcast => {
+            Style::Classic
+            | Style::ClassicList
+            | Style::Showcase
+            | Style::ShowcaseList
+            | Style::Minimal
+            | Style::Streaming
+            | Style::Split
+            | Style::Broadcast => {
                 Category::TvShow
             }
             Style::MovieClassic | Style::MovieShowcase | Style::MovieMinimal => Category::Movie,
@@ -244,6 +254,7 @@ impl Style {
             Style::Classic | Style::MovieClassic => gettext("Classic"),
             Style::ClassicList => gettext("Classic List"),
             Style::Showcase | Style::MovieShowcase => gettext("Showcase"),
+            Style::ShowcaseList => gettext("Showcase List"),
             Style::Minimal | Style::MovieMinimal => gettext("Minimal"),
             Style::Streaming => gettext("Streaming"),
             Style::Split => gettext("Split"),
@@ -257,6 +268,7 @@ impl Style {
             Style::Classic => gettext("A panel with the title and buttons beside the artwork, and an episode grid with thumbnails"),
             Style::ClassicList => gettext("The classic main menu with a list of episode names and running times"),
             Style::Showcase => gettext("Full-screen artwork fading into a large title, with big episode cards"),
+            Style::ShowcaseList => gettext("The showcase main menu, with a list of episode names and running times over the artwork"),
             Style::Minimal => gettext("Elegant centred type on a plain background and a two-column episode list"),
             Style::Streaming => gettext("Artwork in the corner, the title and buttons on the left, and episode rows with stills"),
             Style::Split => gettext("A colored side panel with a season badge beside a mosaic of episode stills"),
@@ -274,6 +286,7 @@ impl Style {
             Style::Classic => "show",
             Style::ClassicList => "show-list",
             Style::Showcase => "showcase",
+            Style::ShowcaseList => "showcase-list",
             Style::Minimal => "minimal",
             Style::Streaming => "streaming",
             Style::Split => "split",
@@ -293,7 +306,7 @@ impl Style {
     pub fn default_theme(self) -> usize {
         match self {
             Style::Classic | Style::ClassicList | Style::Collection => 0,
-            Style::Showcase | Style::MovieShowcase => 3,
+            Style::Showcase | Style::ShowcaseList | Style::MovieShowcase => 3,
             Style::Minimal | Style::MovieMinimal => 7,
             Style::Streaming => 9,
             Style::Split => 5,
@@ -306,7 +319,7 @@ impl Style {
     fn fonts(self) -> (&'static str, &'static str) {
         match self {
             Style::Classic | Style::ClassicList | Style::MovieClassic | Style::Collection => ("Cantarell", "Cantarell"),
-            Style::Showcase | Style::MovieShowcase | Style::Split => ("Montserrat", "Montserrat"),
+            Style::Showcase | Style::ShowcaseList | Style::MovieShowcase | Style::Split => ("Montserrat", "Montserrat"),
             Style::Minimal | Style::MovieMinimal => ("Montserrat", "Lato"),
             Style::Streaming => ("Lato", "Lato"),
             Style::Broadcast => ("TeX Gyre Heros Cn", "TeX Gyre Heros Cn"),

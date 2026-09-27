@@ -41,8 +41,8 @@ menus (no BD-J, no Java), written by Spindle's own muxer and format writers.
 Ctrl+T opens a gallery in three categories, each style in any of eleven
 colour palettes, with optional **Season** and **Disc** lines:
 
-- **TV Show**: Classic, Classic List, Showcase, Minimal, Streaming, Split
-  and Broadcast, each with a main menu (Play All, Episodes, Setup) and
+- **TV Show**: Classic, Classic List, Showcase, Showcase List, Minimal,
+  Streaming, Split and Broadcast, each with a main menu (Play All, Episodes, Setup) and
   paginated episode pages
 - **Movie**: Classic, Showcase and Minimal, with scene selection and extras
 - **Collection**: a simple list of every title

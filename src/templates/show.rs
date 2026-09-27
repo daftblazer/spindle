@@ -8,12 +8,18 @@ use super::*;
 pub(super) type Card = (String, Action, Id, f64);
 /// (label, action, text on the right such as a running time).
 pub(super) type Row = (String, Action, String);
+/// (label, action, still asset, frame time, text on the right).
+pub(super) type ListEntry = (String, Action, Id, f64, String);
+
+/// Rows per page of [`Ctx::artwork_list_pages`].
+const ARTWORK_LIST_ROWS: usize = 8;
 
 pub(super) fn build(style: Style, input: Input) -> Output {
     match style {
         Style::Classic => classic(input, false),
         Style::ClassicList => classic(input, true),
-        Style::Showcase => showcase(input),
+        Style::Showcase => showcase(input, false),
+        Style::ShowcaseList => showcase(input, true),
         Style::Minimal => minimal(input),
         Style::Streaming => streaming(input),
         Style::Split => split(input),
@@ -71,6 +77,45 @@ impl Ctx {
             }
             if entries.is_empty() {
                 page.items.push(self.text(empty_hint, Rect::new(260.0, 420.0, 1400.0, 200.0), 36, "", Align::Center, true));
+            }
+            let prev = pi.checked_sub(1).map(|i| ids[i]);
+            self.nav_bar(page, prev, home.clone(), ids.get(pi + 1).copied());
+        }
+        pages
+    }
+
+    /// A list of rows over the artwork of the page's first entry, which
+    /// shows through on the right.
+    pub(super) fn artwork_list_pages(&self, heading: &str, edition: Option<&str>, entries: &[ListEntry], home: Option<(Id, String)>, empty_hint: &str) -> Vec<Menu> {
+        let bg = self.theme.bottom;
+        let n_pages = entries.len().div_ceil(ARTWORK_LIST_ROWS).max(1);
+        let (mut pages, ids) = self.pages(heading, n_pages, |n| self.plain_menu(n, bg));
+        let (x0, w, note_w) = (140.0, 900.0, 170.0);
+        for (pi, page) in pages.iter_mut().enumerate() {
+            let slice: Vec<&ListEntry> = entries.iter().skip(pi * ARTWORK_LIST_ROWS).take(ARTWORK_LIST_ROWS).collect();
+            if let Some((_, _, asset, time, _)) = slice.first() {
+                page.items.push(self.still(*asset, *time, Rect::new(0.0, 0.0, DESIGN_WIDTH, DESIGN_HEIGHT)));
+                page.items.push(self.gradient(Rect::new(0.0, 0.0, 1500.0, DESIGN_HEIGHT), alpha(bg, 0.96), alpha(bg, 0.25), true));
+                page.items.push(self.gradient(Rect::new(0.0, 700.0, DESIGN_WIDTH, 380.0), alpha(bg, 0.0), alpha(bg, 0.9), false));
+            }
+            page.items.push(self.head(heading, Rect::new(x0, 80.0, 900.0, 90.0), 60, "ExtraBold", Align::Left));
+            let mut sub: Vec<String> = edition.map(str::to_string).into_iter().collect();
+            if n_pages > 1 {
+                sub.push(self.page_label(pi, n_pages));
+            }
+            if !sub.is_empty() {
+                page.items.push(self.caps(&sub.join("  ·  "), Rect::new(x0, 170.0, 1000.0, 40.0), 22, self.theme.selected, Align::Left, 4.0));
+            }
+            for (k, (label, action, _, _, note)) in slice.iter().enumerate() {
+                let y = 236.0 + k as f64 * 80.0;
+                // The running time sits beside the button, where the
+                // highlight doesn't cover it.
+                page.items.push(self.text(note, Rect::new(x0 + w + 16.0, y, note_w, 68.0), 26, "Medium", Align::Right, true));
+                // The label's inset lines it up with the heading.
+                page.items.push(self.button_font(label, *action, Rect::new(x0 - 24.0, y, w + 24.0, 68.0), format!("{} SemiBold 30", self.body), Align::Left, Highlight::Fill));
+            }
+            if entries.is_empty() {
+                page.items.push(self.text(empty_hint, Rect::new(260.0, 480.0, 1400.0, 120.0), 36, "", Align::Center, true));
             }
             let prev = pi.checked_sub(1).map(|i| ids[i]);
             self.nav_bar(page, prev, home.clone(), ids.get(pi + 1).copied());
@@ -181,13 +226,18 @@ fn finish(main: Menu, pages: Vec<Menu>, episodes: &[Episode], per_page: usize, t
     Output { menus, return_to, title_item, popup_links }
 }
 
-fn showcase(input: Input) -> Output {
+fn showcase(input: Input, list: bool) -> Output {
     let (edition, count, home, hint) = (input.edition(), input.count(), input.home(), input.hint());
     let setup = input.setup;
     let Input { cx, name, mut main, episodes, .. } = input;
     let bg = cx.theme.bottom;
-    let cards: Vec<Card> = episodes.iter().map(|e| (e.label(".  ", 24), e.action(), e.asset, e.poster)).collect();
-    let pages = cx.card_pages(&gettext("Episodes"), edition.as_deref(), &cards, home, &hint);
+    let (pages, per_page) = if list {
+        let rows: Vec<ListEntry> = episodes.iter().map(|e| (e.label(".   ", 40), e.action(), e.asset, e.poster, clock(e.duration))).collect();
+        (cx.artwork_list_pages(&gettext("Episodes"), edition.as_deref(), &rows, home, &hint), ARTWORK_LIST_ROWS)
+    } else {
+        let cards: Vec<Card> = episodes.iter().map(|e| (e.label(".  ", 24), e.action(), e.asset, e.poster)).collect();
+        (cx.card_pages(&gettext("Episodes"), edition.as_deref(), &cards, home, &hint), 8)
+    };
 
     main.background = Background { color: bg, ..Default::default() };
     if let Some(e) = episodes.first() {
@@ -208,7 +258,7 @@ fn showcase(input: Input) -> Output {
     let buttons = show_buttons(&pages, &episodes, setup);
     let ids = cx.pill_row(&mut main, &buttons, 140.0, 800.0, 32);
     main.default_button = ids.first().copied();
-    finish(main, pages, &episodes, 8, title_item)
+    finish(main, pages, &episodes, per_page, title_item)
 }
 
 /// Play All, Episodes and Setup.
