@@ -512,6 +512,20 @@ impl Inspector {
                 s.line_spacing = v;
             }
         }));
+        let glow = rows::spin(doc, &gettext("Glow"), style.glow, 0.0, 40.0, 1.0, 0, Change::Structure, move |p, v| {
+            if let Some(s) = style_mut(p, menu, item) {
+                s.glow = v;
+            }
+        });
+        glow.set_subtitle(&gettext("Size in pixels"));
+        g.add(&glow);
+        if style.glow > 0.0 {
+            g.add(&rows::color(doc, &gettext("Glow Color"), style.glow_color, Change::Content, move |p, c| {
+                if let Some(s) = style_mut(p, menu, item) {
+                    s.glow_color = c;
+                }
+            }));
+        }
     }
 
     fn item_page(&self, page: &adw::PreferencesPage, menu: Id, item: Id) {
@@ -807,6 +821,20 @@ impl Inspector {
                         i.radius = v;
                     }
                 }));
+                g.add(&rows::switch(doc, &gettext("Drop Shadow"), img.shadow, Change::Content, move |p, v| {
+                    if let Some(i) = image_mut(p, menu, item) {
+                        i.shadow = v;
+                    }
+                }));
+                for (k, label) in [gettext("Crop Left"), gettext("Crop Top"), gettext("Crop Right"), gettext("Crop Bottom")].into_iter().enumerate() {
+                    let row = rows::spin(doc, &label, img.crop[k] * 100.0, 0.0, 45.0, 1.0, 0, Change::Content, move |p, v| {
+                        if let Some(i) = image_mut(p, menu, item) {
+                            i.crop[k] = v / 100.0;
+                        }
+                    });
+                    row.set_subtitle(&gettext("Percent"));
+                    g.add(&row);
+                }
                 page.add(&g);
             }
             ItemKind::Shape(sh) => {

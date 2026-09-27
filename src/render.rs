@@ -200,6 +200,24 @@ fn draw_text(cr: &cairo::Context, text: &str, style: &TextStyle, color: Rgba, r:
     let l = layout(cr, text, style, r.w);
     let (_, logical) = l.pixel_extents();
     let y = r.y + (r.h - logical.height() as f64) / 2.0;
+    if style.glow > 0.0 {
+        // Layered soft strokes, widest and faintest first.
+        cr.move_to(r.x, y);
+        pangocairo::functions::layout_path(cr, &l);
+        let path = cr.copy_path().ok();
+        cr.new_path();
+        if let Some(path) = path {
+            cr.set_line_join(cairo::LineJoin::Round);
+            let steps = 6;
+            for k in (1..=steps).rev() {
+                cr.append_path(&path);
+                let c = style.glow_color;
+                cr.set_source_rgba(c.r as f64, c.g as f64, c.b as f64, c.a as f64 * 0.12);
+                cr.set_line_width(style.glow * 2.0 * k as f64 / steps as f64);
+                cr.stroke().ok();
+            }
+        }
+    }
     if shadow {
         cr.move_to(r.x + 3.0, y + 3.0);
         cr.set_source_rgba(0.0, 0.0, 0.0, 0.6 * color.a as f64);
@@ -234,6 +252,40 @@ fn button_areas(item: &MenuItem, b: &ButtonItem) -> (Option<Rect>, Rect) {
     }
     let lh = line_height(&b.text).min(r.h / 2.0);
     (Some(Rect::new(r.x, r.y, r.w, r.h - lh)), inset(Rect::new(r.x, r.y + r.h - lh, r.w, lh)))
+}
+
+/// `p` with fractions of each side (left, top, right, bottom) cut off.
+fn cropped(p: &cairo::ImageSurface, crop: [f64; 4]) -> cairo::ImageSurface {
+    if crop.iter().all(|c| *c <= 0.0) {
+        return p.clone();
+    }
+    let (w, h) = (p.width() as f64, p.height() as f64);
+    let [l, t, r, b] = crop.map(|c| c.clamp(0.0, 0.45));
+    let (cw, ch) = ((w * (1.0 - l - r)).round().max(1.0), (h * (1.0 - t - b)).round().max(1.0));
+    let Ok(out) = cairo::ImageSurface::create(cairo::Format::ARgb32, cw as i32, ch as i32) else { return p.clone() };
+    if let Ok(cr) = cairo::Context::new(&out) {
+        cr.set_source_surface(p, -(w * l).round(), -(h * t).round()).ok();
+        cr.paint().ok();
+    }
+    out
+}
+
+/// A soft drop shadow in the shape of the picture (its alpha).
+fn draw_image_shadow(cr: &cairo::Context, p: &cairo::ImageSurface, r: Rect, opacity: f64) {
+    let f = fitted_rect(p, r);
+    let s = f.w / p.width() as f64;
+    let offset = (f.w.min(f.h) * 0.03).clamp(4.0, 16.0);
+    cr.save().ok();
+    // Several offset copies approximate a blur.
+    for (dx, dy, a) in [(0.0, 0.0, 0.18), (-2.0, 0.0, 0.1), (2.0, 0.0, 0.1), (0.0, -2.0, 0.1), (0.0, 2.0, 0.1), (3.0, 3.0, 0.08)] {
+        cr.save().ok();
+        cr.translate(f.x + offset + dx, f.y + offset + dy);
+        cr.scale(s, s);
+        cr.set_source_rgba(0.0, 0.0, 0.0, a * opacity.clamp(0.0, 1.0) * 2.0);
+        cr.mask_surface(p, 0.0, 0.0).ok();
+        cr.restore().ok();
+    }
+    cr.restore().ok();
 }
 
 /// Where an image is drawn when fitted into `r`.
@@ -310,7 +362,10 @@ pub fn draw_static(cr: &cairo::Context, project: &Project, menu: &Menu, images: 
         match &item.kind {
             ItemKind::Text(t) => draw_text(cr, &t.text, &t.style, t.style.color, item.rect, t.style.shadow),
             ItemKind::Image(i) => {
-                if let Some(p) = images.get(project, i.asset, i.time) {
+                if let Some(p) = images.get(project, i.asset, i.time).map(|p| cropped(&p, i.crop)) {
+                    if i.shadow {
+                        draw_image_shadow(cr, &p, item.rect, i.opacity);
+                    }
                     cr.push_group();
                     if i.radius > 0.0 {
                         let fitted = fitted_rect(&p, item.rect);

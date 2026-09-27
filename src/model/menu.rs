@@ -91,6 +91,10 @@ fn black() -> Rgba {
     Rgba::new(0.0, 0.0, 0.0, 1.0)
 }
 
+fn white() -> Rgba {
+    Rgba::WHITE
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TextStyle {
     /// Pango font description, e.g. "Cantarell Bold 40".
@@ -109,6 +113,11 @@ pub struct TextStyle {
     /// Line height as a multiple of the normal one.
     #[serde(default = "one")]
     pub line_spacing: f64,
+    /// Soft glow around the letters, in design pixels (0 = none).
+    #[serde(default)]
+    pub glow: f64,
+    #[serde(default = "white")]
+    pub glow_color: Rgba,
 }
 
 impl Default for TextStyle {
@@ -122,6 +131,8 @@ impl Default for TextStyle {
             outline_color: black(),
             letter_spacing: 0.0,
             line_spacing: 1.0,
+            glow: 0.0,
+            glow_color: white(),
         }
     }
 }
@@ -212,6 +223,13 @@ pub struct ImageItem {
     /// Corner radius in design pixels.
     #[serde(default)]
     pub radius: f64,
+    /// Drop shadow following the picture's shape.
+    #[serde(default)]
+    pub shadow: bool,
+    /// Part of the picture cut off at each side, as fractions (left, top,
+    /// right, bottom).
+    #[serde(default)]
+    pub crop: [f64; 4],
 }
 
 /// A decorative filled (rounded) rectangle or ellipse, e.g. a panel
@@ -260,7 +278,7 @@ pub struct MenuItem {
 
 impl ImageItem {
     pub fn new(asset: Id) -> Self {
-        ImageItem { asset, time: 0.0, opacity: 1.0, radius: 0.0 }
+        ImageItem { asset, time: 0.0, opacity: 1.0, radius: 0.0, shadow: false, crop: [0.0; 4] }
     }
 }
 
