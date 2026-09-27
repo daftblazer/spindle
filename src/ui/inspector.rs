@@ -28,6 +28,29 @@ pub struct Inspector {
     shown: Cell<Option<(Node, Option<Id>)>>,
 }
 
+/// A row that copies this title's track choices to every other title.
+fn apply_to_all_row(doc: &Rc<Document>, id: Id, apply: fn(&mut Project, Id) -> usize) -> adw::ButtonRow {
+    let row = adw::ButtonRow::builder().title(gettext("Apply to All Titles")).start_icon_name("edit-copy-symbolic").build();
+    row.set_tooltip_text(Some(&gettext("Tracks are matched by their stream number, or by language for separate files")));
+    let doc = doc.clone();
+    row.connect_activated(move |row| {
+        let overlay = row.ancestor(adw::ToastOverlay::static_type()).and_downcast::<adw::ToastOverlay>();
+        let mut n = 0;
+        doc.edit(Change::Structure, |p| n = apply(p, id));
+        let Some(overlay) = overlay else { return };
+        let toast = if n == 0 {
+            adw::Toast::new(&gettext("The other titles already match"))
+        } else {
+            let t = adw::Toast::new(&ngettext("Applied to {} title", "Applied to {} titles", n as u32).replace("{}", &n.to_string()));
+            t.set_button_label(Some(&gettext("_Undo")));
+            t.set_action_name(Some("win.undo"));
+            t
+        };
+        overlay.add_toast(toast);
+    });
+    row
+}
+
 /// The scrolled window inside a page.
 fn scroller(w: &gtk::Widget) -> Option<gtk::ScrolledWindow> {
     if let Some(s) = w.downcast_ref::<gtk::ScrolledWindow>() {
@@ -1287,6 +1310,9 @@ impl Inspector {
         let add = adw::ButtonRow::builder().title(gettext("Add Audio File…")).start_icon_name("list-add-symbolic").build();
         add.set_action_name(Some("win.add-audio"));
         g.add(&add);
+        if p.titles.len() > 1 && !t.audio.is_empty() {
+            g.add(&apply_to_all_row(doc, id, Project::apply_audio_to_all));
+        }
         page.add(&g);
     }
 
@@ -1493,6 +1519,9 @@ impl Inspector {
         let add = adw::ButtonRow::builder().title(gettext("Add Subtitle File…")).start_icon_name("list-add-symbolic").build();
         add.set_action_name(Some("win.add-subtitle"));
         g.add(&add);
+        if p.titles.len() > 1 && !t.subtitles.is_empty() {
+            g.add(&apply_to_all_row(doc, id, Project::apply_subtitles_to_all));
+        }
         page.add(&g);
     }
 

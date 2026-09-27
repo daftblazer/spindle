@@ -178,6 +178,109 @@ impl Title {
     }
 }
 
+/// Match the tracks of one title to another's: embedded tracks by stream
+/// number, separate files by `same`. Returns, for each track of `from`, the
+/// index of its match in `to`.
+fn match_tracks<T>(from: &[T], to: &[T], embedded: impl Fn(&T) -> Option<usize>, same: impl Fn(&T, &T) -> bool) -> Vec<Option<usize>> {
+    let mut used = vec![false; to.len()];
+    from.iter()
+        .map(|f| {
+            let found = match embedded(f) {
+                Some(i) => to.iter().position(|t| embedded(t) == Some(i)),
+                None => to.iter().enumerate().position(|(k, t)| !used[k] && embedded(t).is_none() && same(f, t)),
+            };
+            if let Some(k) = found.filter(|k| !used[*k]) {
+                used[k] = true;
+                Some(k)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Reorder `to` so matched tracks follow `from`'s order (the others stay
+/// after them), returning the new order as indices.
+fn follow_order(matches: &[Option<usize>], len: usize) -> Vec<usize> {
+    let matched: Vec<usize> = matches.iter().flatten().copied().collect();
+    let rest = (0..len).filter(|k| !matched.contains(k));
+    matched.iter().copied().chain(rest).collect()
+}
+
+impl Project {
+    /// Give every other title the audio track choices of title `from`
+    /// (on/off, order, language, name, channels, re-encoding). Returns how
+    /// many titles changed.
+    pub fn apply_audio_to_all(&mut self, from: Id) -> usize {
+        let Some(src) = self.title(from).map(|t| t.audio.clone()) else { return 0 };
+        let embedded = |a: &AudioTrack| match a.source {
+            AudioSource::Embedded { index } => Some(index),
+            AudioSource::External { .. } => None,
+        };
+        let mut changed = 0;
+        for t in self.titles.iter_mut().filter(|t| t.id != from) {
+            let matches = match_tracks(&src, &t.audio, embedded, |a, b| a.lang == b.lang);
+            if matches.iter().all(Option::is_none) {
+                continue;
+            }
+            let before = t.audio.clone();
+            for (s, m) in src.iter().zip(&matches) {
+                if let Some(a) = m.and_then(|k| t.audio.get_mut(k)) {
+                    a.enabled = s.enabled;
+                    a.lang = s.lang.clone();
+                    a.name = s.name.clone();
+                    a.layout = s.layout;
+                    a.reencode = s.reencode;
+                }
+            }
+            let order = follow_order(&matches, t.audio.len());
+            t.audio = order.into_iter().map(|k| t.audio[k].clone()).collect();
+            if t.audio != before {
+                changed += 1;
+            }
+        }
+        changed
+    }
+
+    /// Give every other title the subtitle choices of title `from` (on/off,
+    /// order, language, name, forced, burn-in and the default track).
+    pub fn apply_subtitles_to_all(&mut self, from: Id) -> usize {
+        let Some((src, default)) = self.title(from).map(|t| (t.subtitles.clone(), t.default_subtitle)) else { return 0 };
+        let embedded = |s: &SubtitleTrack| match s.source {
+            SubtitleSource::Embedded { index } => Some(index),
+            SubtitleSource::External { .. } => None,
+        };
+        let mut changed = 0;
+        for t in self.titles.iter_mut().filter(|t| t.id != from) {
+            let matches = match_tracks(&src, &t.subtitles, embedded, |a, b| a.lang == b.lang && a.codec == b.codec && a.forced == b.forced);
+            if matches.iter().all(Option::is_none) {
+                continue;
+            }
+            let before = (t.subtitles.clone(), t.default_subtitle);
+            let mut new_default = None;
+            for (s, m) in src.iter().zip(&matches) {
+                if let Some(sub) = m.and_then(|k| t.subtitles.get_mut(k)) {
+                    sub.enabled = s.enabled;
+                    sub.lang = s.lang.clone();
+                    sub.name = s.name.clone();
+                    sub.forced = s.forced;
+                    sub.burn_in = s.burn_in;
+                    if default == Some(s.id) {
+                        new_default = Some(sub.id);
+                    }
+                }
+            }
+            t.default_subtitle = new_default;
+            let order = follow_order(&matches, t.subtitles.len());
+            t.subtitles = order.into_iter().map(|k| t.subtitles[k].clone()).collect();
+            if (t.subtitles.clone(), t.default_subtitle) != before {
+                changed += 1;
+            }
+        }
+        changed
+    }
+}
+
 /// Which pop-up menu a title shows.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum PopupChoice {
@@ -633,6 +736,51 @@ mod tests {
         p.apply_button_look(&look, Some(menu));
         assert!(p.menu(menu).unwrap().buttons().all(|b| b.button().unwrap().highlight == Highlight::Fill));
         assert!(p.menu(copy).unwrap().buttons().all(|b| b.button().unwrap().highlight != Highlight::Fill));
+    }
+
+    #[test]
+    fn track_choices_apply_to_all_titles() {
+        use crate::media::probe::{AudioStream, SubtitleStream};
+        let mut p = Project::default();
+        let mut titles = Vec::new();
+        for k in 0..3 {
+            let asset = new_id();
+            let audio = |i: usize, lang: &str| AudioStream { index: i, codec: "flac".into(), channels: 2, sample_rate: 48000, lang: Some(lang.into()), ..Default::default() };
+            let sub = |i: usize, lang: &str| SubtitleStream { index: i, codec: "ass".into(), lang: Some(lang.into()), ..Default::default() };
+            let info = MediaInfo {
+                duration: 10.0,
+                video_codec: Some("h264".into()),
+                audio_codec: Some("flac".into()),
+                audio_streams: vec![audio(0, "jpn"), audio(1, "eng")],
+                // The last title has one subtitle stream fewer.
+                subtitles: if k < 2 { vec![sub(0, "eng"), sub(1, "eng")] } else { vec![sub(0, "eng")] },
+                ..Default::default()
+            };
+            p.assets.push(Asset { id: asset, path: format!("/tmp/ep{k}.mkv").into(), kind: AssetKind::Video, info });
+            titles.push(p.ensure_title_for(asset).unwrap());
+        }
+        {
+            let t = p.title_mut(titles[0]).unwrap();
+            t.audio.swap(0, 1);
+            t.audio[1].enabled = false;
+            t.audio[0].layout = ChannelLayout::Surround;
+            t.subtitles[0].enabled = false;
+            t.subtitles[1].burn_in = true;
+            t.default_subtitle = Some(t.subtitles[1].id);
+        }
+        assert_eq!(p.apply_audio_to_all(titles[0]), 2);
+        assert_eq!(p.apply_subtitles_to_all(titles[0]), 2);
+        let t1 = p.title(titles[1]).unwrap();
+        assert_eq!(t1.audio[0].source, AudioSource::Embedded { index: 1 });
+        assert_eq!((t1.audio[0].layout, t1.audio[1].enabled), (ChannelLayout::Surround, false));
+        assert!(!t1.subtitles[0].enabled && t1.subtitles[1].burn_in);
+        assert_eq!(t1.default_subtitle, Some(t1.subtitles[1].id));
+        // A missing stream is skipped; the rest still apply.
+        let t2 = p.title(titles[2]).unwrap();
+        assert!(!t2.subtitles[0].enabled);
+        assert_eq!(t2.default_subtitle, None);
+        // Nothing left to change.
+        assert_eq!(p.apply_audio_to_all(titles[0]), 0);
     }
 
     #[test]
