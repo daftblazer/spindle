@@ -113,6 +113,7 @@
             "config-opts": [
                 "--enable-gpl",
                 "--enable-libx264",
+                "--enable-libass",
                 "--enable-libzimg",
                 "--enable-vaapi",
                 "--enable-nvenc",

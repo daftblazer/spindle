@@ -1367,7 +1367,7 @@ impl Inspector {
         let p = doc.project();
         let Some(t) = p.title(id) else { return };
         let g = group(&gettext("Subtitles"));
-        g.set_description(Some(&gettext("Converted to Blu-ray subtitles. Text subtitles use the style in Disc Settings; ASS keeps its own styling.")));
+        g.set_description(Some(&gettext("Converted to Blu-ray subtitles. Text subtitles use the style in Disc Settings; ASS keeps its own styling. A text track can instead be burned into the picture.")));
 
         fn track_mut(p: &mut Project, title: Id, track: Id) -> Option<&mut SubtitleTrack> {
             p.title_mut(title)?.subtitles.iter_mut().find(|s| s.id == track)
@@ -1381,8 +1381,11 @@ impl Inspector {
                 SubtitleSource::External { path } => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             };
             let mut subtitle = format!("{} · {} · {}", language_name(&track.lang), codec_label(&track.codec), origin);
+            let burned = t.burned_subtitle().is_some_and(|b| b.id == tid);
             if !supported {
                 subtitle = format!("{} · {}", codec_label(&track.codec), gettext("not supported yet"));
+            } else if burned {
+                subtitle.push_str(&format!(" · {}", gettext("burned in")));
             } else if track.forced {
                 subtitle.push_str(&format!(" · {}", gettext("forced")));
             }
@@ -1428,7 +1431,28 @@ impl Inspector {
                 }
             });
             forced.set_subtitle(&gettext("Shown even when subtitles are off (foreign dialogue, signs)"));
+            forced.set_visible(!burned);
             row.add_row(&forced);
+            if track.can_burn_in() {
+                let burn = rows::switch(doc, &gettext("Burn Into the Picture"), track.burn_in, Change::Structure, move |p, v| {
+                    if let Some(t) = p.title_mut(id) {
+                        // Only one track can be burned in.
+                        for s in &mut t.subtitles {
+                            s.burn_in = v && s.id == tid;
+                        }
+                        if v && t.default_subtitle == Some(tid) {
+                            t.default_subtitle = None;
+                        }
+                    }
+                });
+                burn.set_subtitle(&if t.keep_video {
+                    gettext("Needs the video re-encoded: turn off Keep Original Video")
+                } else {
+                    gettext("Always shown and can't be turned off; every ASS style and effect looks exactly as made")
+                });
+                burn.set_subtitle_lines(3);
+                row.add_row(&burn);
+            }
             if matches!(track.source, SubtitleSource::External { .. }) {
                 let remove = adw::ButtonRow::builder().title(gettext("Remove Subtitle File")).css_classes(["destructive-action"]).build();
                 let d = doc.clone();

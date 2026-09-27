@@ -70,14 +70,15 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
         let vformat = match keep {
             Some(format) => {
                 emit(BuildEvent::Stage(format!("Copying {} seconds of “{}” (original video)", duration.round(), t.name)));
-                let src = transcode::Source { path: &asset.path, info, picture: &t.video };
+                let src = transcode::Source { path: &asset.path, info, picture: &t.video, burn: None };
                 let args = transcode::passthrough_args(&src, &settings, &inputs, Some((start, duration)), &tmp);
                 ffmpeg::run(&args, cancel, |secs| progress(secs / duration * 0.8))?;
                 format
             }
             None => {
                 emit(BuildEvent::Stage(format!("Encoding {} seconds of “{}”", duration.round(), t.name)));
-                let src = transcode::Source { path: &asset.path, info, picture: &t.video };
+                let burn = t.burned_subtitle().map(|s| subtitles::burn_in(s, &asset.path, info, &project.disc.subtitle_style)).transpose()?;
+                let src = transcode::Source { path: &asset.path, info, picture: &t.video, burn: burn.as_ref() };
                 let args = transcode::title_args(&src, &settings, &[], &inputs, Some((start, duration)), &transcode::Pass::Only, &tmp);
                 ffmpeg::run(&args, cancel, |secs| progress(secs / duration * 0.8))?;
                 settings.video
@@ -88,7 +89,8 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
         streams.extend(audio.into_iter().map(|(_, es)| es));
         let mut extra = Vec::new();
         let mut sub_lang = None;
-        if let Some(track) = req.subtitle.and_then(|id| t.subtitles.iter().find(|s| s.id == id)) {
+        let burned = t.burned_subtitle().map(|b| b.id);
+        if let Some(track) = req.subtitle.filter(|id| Some(*id) != burned).and_then(|id| t.subtitles.iter().find(|s| s.id == id)) {
             emit(BuildEvent::Stage(format!("Converting subtitles “{}”", track.name)));
             let area = if keep.is_some() { subtitles::default_area(info, vformat) } else { crate::media::picture::plan(info, &t.video, vformat).area };
             let images = subtitles::prepare(

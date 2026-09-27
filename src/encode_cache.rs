@@ -18,7 +18,7 @@ pub fn dir() -> PathBuf {
 }
 
 /// 64-bit FNV-1a, stable across runs and builds.
-fn fnv(data: &[u8]) -> u64 {
+pub fn fnv(data: &[u8]) -> u64 {
     data.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x0100_0000_01b3))
 }
 

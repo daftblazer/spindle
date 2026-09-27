@@ -206,6 +206,7 @@ mod tests {
             name: name.into(),
             enabled: true,
             forced,
+            burn_in: false,
         }
     }
 

@@ -143,6 +143,7 @@ struct TitlePlan<'p> {
     chapters: Vec<f64>,
     duration: f64,
     audio: Vec<(transcode::AudioInput, EsInfo)>,
+    burn: Option<subtitles::BurnIn>,
     /// The encode command and its cache entry; `None` keeps the video.
     encode: Option<(Vec<String>, PathBuf)>,
 }
@@ -882,12 +883,13 @@ impl<'a> Builder<'a> {
         chapters.sort_by(f64::total_cmp);
         chapters.dedup();
         let audio = title_audio(p, t, &self.settings, 0.0)?;
+        let burn = t.burned_subtitle().map(|s| subtitles::burn_in(s, &asset.path, &asset.info, &p.disc.subtitle_style)).transpose()?;
         let encode = if t.keep_video {
             None
         } else {
             let inputs: Vec<transcode::AudioInput> = audio.iter().map(|(i, _)| i.clone()).collect();
             let pass = if self.two_pass() { transcode::Pass::Second(self.work.join(format!("pass-{}", clip_name(n)))) } else { transcode::Pass::Only };
-            let src = transcode::Source { path: &asset.path, info: &asset.info, picture: &t.video };
+            let src = transcode::Source { path: &asset.path, info: &asset.info, picture: &t.video, burn: burn.as_ref() };
             let args = transcode::title_args(&src, &self.settings, &chapters, &inputs, None, &pass, Path::new("out.ts"));
             // Reuse an identical earlier encode: the key is the whole command
             // (without its output or pass log) and the files it reads.
@@ -899,9 +901,10 @@ impl<'a> Builder<'a> {
                 .collect();
             key.push(encode_cache::file_id(&asset.path));
             key.extend(inputs.iter().filter_map(|i| i.file.as_deref()).map(encode_cache::file_id));
+            key.extend(burn.as_ref().map(|b| encode_cache::file_id(&b.source)));
             Some((args, encode_cache::entry(&key)))
         };
-        Ok(TitlePlan { asset, chapters, duration: asset.info.duration.max(1.0), audio, encode })
+        Ok(TitlePlan { asset, chapters, duration: asset.info.duration.max(1.0), audio, burn, encode })
     }
 
     /// Take on encoding cache entry `cached`: false when it already exists
@@ -935,7 +938,7 @@ impl<'a> Builder<'a> {
         let mut work = 0.0;
         if two_pass {
             self.stage(format!("Analysing title “{}” (pass 1 of 2)", t.name));
-            let src = transcode::Source { path: &asset.path, info: &asset.info, picture: &t.video };
+            let src = transcode::Source { path: &asset.path, info: &asset.info, picture: &t.video, burn: plan.burn.as_ref() };
             let first = transcode::title_args(&src, &self.settings, &plan.chapters, &inputs, None, &transcode::Pass::First(log), &self.work.join("null.ts"));
             self.encode(key, first, duration, 0.0, "Analysing · pass 1 of 2")?;
             work += duration;
@@ -991,7 +994,7 @@ impl<'a> Builder<'a> {
                 };
                 self.stage(format!("Copying the video of “{}”", t.name));
                 let tmp = self.work.join(format!("title-{}.ts", clip_name(n)));
-                let src = transcode::Source { path: &asset.path, info: &asset.info, picture: &t.video };
+                let src = transcode::Source { path: &asset.path, info: &asset.info, picture: &t.video, burn: None };
                 let args = transcode::passthrough_args(&src, &self.settings, &inputs, None, &tmp);
                 self.encode(&key, args, duration, 0.0, "Copying the original video")?;
                 work += duration;
@@ -1103,7 +1106,7 @@ impl<'a> Builder<'a> {
             .into_iter()
             .collect();
         let opts = crate::media::picture::VideoOptions::default();
-        let src = transcode::Source { path: &asset.path, info: &asset.info, picture: &opts };
+        let src = transcode::Source { path: &asset.path, info: &asset.info, picture: &opts, burn: None };
         let args = transcode::title_args(&src, &self.settings, &[], &audio, None, &transcode::Pass::Only, &tmp);
         self.encode(&key, args, duration, 0.0, "Encoding")?;
         let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(self.settings.video) }];

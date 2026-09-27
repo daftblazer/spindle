@@ -34,6 +34,67 @@ pub struct SubImage {
     pub forced: bool,
 }
 
+/// A subtitle track drawn into the picture by ffmpeg's libass filter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BurnIn {
+    /// The subtitle file, or the video for embedded tracks, under a name
+    /// that is safe in a filter description and stable between builds.
+    pub file: std::path::PathBuf,
+    /// Subtitle stream within `file` (embedded tracks).
+    pub stream: Option<usize>,
+    /// Disc style for text formats without their own styling.
+    pub force_style: Option<String>,
+    /// Seconds from the video's first frame to the subtitles' zero.
+    pub clock: f64,
+    /// The real file, for noticing changes to it.
+    pub source: std::path::PathBuf,
+}
+
+impl BurnIn {
+    /// The filter, for a clip starting `start` seconds into the video.
+    pub fn filter(&self, start: f64) -> String {
+        let mut f = format!("subtitles=filename={}", self.file.to_string_lossy());
+        if let Some(i) = self.stream {
+            f.push_str(&format!(":si={i}"));
+        }
+        if let Some(style) = &self.force_style {
+            f.push_str(&format!(":force_style='{style}'"));
+        }
+        // Frames reach the filter counted from the start of the clip; the
+        // subtitles count from their own zero.
+        let shift = start + self.clock;
+        if shift.abs() > 0.0005 {
+            f = format!("setpts=PTS+{shift:.3}/TB,{f},setpts=PTS-{shift:.3}/TB");
+        }
+        f
+    }
+}
+
+/// Prepare burning `track` of a video at `video_path` into its picture.
+pub fn burn_in(track: &SubtitleTrack, video_path: &Path, info: &MediaInfo, style: &SubtitleStyle) -> Result<BurnIn> {
+    let (source, stream, clock) = match &track.source {
+        SubtitleSource::Embedded { index } => (video_path.to_path_buf(), Some(*index), info.start_time),
+        SubtitleSource::External { path } => (path.clone(), None, 0.0),
+    };
+    if !source.exists() {
+        bail!("subtitle file {} is missing", source.display());
+    }
+    // A link named by a hash of the path: no characters that would need
+    // escaping in the filter, and the same every build (for the encode cache).
+    let dir = crate::media::cache_dir().join("burn");
+    std::fs::create_dir_all(&dir)?;
+    let ext = source.extension().map(|e| e.to_string_lossy().to_lowercase()).filter(|e| e.chars().all(|c| c.is_ascii_alphanumeric())).unwrap_or_else(|| "mkv".into());
+    let real = source.canonicalize().unwrap_or_else(|_| source.clone());
+    let file = dir.join(format!("{:016x}.{ext}", crate::encode_cache::fnv(real.to_string_lossy().as_bytes())));
+    if std::fs::read_link(&file).ok().as_deref() != Some(real.as_path()) {
+        let _ = std::fs::remove_file(&file);
+        std::os::unix::fs::symlink(&real, &file).with_context(|| format!("linking {}", real.display()))?;
+    }
+    let restyle = !track.is_ass() || style.restyle_ass;
+    let force_style = restyle.then(|| ass::style_overrides(style).iter().map(|o| o.trim_start_matches("Default.").to_string()).collect::<Vec<_>>().join(","));
+    Ok(BurnIn { file, stream, force_style, clock, source: real })
+}
+
 /// Where the video picture is on the disc frame when nothing is changed
 /// (kept video, or a whole picture fitted in).
 pub fn default_area(info: &MediaInfo, disc: VideoFormat) -> Area {
@@ -200,6 +261,16 @@ pub fn prepare(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn burn_in_filter() {
+        let b = BurnIn { file: "/c/ab.mkv".into(), stream: Some(2), force_style: None, clock: 0.0, source: "/x.mkv".into() };
+        assert_eq!(b.filter(0.0), "subtitles=filename=/c/ab.mkv:si=2");
+        // A preview from 90 s in shifts the frames onto the subtitles' clock.
+        assert_eq!(b.filter(90.0), "setpts=PTS+90.000/TB,subtitles=filename=/c/ab.mkv:si=2,setpts=PTS-90.000/TB");
+        let s = BurnIn { stream: None, force_style: Some("FontName=Cantarell,FontSize=12".into()), ..b };
+        assert!(s.filter(0.0).ends_with(":force_style='FontName=Cantarell,FontSize=12'"));
+    }
 
     #[test]
     fn default_area_letterboxes() {

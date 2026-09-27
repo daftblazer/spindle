@@ -105,6 +105,8 @@ pub struct Source<'a> {
     pub path: &'a Path,
     pub info: &'a MediaInfo,
     pub picture: &'a VideoOptions,
+    /// Subtitles drawn into the picture.
+    pub burn: Option<&'a crate::subtitles::BurnIn>,
 }
 
 /// Colour description of the disc format: (ffmpeg primaries, transfer,
@@ -339,7 +341,8 @@ fn title_common(
     a.extend([s("-sn"), s("-dn"), s("-map_chapters"), s("-1")]);
     match video {
         VideoMode::Encode { keyframes } => {
-            let plan = picture::plan(info, src.picture, set.video);
+            let burn = src.burn.map(|b| b.filter(start));
+            let plan = picture::plan_with(info, src.picture, set.video, burn.as_deref());
             a.extend([s("-vf"), video_filter(set, &plan.filters)]);
             a.extend(video_args(set, set.video_bitrate, plan.interlaced));
             if !keyframes.is_empty() {
@@ -485,7 +488,7 @@ mod tests {
         let info = MediaInfo { duration: 60.0, video_codec: Some("h264".into()), ..Default::default() };
         let out = Path::new("/tmp/out.ts");
         let opts = VideoOptions::default();
-        let src = Source { path: Path::new("/tmp/in.mkv"), info: &info, picture: &opts };
+        let src = Source { path: Path::new("/tmp/in.mkv"), info: &info, picture: &opts, burn: None };
         let vaapi = settings(VideoFormat::P1080_23976, VideoEncoder::Vaapi);
         let a = title_args(&src, &vaapi, &[10.0], &[], None, &Pass::Only, out);
         assert_eq!(arg_after(&a, "-c:v"), Some("h264_vaapi"));
@@ -518,7 +521,7 @@ mod tests {
     fn audio_options() {
         let info = MediaInfo { duration: 60.0, video_codec: Some("h264".into()), ..Default::default() };
         let opts = VideoOptions::default();
-        let src = Source { path: Path::new("/tmp/in.mkv"), info: &info, picture: &opts };
+        let src = Source { path: Path::new("/tmp/in.mkv"), info: &info, picture: &opts, burn: None };
         let set = EncodeSettings { audio: AudioCodec::Lpcm24, ..settings(VideoFormat::P1080_23976, VideoEncoder::Software) };
         let upmix = AudioInput { layout: Some(6), loudness: Some("loudnorm=I=-23".into()), ..AudioInput::encode(None, 0, 0.0, 2) };
         let truehd = AudioInput { copy: Some(AudioCodec::TrueHd), ..AudioInput::encode(None, 1, 0.0, 8) };
@@ -540,7 +543,7 @@ mod tests {
         let log = Path::new("/tmp/pass");
         let audio = [AudioInput::encode(None, 0, 0.0, 2)];
         let opts = VideoOptions::default();
-        let src = Source { path: Path::new("/tmp/in.mkv"), info: &info, picture: &opts };
+        let src = Source { path: Path::new("/tmp/in.mkv"), info: &info, picture: &opts, burn: None };
         let first = title_args(&src, &set, &[], &audio, None, &Pass::First(log.into()), Path::new("/tmp/o.ts"));
         assert_eq!(arg_after(&first, "-pass"), Some("1"));
         assert_eq!(arg_after(&first, "-preset"), Some("slow"));

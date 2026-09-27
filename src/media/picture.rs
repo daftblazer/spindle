@@ -156,12 +156,29 @@ fn geometry(aspect: f64, fit: Fit, disc: VideoFormat) -> ((u32, u32), Area) {
 
 /// Filters that turn video with `info` into the picture of `disc`.
 pub fn plan(info: &MediaInfo, opts: &VideoOptions, disc: VideoFormat) -> Plan {
+    plan_with(info, opts, disc, None)
+}
+
+/// [`plan`], drawing subtitles into the picture with filter `burn`.
+pub fn plan_with(info: &MediaInfo, opts: &VideoOptions, disc: VideoFormat, burn: Option<&str>) -> Plan {
     let (w, h) = disc.size();
-    let src = (info.width.max(2), info.height.max(2));
-    let [cl, ct, cr, cb] = opts.crop;
+    let mut src = (info.width.max(2), info.height.max(2));
+    let [mut cl, ct, mut cr, cb] = opts.crop;
+    let (mut sn, mut sd) = info.sar.unwrap_or((1, 1));
+    // Subtitles are drawn on square pixels (libass assumes them), so wide
+    // or narrow pixels are made square first; the crop follows.
+    let square = burn.is_some() && sn != sd;
+    let square_w = ((src.0 as f64 * sn as f64 / sd.max(1) as f64 / 2.0).round() * 2.0) as u32;
+    if square {
+        let k = square_w as f64 / src.0 as f64;
+        cl = ((cl as f64 * k / 2.0).round() * 2.0) as u32;
+        cr = ((cr as f64 * k / 2.0).round() * 2.0) as u32;
+        src.0 = square_w;
+        (sn, sd) = (1, 1);
+    }
+    let [cl, ct, cr, cb] = [cl, ct, cr, cb];
     let cropped = (src.0.saturating_sub(cl + cr).max(2), src.1.saturating_sub(ct + cb).max(2));
     let has_crop = cl + ct + cr + cb > 0;
-    let (sn, sd) = info.sar.unwrap_or((1, 1));
     let aspect = opts.aspect.value().unwrap_or(cropped.0 as f64 * sn as f64 / sd.max(1) as f64 / cropped.1 as f64);
     let (scaled, area) = geometry(aspect, opts.fit, disc);
 
@@ -171,7 +188,7 @@ pub fn plan(info: &MediaInfo, opts: &VideoOptions, disc: VideoFormat) -> Plan {
     // The disc can carry interlaced video as it is when nothing moves or
     // scales it and the field rate matches.
     let untouched = !has_crop && scaled == (w, h) && src == (w, h);
-    let keep = disc.interlaced() && (src_rate - disc_rate).abs() < 0.01 && untouched && !info.is_hdr();
+    let keep = disc.interlaced() && (src_rate - disc_rate).abs() < 0.01 && untouched && !info.is_hdr() && burn.is_none();
     let mut f: Vec<String> = Vec::new();
     let mut interlaced = None;
     let mut deinterlaced = false;
@@ -198,18 +215,34 @@ pub fn plan(info: &MediaInfo, opts: &VideoOptions, disc: VideoFormat) -> Plan {
         }
         Deinterlace::Auto => {}
     }
-    if has_crop {
-        f.push(format!("crop={}:{}:{cl}:{ct}", cropped.0, cropped.1));
-    }
     let tone_mapped = info.is_hdr();
-    if tone_mapped {
-        // To linear light, BT.2020 → BT.709 primaries, tone map, then back
-        // to BT.709 video.
-        f.push(
-            "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,\
-             zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
-                .into(),
-        );
+    // To linear light, BT.2020 → BT.709 primaries, tone map, then back to
+    // BT.709 video.
+    let tone_map = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,\
+                    zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
+    match burn {
+        // Subtitles go on the standard range picture, before the crop so
+        // they sit where their author placed them.
+        Some(b) => {
+            if square {
+                f.push(format!("scale={}:{}:flags=lanczos,setsar=1", src.0, src.1));
+            }
+            if tone_mapped {
+                f.push(tone_map.into());
+            }
+            f.push(b.to_string());
+            if has_crop {
+                f.push(format!("crop={}:{}:{cl}:{ct}", cropped.0, cropped.1));
+            }
+        }
+        None => {
+            if has_crop {
+                f.push(format!("crop={}:{}:{cl}:{ct}", cropped.0, cropped.1));
+            }
+            if tone_mapped {
+                f.push(tone_map.into());
+            }
+        }
     }
     if interlaced.is_none() || !untouched {
         let flags = if interlaced.is_some() { ":interl=1" } else { "" };
@@ -406,6 +439,20 @@ mod tests {
                    [Parsed_cropdetect_0 @ 0x1] x1:0 x2:1919 y1:138 y2:941 w:1920 h:804 x:0 y:138 pts:2 t:0.08 limit:0.09 crop=1920:804:0:138\n";
         assert_eq!(last_crop(log), Some((1920, 804, 0, 138)));
         assert_eq!(last_crop("nothing"), None);
+    }
+
+    #[test]
+    fn burned_subtitles_on_square_pixels() {
+        let mut dvd = info(708, 480, (24000, 1001));
+        dvd.sar = Some((160, 177));
+        let opts = VideoOptions { crop: [4, 0, 4, 0], ..Default::default() };
+        let p = plan_with(&dvd, &opts, VideoFormat::P1080_23976, Some("subtitles=filename=x.ass"));
+        // 708 × 160/177 = 640 square pixels; the crop scales with it.
+        assert!(p.filters.starts_with("scale=640:480:flags=lanczos,setsar=1,subtitles=filename=x.ass,crop=632:480:4:0"), "{}", p.filters);
+        assert_eq!((p.area.w, p.area.h), (1422, 1080));
+        // Square pixels need no scaling first.
+        let p = plan_with(&info(1920, 1080, (24000, 1001)), &VideoOptions::default(), VideoFormat::P1080_23976, Some("subtitles=filename=x.ass"));
+        assert!(p.filters.starts_with("subtitles=filename=x.ass,"));
     }
 
     #[test]

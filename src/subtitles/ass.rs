@@ -90,7 +90,7 @@ fn ass_color(c: Rgba) -> String {
 
 /// Style overrides for the "Default" style that ffmpeg gives converted
 /// SRT/WebVTT subtitles (PlayResY 288).
-fn style_overrides(style: &SubtitleStyle) -> Vec<String> {
+pub fn style_overrides(style: &SubtitleStyle) -> Vec<String> {
     let k = 288.0 / 1080.0;
     vec![
         format!("Default.FontName={}", style.font),

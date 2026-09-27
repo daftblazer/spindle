@@ -388,6 +388,12 @@ pub fn check(p: &Project) -> Vec<Issue> {
                 );
             }
         }
+        if t.keep_video && t.subtitles.iter().any(|s| s.enabled && s.burn_in) {
+            warn(
+                gettext("“{}” keeps its original video, so its subtitles can't be burned in; they go on the disc as a subtitle track instead.").replace("{}", &t.name),
+                target,
+            );
+        }
         if t.keep_video && t.video_check.is_none() {
             warn(gettext("“{}” keeps its original video but hasn't been checked for compatibility.").replace("{}", &t.name), target);
         }

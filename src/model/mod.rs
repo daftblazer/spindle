@@ -162,9 +162,19 @@ impl Title {
         self.audio.iter().filter(|t| t.enabled).take(MAX_AUDIO_TRACKS)
     }
 
-    /// Tracks that go on the disc, in stream order.
+    /// Tracks that go on the disc as subtitle streams, in stream order.
     pub fn disc_subtitles(&self) -> impl Iterator<Item = &SubtitleTrack> {
-        self.subtitles.iter().filter(|t| t.enabled && t.kind() != SubtitleKind::Unsupported).take(32)
+        self.subtitles.iter().filter(|t| t.enabled && !self.is_burned(t) && t.kind() != SubtitleKind::Unsupported).take(32)
+    }
+
+    /// The track drawn into the picture, if any (not for kept video,
+    /// which isn't re-encoded).
+    pub fn burned_subtitle(&self) -> Option<&SubtitleTrack> {
+        self.subtitles.iter().find(|t| self.is_burned(t))
+    }
+
+    fn is_burned(&self, t: &SubtitleTrack) -> bool {
+        t.enabled && t.burn_in && t.can_burn_in() && !self.keep_video && self.subtitles.iter().find(|s| s.enabled && s.burn_in && s.can_burn_in()).is_some_and(|s| s.id == t.id)
     }
 }
 

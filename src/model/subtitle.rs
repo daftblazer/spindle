@@ -28,6 +28,10 @@ pub struct SubtitleTrack {
     /// Include on the disc.
     pub enabled: bool,
     pub forced: bool,
+    /// Drawn into the picture instead of being a subtitle track (always
+    /// shown; keeps every ASS effect exactly).
+    #[serde(default)]
+    pub burn_in: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +73,11 @@ impl SubtitleTrack {
 
     pub fn is_ass(&self) -> bool {
         matches!(self.codec.as_str(), "ass" | "ssa")
+    }
+
+    /// Text subtitles can be burned into the picture.
+    pub fn can_burn_in(&self) -> bool {
+        self.kind() == SubtitleKind::Text
     }
 }
 
@@ -140,6 +149,7 @@ pub fn external_track(path: &Path, video: Option<&Path>) -> SubtitleTrack {
         name,
         enabled: true,
         forced,
+        burn_in: false,
     }
 }
 
@@ -161,6 +171,7 @@ pub fn embedded_tracks(info: &MediaInfo) -> Vec<SubtitleTrack> {
                 name,
                 enabled: codec_kind(&s.codec) != SubtitleKind::Unsupported,
                 forced: s.forced,
+                burn_in: false,
             }
         })
         .collect()
