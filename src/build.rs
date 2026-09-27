@@ -880,7 +880,12 @@ pub fn is_image(out: &Path) -> bool {
 /// ".iso" (built in a temporary folder next to it, which is then removed).
 pub fn build(project: &Project, out: &Path, cancel: &AtomicBool, emit: &dyn Fn(BuildEvent)) -> Result<PathBuf> {
     if !is_image(out) {
-        return Builder::new(project, out, cancel, emit).run();
+        let res = Builder::new(project, out, cancel, emit).run();
+        // A failed or cancelled build leaves no work files behind.
+        if res.is_err() {
+            let _ = std::fs::remove_dir_all(out.join(".spindle-work"));
+        }
+        return res;
     }
     let folder = out.with_extension("spindle-tmp");
     let scaled = |ev: BuildEvent| match ev {
