@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Clippy and tests
+    runs-on: ubuntu-latest
+    container: fedora:44
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: >
+          dnf install -y --setopt=install_weak_deps=False
+          rust cargo clippy gcc meson ninja-build pkgconf-pkg-config
+          gtk4-devel libadwaita-devel libass-devel glib2-devel
+          desktop-file-utils appstream gettext
+
+      - name: Configure
+        run: meson setup _build
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test
