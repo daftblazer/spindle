@@ -237,7 +237,7 @@ fn draw_text(cr: &cairo::Context, text: &str, style: &TextStyle, color: Rgba, r:
 }
 
 /// Split a button rect into (thumbnail area, label area).
-fn button_areas(item: &MenuItem, b: &ButtonItem) -> (Option<Rect>, Rect) {
+fn button_areas(cr: &cairo::Context, item: &MenuItem, b: &ButtonItem) -> (Option<Rect>, Rect) {
     let r = item.rect;
     // Keep labels clear of the highlight frame.
     let pad = (r.w * 0.06).min(24.0);
@@ -250,7 +250,12 @@ fn button_areas(item: &MenuItem, b: &ButtonItem) -> (Option<Rect>, Rect) {
     if b.label.is_empty() {
         return (Some(r), r);
     }
-    let lh = line_height(&b.text).min(r.h / 2.0);
+    // As tall as the label is once wrapped (long names take two or more
+    // lines), up to half the button; the thumbnail gets the rest.
+    let one = line_height(&b.text);
+    let width = inset(r).w;
+    let (_, logical) = layout(cr, &b.label, &b.text, width).pixel_extents();
+    let lh = (logical.height() as f64 + one * 0.25).max(one).min(r.h / 2.0);
     (Some(Rect::new(r.x, r.y, r.w, r.h - lh)), inset(Rect::new(r.x, r.y + r.h - lh, r.w, lh)))
 }
 
@@ -383,7 +388,7 @@ pub fn draw_static(cr: &cairo::Context, project: &Project, menu: &Menu, images: 
             }
             ItemKind::Shape(sh) => draw_shape(cr, sh, item.rect),
             ItemKind::Button(b) => {
-                if let (Some(area), Some(asset)) = (button_areas(item, b).0, b.thumbnail) {
+                if let (Some(area), Some(asset)) = (button_areas(cr, item, b).0, b.thumbnail) {
                     match images.get(project, asset, b.thumbnail_time) {
                         Some(p) => {
                             // Rounded corners on the fitted image.
@@ -413,7 +418,7 @@ pub fn draw_button(cr: &cairo::Context, project: &Project, images: &ImageCache, 
     if item.hidden {
         return;
     }
-    let (thumb, label_area) = button_areas(item, b);
+    let (thumb, label_area) = button_areas(cr, item, b);
     let accent = match state {
         ButtonState::Normal => None,
         ButtonState::Selected => Some(b.selected_color),
@@ -459,7 +464,15 @@ pub fn draw_button(cr: &cairo::Context, project: &Project, images: &ImageCache, 
         match b.highlight {
             Highlight::Frame => {
                 let inset = 3.0;
-                let r = thumb.unwrap_or(item.rect);
+                // Around the thumbnail picture itself (it may not fill its area).
+                let r = match (thumb, b.thumbnail.and_then(|a| images.get(project, a, b.thumbnail_time))) {
+                    (Some(area), Some(pic)) => {
+                        let f = fitted_rect(&pic, area);
+                        Rect::new(f.x - inset * 2.0, f.y - inset * 2.0, f.w + inset * 4.0, f.h + inset * 4.0)
+                    }
+                    (Some(area), None) => area,
+                    (None, _) => item.rect,
+                };
                 rounded_rect(cr, Rect::new(r.x + inset, r.y + inset, r.w - 2.0 * inset, r.h - 2.0 * inset), 10.0);
                 cr.set_line_width(6.0);
                 cr.stroke().ok();
