@@ -5,7 +5,7 @@
 //! estimates.
 
 use crate::bluray::AudioCodec;
-use crate::model::{language_name, Action, AudioSource, EndAction, FirstPlay, Id, Project, SubtitleSource, MAX_AUDIO_TRACKS, SAFE_AREA};
+use crate::model::{language_name, Action, AudioSource, EndAction, FirstPlay, Id, Project, SubtitleSource, MAX_AUDIO_TRACKS};
 use gettextrs::gettext;
 use std::collections::HashSet;
 
@@ -327,7 +327,7 @@ pub fn check(p: &Project) -> Vec<Issue> {
                 _ => {}
             }
             let r = item.rect;
-            let s = SAFE_AREA;
+            let s = m.safe_area();
             if r.x < s.x - 0.5 || r.y < s.y - 0.5 || r.x + r.w > s.x + s.w + 0.5 || r.y + r.h > s.y + s.h + 0.5 {
                 warn(
                     gettext("Button “{}” on “{}” is outside the safe area and may be cut off on some TVs.")

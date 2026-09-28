@@ -23,6 +23,7 @@ menus (no BD-J, no Java), written by Spindle's own muxer and format writers.
 - Buttons with video-frame thumbnails or your own artwork for each state,
   and frame, text, underline, filled or arrow highlights; copy one button's
   look to every button
+- 16:9 menus, and 4:3 menus that fill the screen on 4:3 discs
 - Still menus, motion menus (a looping video background with a chosen start
   point), menu music, intro videos that play first, fades, and timeouts that
   play a title or show another menu

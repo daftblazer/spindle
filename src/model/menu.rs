@@ -371,6 +371,40 @@ pub enum AlignOp {
 /// The title-safe area items are aligned to when only one is selected.
 pub const SAFE_AREA: Rect = Rect::new(DESIGN_WIDTH * 0.05, DESIGN_HEIGHT * 0.05, DESIGN_WIDTH * 0.9, DESIGN_HEIGHT * 0.9);
 
+/// The middle of the canvas that a 4:3 menu is designed in.
+pub const STANDARD_AREA: Rect = Rect::new((DESIGN_WIDTH - DESIGN_HEIGHT * 4.0 / 3.0) / 2.0, 0.0, DESIGN_HEIGHT * 4.0 / 3.0, DESIGN_HEIGHT);
+
+/// The shape of screen a menu is designed for.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum MenuShape {
+    /// 16:9, the whole canvas. Letterboxed on 4:3 discs.
+    #[default]
+    Wide,
+    /// 4:3, the middle of the canvas, which fills the screen on 4:3 discs
+    /// (16:9 discs show the whole canvas).
+    Standard,
+}
+
+impl MenuShape {
+    fn is_wide(&self) -> bool {
+        *self == MenuShape::Wide
+    }
+
+    /// The part of the canvas the menu is designed in.
+    pub fn frame(self) -> Rect {
+        match self {
+            MenuShape::Wide => Rect::new(0.0, 0.0, DESIGN_WIDTH, DESIGN_HEIGHT),
+            MenuShape::Standard => STANDARD_AREA,
+        }
+    }
+
+    /// Where buttons and text are safe from TVs cutting off the edges.
+    pub fn safe_area(self) -> Rect {
+        let f = self.frame();
+        Rect::new(f.x + f.w * 0.05, f.y + f.h * 0.05, f.w * 0.9, f.h * 0.9)
+    }
+}
+
 /// Bounding box of rectangles.
 pub fn bounds(rects: impl IntoIterator<Item = Rect>) -> Option<Rect> {
     rects.into_iter().fold(None, |acc: Option<Rect>, r| {
@@ -438,6 +472,8 @@ pub struct Menu {
     pub fade_in: f64,
     #[serde(default)]
     pub fade_out: f64,
+    #[serde(default, skip_serializing_if = "MenuShape::is_wide")]
+    pub shape: MenuShape,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -496,7 +532,13 @@ impl Menu {
             timeout: None,
             fade_in: 0.0,
             fade_out: 0.0,
+            shape: MenuShape::Wide,
         }
+    }
+
+    /// Where buttons and text are safe from TVs cutting off the edges.
+    pub fn safe_area(&self) -> Rect {
+        self.shape.safe_area()
     }
 
     /// An empty pop-up menu.
@@ -539,8 +581,8 @@ impl Menu {
         }
         let area = if rects.len() == 1 {
             match op {
-                AlignOp::HCenter | AlignOp::VCenter => Rect::new(0.0, 0.0, DESIGN_WIDTH, DESIGN_HEIGHT),
-                _ => SAFE_AREA,
+                AlignOp::HCenter | AlignOp::VCenter => self.shape.frame(),
+                _ => self.shape.safe_area(),
             }
         } else {
             bounds(rects.iter().map(|(_, r)| *r)).unwrap()

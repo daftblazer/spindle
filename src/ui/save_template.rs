@@ -20,7 +20,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>, toast: impl F
 
     let g = adw::PreferencesGroup::builder()
         .description(gettext(
-            "Saves the main menu and the layout of the episode pages. Applied to another show, the title, season, episode names, running times and stills are filled in, and there are as many pages as its episodes need. Setup and pop-up menus are made in the template's colours.",
+            "Saves the main menu and the layout of the episode pages. Applied to another show, the title, season, episode names, running times and stills are filled in, and there are as many pages as its episodes need. Setup and pop-up menus are made in the template's colours.\n\nTo give a template 4:3 menus as well, make 4:3 menus (Shape in the menu's properties) and save them under the same name.",
         ))
         .build();
     let name = adw::EntryRow::builder().title(gettext("Name")).text(format!("{} {}", doc.project().disc.name, gettext("Menus"))).build();
@@ -68,9 +68,19 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>, toast: impl F
         let (make, d, toast) = (make.clone(), dialog.clone(), toast.clone());
         save.connect_clicked(move |_| {
             let Some(t) = make() else { return };
+            // Saving the other shape under the same name adds it: 16:9 and
+            // 4:3 designs travel in one template.
+            let (t, joined) = match custom::find(&t.name) {
+                Some(old) if old.standard.is_some() || t.standard.is_some() => (old.combine(&t), true),
+                _ => (t, false),
+            };
             match custom::install(&t) {
                 Ok(_) => {
-                    toast(gettext("Saved to My Templates"));
+                    toast(if joined && t.has_standard() {
+                        gettext("Saved to My Templates, with 16:9 and 4:3 menus")
+                    } else {
+                        gettext("Saved to My Templates")
+                    });
                     d.close();
                 }
                 Err(e) => toast(e.to_string()),

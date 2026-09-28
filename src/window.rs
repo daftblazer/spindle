@@ -539,7 +539,10 @@ impl SpindleWindow {
             let doc = w.doc();
             let n = doc.project().menus.len() + 1;
             let id = doc.edit(Change::Structure, |p| {
-                let m = Menu::new(&format!("{} {n}", gettext("Menu")));
+                let mut m = Menu::new(&format!("{} {n}", gettext("Menu")));
+                if p.disc.video.is_4x3() {
+                    m.shape = MenuShape::Standard;
+                }
                 let id = m.id;
                 p.menus.push(m);
                 id

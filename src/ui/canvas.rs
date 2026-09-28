@@ -572,8 +572,9 @@ impl MenuCanvas {
     }
 
     fn snap_targets(&self, skip: &[Id]) -> (Vec<f64>, Vec<f64>) {
-        let mut xs = vec![0.0, DESIGN_WIDTH / 2.0, DESIGN_WIDTH, SAFE_AREA.x, SAFE_AREA.x + SAFE_AREA.w];
-        let mut ys = vec![0.0, DESIGN_HEIGHT / 2.0, DESIGN_HEIGHT, SAFE_AREA.y, SAFE_AREA.y + SAFE_AREA.h];
+        let (f, s) = self.with_menu(|m| (m.shape.frame(), m.safe_area())).unwrap_or((Rect::new(0.0, 0.0, DESIGN_WIDTH, DESIGN_HEIGHT), SAFE_AREA));
+        let mut xs = vec![0.0, DESIGN_WIDTH / 2.0, DESIGN_WIDTH, f.x, f.x + f.w, s.x, s.x + s.w];
+        let mut ys = vec![0.0, DESIGN_HEIGHT / 2.0, DESIGN_HEIGHT, s.y, s.y + s.h];
         self.with_menu(|m| {
             for i in m.items.iter().filter(|i| !skip.contains(&i.id)) {
                 let r = i.rect;
@@ -1096,11 +1097,26 @@ impl MenuCanvas {
                 y += GRID;
             }
         }
+        // A 4:3 menu: the sides are only seen on 16:9 discs.
+        if menu.shape == MenuShape::Standard {
+            let f = menu.shape.frame();
+            cr.set_source_rgba(0.0, 0.0, 0.0, 0.45);
+            cr.rectangle(0.0, 0.0, f.x, DESIGN_HEIGHT);
+            cr.rectangle(f.x + f.w, 0.0, DESIGN_WIDTH - f.x - f.w, DESIGN_HEIGHT);
+            cr.fill().ok();
+            cr.set_source_rgba(1.0, 1.0, 1.0, 0.35);
+            cr.set_line_width(1.5 / v.scale);
+            for x in [f.x, f.x + f.w] {
+                cr.move_to(x, 0.0);
+                cr.line_to(x, DESIGN_HEIGHT);
+            }
+            cr.stroke().ok();
+        }
         if self.inner.show_safe_area.get() {
             cr.set_source_rgba(1.0, 1.0, 1.0, 0.25);
             cr.set_line_width(1.5 / v.scale);
             cr.set_dash(&[6.0 / v.scale, 6.0 / v.scale], 0.0);
-            let s = SAFE_AREA;
+            let s = menu.safe_area();
             cr.rectangle(s.x, s.y, s.w, s.h);
             cr.stroke().ok();
             cr.set_dash(&[], 0.0);

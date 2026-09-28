@@ -36,9 +36,50 @@ pub struct CustomTemplate {
     pub fonts: Fonts,
     pub main: TemplateMenu,
     pub episodes: EpisodeLayout,
+    /// The same menus designed for 4:3 screens (in the middle of the
+    /// canvas), used on 4:3 discs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standard: Option<Standard>,
     /// Pictures used by items and backgrounds, by the id they use.
     #[serde(default)]
     pub images: BTreeMap<Id, Image>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Standard {
+    pub main: TemplateMenu,
+    pub episodes: EpisodeLayout,
+}
+
+impl CustomTemplate {
+    /// Whether the template has menus made for 4:3 screens.
+    pub fn has_standard(&self) -> bool {
+        self.standard.is_some()
+    }
+
+    /// Put the design of `other` for the shape it was saved from (the 4:3
+    /// one when it has only that) into this template.
+    pub fn combine(mut self, other: &CustomTemplate) -> CustomTemplate {
+        match &other.standard {
+            // Saved from 4:3 menus: its 4:3 design joins this one.
+            Some(s) if s.main == other.main => self.standard = Some(s.clone()),
+            _ => {
+                self.main = other.main.clone();
+                self.episodes = other.episodes.clone();
+            }
+        }
+        self.name = other.name.clone();
+        if !other.description.is_empty() {
+            self.description = other.description.clone();
+        }
+        if !other.author.is_empty() {
+            self.author = other.author.clone();
+        }
+        self.palette = other.palette;
+        self.fonts = other.fonts.clone();
+        self.images.extend(other.images.clone());
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -395,8 +436,14 @@ fn make_menu(tm: &TemplateMenu, name: &str, f: &Fill) -> (Menu, HashMap<Id, Id>)
 /// Menus from custom template `t`: the main menu, then the episode pages.
 pub(super) fn build(t: &CustomTemplate, input: Input, images: &HashMap<Id, Id>) -> Output {
     let (edition, count) = (input.edition().unwrap_or_default(), input.count());
+    // The 4:3 design on 4:3 discs, when there is one.
+    let standard = t.standard.as_ref().filter(|_| input.p.disc.video.is_4x3());
+    let shape = if standard.is_some() { MenuShape::Standard } else { MenuShape::Wide };
+    let (main_t, lay) = match standard {
+        Some(s) => (&s.main, &s.episodes),
+        None => (&t.main, &t.episodes),
+    };
     let Input { name, season, disc, episodes, main: base, setup, .. } = input;
-    let lay = &t.episodes;
     let per_page = lay.per_page();
     let n_pages = episodes.len().div_ceil(per_page).max(1);
     let page_ids: Vec<Id> = (0..n_pages).map(|_| new_id()).collect();
@@ -418,15 +465,15 @@ pub(super) fn build(t: &CustomTemplate, input: Input, images: &HashMap<Id, Id>) 
         Still::First | Still::Page | Still::Episode => first.map(|e| (e.asset, e.poster)),
     };
     let f = Fill { vars: common.clone(), link: &link, still: &still, images };
-    let (mut main, ids) = make_menu(&t.main, &base.name, &f);
+    let (mut main, ids) = make_menu(main_t, &base.name, &f);
     main.id = main_id;
+    main.shape = shape;
     if main.default_button.is_none() {
         let first_button = main.buttons().next().map(|b| b.id);
         main.default_button = first_button;
     }
     // The name, which a logo can take the place of.
-    let title_item = t
-        .main
+    let title_item = main_t
         .items
         .iter()
         .find(|ti| matches!(&ti.item.kind, ItemKind::Text(x) if x.text.contains("{title}")))
@@ -481,6 +528,7 @@ pub(super) fn build(t: &CustomTemplate, input: Input, images: &HashMap<Id, Id>) 
         let f = Fill { vars: vars.clone(), link: &nav, still: &page_still, images };
         let (mut page, _) = make_menu(&lay.page, &heading, &f);
         page.id = *id;
+        page.shape = shape;
         let chrome_default = page.default_button;
         for (k, e) in slice.iter().enumerate() {
             let mut v = vars.clone();
@@ -791,6 +839,10 @@ pub fn from_project(p: &Project, name: &str, description: &str, author: &str) ->
     let style = info.as_ref().and_then(|t| Style::from_id(&t.style));
     let theme = THEMES[info.as_ref().map_or_else(|| detect_theme(p), |t| t.theme).min(THEMES.len() - 1)];
     let (heading, body) = style.map_or(("Cantarell", "Cantarell"), |s| s.fonts());
+    let episodes = EpisodeLayout { page: page_t, slot: slot_t.items, columns: columns as u32, rows: rows as u32, step: [dx, dy], order };
+    // Menus made for 4:3 are the 4:3 design, and stand in for the 16:9
+    // one until that is saved too (see `combine`).
+    let standard = (main.shape == MenuShape::Standard).then(|| Standard { main: main_t.clone(), episodes: episodes.clone() });
     Ok(CustomTemplate {
         format: FORMAT.into(),
         version: 1,
@@ -808,7 +860,8 @@ pub fn from_project(p: &Project, name: &str, description: &str, author: &str) ->
         },
         fonts: Fonts { heading: heading.into(), body: body.into() },
         main: main_t,
-        episodes: EpisodeLayout { page: page_t, slot: slot_t.items, columns: columns as u32, rows: rows as u32, step: [dx, dy], order },
+        episodes,
+        standard,
         images,
     })
 }

@@ -88,6 +88,9 @@ impl State {
             v.append(&pic);
             v.append(&gtk::Label::builder().label(&t.name).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).css_classes(["heading"]).build());
             let mut about = t.description.clone();
+            if t.has_standard() {
+                about = if about.is_empty() { gettext("16:9 and 4:3") } else { format!("{about} · {}", gettext("16:9 and 4:3")) };
+            }
             if !t.author.is_empty() {
                 about = if about.is_empty() { gettext("By {}").replace("{}", &t.author) } else { format!("{about} · {}", gettext("By {}").replace("{}", &t.author)) };
             }

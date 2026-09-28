@@ -1226,6 +1226,40 @@ mod tests {
     }
 
     #[test]
+    fn templates_carry_a_4x3_design() {
+        use crate::bluray::VideoFormat;
+        // A 16:9 design, then a 4:3 one saved under the same name.
+        let mut wide = project(8);
+        apply(&mut wide, &opts(Style::Showcase, 3));
+        let t_wide = custom::from_project(&wide, "Both", "", "").unwrap();
+        assert!(!t_wide.has_standard());
+        let mut square = project(8);
+        apply(&mut square, &opts(Style::Minimal, 7));
+        for m in &mut square.menus {
+            m.shape = MenuShape::Standard;
+        }
+        let t_square = custom::from_project(&square, "Both", "", "").unwrap();
+        assert!(t_square.has_standard());
+        let both = t_wide.clone().combine(&t_square);
+        assert_eq!(both.main, t_wide.main);
+        assert_eq!(both.standard.as_ref().unwrap().main, t_square.main);
+        // Saving the 16:9 design again keeps the 4:3 one.
+        assert_eq!(both.clone().combine(&t_wide).standard, both.standard);
+
+        let with = |c: &custom::CustomTemplate| Options { custom: Some(std::sync::Arc::new(c.clone())), ..opts(Style::Classic, 0) };
+        let mut sd = project(20);
+        sd.disc.video = VideoFormat::I480_2997_4x3;
+        apply(&mut sd, &with(&both));
+        let pages = episode_pages(&sd);
+        assert!(sd.menu(pages[0]).unwrap().shape == MenuShape::Standard);
+        assert!(sd.menus[0].shape == MenuShape::Standard);
+        // 16:9 discs get the 16:9 design.
+        let mut hd = project(20);
+        apply(&mut hd, &with(&both));
+        assert!(hd.menus.iter().all(|m| m.shape == MenuShape::Wide));
+    }
+
+    #[test]
     fn finds_episode_pages_by_name() {
         let mut p = project(3);
         apply(&mut p, &opts(Style::Classic, 0));

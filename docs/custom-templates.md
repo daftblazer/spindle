@@ -42,6 +42,7 @@ Menus** to rebuild just the episode pages.
     "slot": [ … ],
     "columns": 1, "rows": 8, "step": [0, 80], "order": "columns"
   },
+  "standard": { "main": { … }, "episodes": { … } },
   "images": { "<id>": { "name": "logo.png", "data": "<base64>" } }
 }
 ```
@@ -70,6 +71,19 @@ episode (its button, a still, its running time…). The slot is repeated
 `columns × rows` times per page, `step` apart (`[across, down]`), filling
 rows first (`"order": "rows"`) or columns first (`"columns"`). A layout
 without Previous / Next buttons gets them when a show needs several pages.
+
+### 4:3 menus
+
+`standard` (optional) holds the same menus designed for 4:3 screens, used
+when the disc is one of the 4:3 SD formats. A 4:3 design uses the middle
+1440 × 1080 of the canvas (x from 240 to 1680), which fills a 4:3 screen;
+its safe area is 5% in from those edges. Without `standard`, 4:3 discs get
+the 16:9 design letterboxed.
+
+In Spindle, a menu's **Shape** (in its properties) is 16:9 or 4:3; the
+canvas shades the sides of 4:3 menus. Saving 4:3 menus as a template under
+the name of one with only 16:9 menus (or the other way round) puts both in
+one template.
 
 ### Placeholders
 

@@ -314,6 +314,20 @@ impl Inspector {
         });
         row.set_tooltip_text(Some(&gettext("Automatic remembers the last selected button")));
         g.add(&row);
+        let shapes = [gettext("16:9 Widescreen"), gettext("4:3 Standard")];
+        let shape = rows::combo(doc, &gettext("Shape"), &shapes, usize::from(m.shape == MenuShape::Standard), Change::Structure, move |p, i| {
+            if let Some(m) = p.menu_mut(id) {
+                m.shape = if i == 1 { MenuShape::Standard } else { MenuShape::Wide };
+            }
+        });
+        shape.set_subtitle(&match (m.shape, p.disc.video.is_4x3()) {
+            (MenuShape::Wide, true) => gettext("Shown letterboxed on this 4:3 disc"),
+            (MenuShape::Wide, false) => gettext("For widescreen TVs"),
+            (MenuShape::Standard, true) => gettext("Designed in the middle of the canvas, which fills 4:3 TVs"),
+            (MenuShape::Standard, false) => gettext("On this 16:9 disc the whole canvas is shown, sides included"),
+        });
+        shape.set_subtitle_lines(2);
+        g.add(&shape);
         page.add(&g);
 
         if m.popup {

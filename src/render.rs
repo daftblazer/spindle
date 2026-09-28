@@ -500,36 +500,43 @@ pub fn draw_button(cr: &cairo::Context, project: &Project, images: &ImageCache, 
     }
 }
 
-/// Where the 16:9 menu design lands on a disc picture: the scale (which
-/// differs across and down for the wide or narrow pixels of SD) and the
-/// offset (4:3 discs show menus letterboxed).
+/// Where a menu design lands on a disc picture: the scale (which differs
+/// across and down for the wide or narrow pixels of SD) and the offset.
+/// 16:9 menus are letterboxed on 4:3 discs; 4:3 menus fill them with the
+/// middle of the canvas.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DiscFrame {
     pub w: u32,
     pub h: u32,
     pub sx: f64,
     pub sy: f64,
+    pub ox: f64,
     pub oy: f64,
 }
 
 impl DiscFrame {
-    pub fn of(v: VideoFormat) -> Self {
+    pub fn for_menu(v: VideoFormat, shape: MenuShape) -> Self {
         let (w, h) = v.size();
+        if v.is_4x3() && shape == MenuShape::Standard {
+            let a = STANDARD_AREA;
+            let sx = w as f64 / a.w;
+            return DiscFrame { w, h, sx, sy: h as f64 / a.h, ox: -a.x * sx, oy: 0.0 };
+        }
         let (n, d) = v.sar();
         // Lines the 16:9 design takes at the picture's full width.
         let lines = (w as f64 * n as f64 / d as f64 * 9.0 / 16.0).round().min(h as f64);
-        DiscFrame { w, h, sx: w as f64 / DESIGN_WIDTH, sy: lines / DESIGN_HEIGHT, oy: ((h as f64 - lines) / 2.0).floor() }
+        DiscFrame { w, h, sx: w as f64 / DESIGN_WIDTH, sy: lines / DESIGN_HEIGHT, ox: 0.0, oy: ((h as f64 - lines) / 2.0).floor() }
     }
 
     fn apply(&self, cr: &cairo::Context) {
-        cr.translate(0.0, self.oy);
+        cr.translate(self.ox, self.oy);
         cr.scale(self.sx, self.sy);
     }
 }
 
 /// Button position and bitmap size at disc resolution.
 pub fn button_geometry(item: &MenuItem, f: &DiscFrame) -> (u16, u16, u16, u16) {
-    let x = (item.rect.x * f.sx).floor().clamp(0.0, f.w as f64 - 8.0);
+    let x = (f.ox + item.rect.x * f.sx).floor().clamp(0.0, f.w as f64 - 8.0);
     let y = (f.oy + item.rect.y * f.sy).floor().clamp(0.0, f.h as f64 - 8.0);
     let w = (item.rect.w * f.sx).ceil().clamp(8.0, f.w as f64 - x);
     let h = (item.rect.h * f.sy).ceil().clamp(8.0, f.h as f64 - y);
@@ -706,12 +713,17 @@ mod frame_tests {
 
     #[test]
     fn letterboxes_on_4x3() {
-        let hd = DiscFrame::of(VideoFormat::P1080_23976);
+        let hd = DiscFrame::for_menu(VideoFormat::P1080_23976, MenuShape::Wide);
         assert_eq!((hd.sx, hd.sy, hd.oy), (1.0, 1.0, 0.0));
-        let f = DiscFrame::of(VideoFormat::I480_2997_4x3);
+        let f = DiscFrame::for_menu(VideoFormat::I480_2997_4x3, MenuShape::Wide);
         // 720 wide pixels of 10:11 → 655 square; 16:9 of that is 368 lines.
         assert_eq!((f.oy, (f.sy * DESIGN_HEIGHT).round()), (56.0, 368.0));
-        let wide = DiscFrame::of(VideoFormat::I480_2997);
+        let wide = DiscFrame::for_menu(VideoFormat::I480_2997, MenuShape::Wide);
         assert_eq!(wide.oy, 0.0);
+        // A 4:3 menu fills a 4:3 disc with the middle of the canvas.
+        let s = DiscFrame::for_menu(VideoFormat::I480_2997_4x3, MenuShape::Standard);
+        assert_eq!((s.ox, s.oy, s.sx * STANDARD_AREA.w, s.sy * DESIGN_HEIGHT), (-120.0, 0.0, 720.0, 480.0));
+        // ...and is shown whole on 16:9 discs.
+        assert_eq!(DiscFrame::for_menu(VideoFormat::P1080_23976, MenuShape::Standard), hd);
     }
 }

@@ -704,10 +704,10 @@ impl<'a> Builder<'a> {
         let popup = p.title_popup(t)?;
         let pages = p.popup_pages(popup);
         let page_ids: Vec<Id> = pages.iter().map(|m| m.id).collect();
-        let frame = render::DiscFrame::of(self.settings.video);
         let images = ImageCache::new_sync();
         let mut ig_pages = Vec::new();
         for (pi, m) in pages.iter().enumerate() {
+            let frame = render::DiscFrame::for_menu(self.settings.video, m.shape);
             // Chapter buttons for chapters this title doesn't have are left out.
             let mut m = (*m).clone();
             m.items.retain(|i| !matches!(i.button().map(|b| b.action), Some(Action::PlayChapter(c)) if c as usize >= marks));
@@ -1126,7 +1126,7 @@ impl<'a> Builder<'a> {
     /// Disc menu clip `n`; `done` is the menus' work before it.
     fn build_menu(&self, m: &Menu, n: u32, done: f64) -> Result<(Playlist, ClipInfo)> {
         let p = self.project;
-        let frame = render::DiscFrame::of(self.settings.video);
+        let frame = render::DiscFrame::for_menu(self.settings.video, m.shape);
         self.tracker.update("menus", TaskState::Running, done, &format!("Drawing “{}”", m.name));
         self.stage(format!("Rendering menu “{}”", m.name));
         let images = ImageCache::new_sync();
