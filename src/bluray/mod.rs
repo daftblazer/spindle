@@ -65,8 +65,8 @@ impl VideoFormat {
             VideoFormat::P720_24 => "720p 24",
             VideoFormat::P720_50 => "720p 50",
             VideoFormat::P720_5994 => "720p 59.94",
-            VideoFormat::I576_25 => "SD 576i 25 (PAL)",
-            VideoFormat::I480_2997 => "SD 480i 29.97 (NTSC)",
+            VideoFormat::I576_25 => "SD 576i 25 (PAL) 16:9",
+            VideoFormat::I480_2997 => "SD 480i 29.97 (NTSC) 16:9",
             VideoFormat::I576_25_4x3 => "SD 576i 25 (PAL) 4:3",
             VideoFormat::I480_2997_4x3 => "SD 480i 29.97 (NTSC) 4:3",
         }
