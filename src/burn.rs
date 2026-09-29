@@ -4,6 +4,8 @@
 //! verifying the result by reading the disc back.
 
 use anyhow::{bail, Context, Result};
+use gtk::prelude::*;
+use gtk::{gio, glib};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -129,9 +131,61 @@ fn parse_progress(line: &str) -> Option<f64> {
 }
 
 /// Write `image` to the disc in `drive`, erasing a rewritable disc first.
+/// Where the system has the disc in `drive` mounted (GNOME mounts discs
+/// when they go in), asked of UDisks, which also works in the Flatpak.
+fn udisks_block(drive: &Path) -> Option<String> {
+    let name = drive.file_name()?.to_string_lossy().into_owned();
+    Some(format!("/org/freedesktop/UDisks2/block_devices/{name}"))
+}
+
+fn mount_points(bus: &gio::DBusConnection, object: &str) -> Vec<String> {
+    let reply = bus.call_sync(
+        Some("org.freedesktop.UDisks2"),
+        object,
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        Some(&("org.freedesktop.UDisks2.Filesystem", "MountPoints").to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        5000,
+        gio::Cancellable::NONE,
+    );
+    // No Filesystem interface: nothing on the disc to mount.
+    let Ok(reply) = reply else { return vec![] };
+    let Some(value) = reply.child_value(0).as_variant() else { return vec![] };
+    let points: Vec<Vec<u8>> = value.get().unwrap_or_default();
+    points.into_iter().map(|p| String::from_utf8_lossy(&p).trim_end_matches('\0').to_string()).collect()
+}
+
+/// Unmount the disc in `drive` if the system mounted it: a mounted disc
+/// can't be burned ("busy").
+pub fn unmount(drive: &Path) -> Result<()> {
+    let Some(object) = udisks_block(drive).filter(|_| is_device(drive)) else { return Ok(()) };
+    let Ok(bus) = gio::bus_get_sync(gio::BusType::System, gio::Cancellable::NONE) else { return Ok(()) };
+    let points = mount_points(&bus, &object);
+    if points.is_empty() {
+        return Ok(());
+    }
+    let options: std::collections::HashMap<String, glib::Variant> = Default::default();
+    bus.call_sync(
+        Some("org.freedesktop.UDisks2"),
+        &object,
+        "org.freedesktop.UDisks2.Filesystem",
+        "Unmount",
+        Some(&(options,).to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        30_000,
+        gio::Cancellable::NONE,
+    )
+    .map_err(|e| anyhow::anyhow!("The disc is open ({}) and couldn't be unmounted: {}. Eject it in Files, put it back in, and try again.", points.join(", "), e.message()))?;
+    Ok(())
+}
+
 pub fn burn(image: &Path, drive: &Path, cancel: &AtomicBool, mut progress: impl FnMut(f64)) -> Result<()> {
     // A plain file stands in for a drive (for testing).
     let dev = if is_device(drive) { drive.display().to_string() } else { format!("stdio:{}", drive.display()) };
+    unmount(drive)?;
     let mut child = Command::new(xorriso_bin())
         .args(["-as", "cdrecord", "-v", "-dao", "blank=as_needed"])
         .arg(format!("dev={dev}"))
@@ -170,6 +224,9 @@ pub fn burn(image: &Path, drive: &Path, cancel: &AtomicBool, mut progress: impl 
     if !status.success() {
         let tail: Vec<&str> = log.lines().filter(|l| l.contains("FAILURE") || l.contains("SORRY") || l.contains("FATAL")).collect();
         let msg = if tail.is_empty() { log.lines().rev().take(3).collect::<Vec<_>>().join("\n") } else { tail.join("\n") };
+        if msg.contains("busy device") {
+            bail!("The drive is in use by another program (a file manager, or another burn). Close it and try again.\n\n{msg}");
+        }
         bail!("burning failed: {msg}");
     }
     progress(1.0);

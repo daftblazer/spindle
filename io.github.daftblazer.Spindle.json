@@ -12,7 +12,8 @@
         "--socket=fallback-x11",
         "--socket=wayland",
         "--device=all",
-        "--filesystem=host"
+        "--filesystem=host",
+        "--system-talk-name=org.freedesktop.UDisks2"
     ],
     "build-options": {
         "append-path": "/usr/lib/sdk/rust-stable/bin",
