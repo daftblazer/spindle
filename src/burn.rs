@@ -6,7 +6,7 @@
 use anyhow::{bail, Context, Result};
 use gtk::prelude::*;
 use gtk::{gio, glib};
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -195,22 +195,26 @@ pub fn burn(image: &Path, drive: &Path, cancel: &AtomicBool, mut progress: impl 
         .stderr(Stdio::piped())
         .spawn()
         .context("failed to run xorriso (needed for burning)")?;
-    // Progress arrives on stderr, split by carriage returns.
-    let stderr = child.stderr.take().expect("stderr");
+    // Progress arrives on stderr, one line a second ("…MB written"); lines
+    // may end in newlines or carriage returns.
+    let mut stderr = child.stderr.take().expect("stderr");
     let mut log = String::new();
-    let mut reader = BufReader::new(stderr);
-    let mut buf = Vec::new();
+    let mut pending = Vec::new();
+    let mut chunk = [0u8; 4096];
     loop {
-        buf.clear();
-        let n = reader.read_until(b'\r', &mut buf)?;
+        let n = stderr.read(&mut chunk)?;
         if n == 0 {
             break;
         }
-        for line in String::from_utf8_lossy(&buf).split('\n') {
+        pending.extend_from_slice(&chunk[..n]);
+        while let Some(end) = pending.iter().position(|b| *b == b'\n' || *b == b'\r') {
+            let line: Vec<u8> = pending.drain(..=end).collect();
+            let line = String::from_utf8_lossy(&line);
+            let line = line.trim_end();
             if let Some(f) = parse_progress(line) {
                 progress(f);
             } else if !line.trim().is_empty() {
-                log.push_str(line.trim_end_matches('\r'));
+                log.push_str(line);
                 log.push('\n');
             }
         }
@@ -220,6 +224,7 @@ pub fn burn(image: &Path, drive: &Path, cancel: &AtomicBool, mut progress: impl 
             bail!("cancelled");
         }
     }
+    log.push_str(&String::from_utf8_lossy(&pending));
     let status = child.wait()?;
     if !status.success() {
         let tail: Vec<&str> = log.lines().filter(|l| l.contains("FAILURE") || l.contains("SORRY") || l.contains("FATAL")).collect();

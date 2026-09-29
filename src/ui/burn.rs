@@ -79,7 +79,9 @@ impl BurnOptions {
             if t.drive_row.root().is_none() {
                 return glib::ControlFlow::Break;
             }
-            if t.drive_row.is_visible() {
+            // Only while the options are on screen: not during a burn,
+            // when the drive is busy (and asking it would only get in the way).
+            if t.drive_row.is_visible() && t.drive_row.is_mapped() {
                 t.check();
             }
             glib::ControlFlow::Continue
