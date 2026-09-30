@@ -67,14 +67,42 @@ pub struct Page {
     pub fade_out: u32,
 }
 
-/// Steps of a fade effect (each with its own palette).
-const FADE_STEPS: u8 = 5;
-/// Palette ids of fade steps start here (page palettes use the page index).
-const FADE_PALETTE_BASE: u8 = 128;
+/// Most steps of a fade effect (each with its own palette).
+const FADE_STEPS: usize = 5;
+/// Palettes an IG stream may use (ids 0–7): the pages' palettes and the
+/// fades' share them.
+const MAX_PALETTES: usize = 8;
 
-fn fade_palette_id(page: usize, step: u8) -> Option<u8> {
-    let id = FADE_PALETTE_BASE as usize + page * FADE_STEPS as usize + step as usize;
-    (id <= 255).then_some(id as u8)
+/// The palettes of a page: its own, and those of its fade steps.
+#[derive(Debug, Clone, Default)]
+struct PagePalettes {
+    id: u8,
+    /// Palette ids of the fade steps, faintest first (empty: no fade).
+    fade: Vec<u8>,
+}
+
+/// Palette ids for `pages` pages, of which those in `fading` fade: one
+/// palette per page when they fit (else one for all), and as many fade steps
+/// as the rest of the eight allow (none when fewer than two).
+fn plan_palettes(pages: usize, fading: &[bool]) -> Vec<PagePalettes> {
+    let own = pages <= MAX_PALETTES;
+    let used = if own { pages } else { 1 };
+    let faded: Vec<usize> = (0..pages).filter(|&p| fading.get(p).copied().unwrap_or(false)).collect();
+    // With a shared palette, the fade steps are shared too.
+    let groups = if own { faded.len() } else { usize::from(!faded.is_empty()) };
+    let steps = (MAX_PALETTES - used).checked_div(groups).unwrap_or(0).min(FADE_STEPS);
+    let steps = if steps >= 2 { steps } else { 0 };
+    (0..pages)
+        .map(|p| {
+            let id = if own { p as u8 } else { 0 };
+            let group = if own { faded.iter().position(|&f| f == p) } else { faded.contains(&p).then_some(0) };
+            let fade = match group {
+                Some(g) if steps > 0 => (0..steps).map(|k| (used + g * steps + k) as u8).collect(),
+                _ => vec![],
+            };
+            PagePalettes { id, fade }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -124,8 +152,8 @@ fn pds_scaled(q: &Quantized, id: u8, alpha: f32) -> Vec<u8> {
 
 /// An in or out effect sequence: the page's buttons (normal state) drawn
 /// with palettes of rising (or falling) opacity.
-fn effect_sequence(w: &mut BitWriter, page: &Page, ids: &[[u16; 3]], page_index: usize, ticks: u32, fade_in: bool) {
-    let usable = ticks > 0 && !page.buttons.is_empty() && fade_palette_id(page_index, FADE_STEPS - 1).is_some();
+fn effect_sequence(w: &mut BitWriter, page: &Page, ids: &[[u16; 3]], fade: &[u8], ticks: u32, fade_in: bool) {
+    let usable = ticks > 0 && !page.buttons.is_empty() && !fade.is_empty();
     if !usable {
         w.u8(0).u8(0); // no windows, no effects
         return;
@@ -135,10 +163,11 @@ fn effect_sequence(w: &mut BitWriter, page: &Page, ids: &[[u16; 3]], page_index:
     let x1 = page.buttons.iter().map(|b| b.x + b.normal.width).max().unwrap_or(0);
     let y1 = page.buttons.iter().map(|b| b.y + b.normal.height).max().unwrap_or(0);
     w.u8(1).u8(0).u16(x0).u16(y0).u16(x1 - x0).u16(y1 - y0);
-    w.u8(FADE_STEPS);
-    for k in 0..FADE_STEPS {
-        let step = if fade_in { k } else { FADE_STEPS - 1 - k };
-        w.u24(ticks / FADE_STEPS as u32).u8(fade_palette_id(page_index, step).unwrap_or(0));
+    let steps = fade.len();
+    w.u8(steps as u8);
+    for k in 0..steps {
+        let step = if fade_in { k } else { steps - 1 - k };
+        w.u24(ticks / steps as u32).u8(fade[step]);
         w.u8(page.buttons.len() as u8);
         for (b, objs) in page.buttons.iter().zip(ids) {
             w.u16(objs[0]).u8(0).u8(0).u16(b.x).u16(b.y);
@@ -179,7 +208,7 @@ pub(crate) fn ods(id: u16, width: u16, height: u16, rle: &[u8]) -> Vec<Vec<u8>> 
         .collect()
 }
 
-fn ics(menu: &Menu, object_ids: &[Vec<[u16; 3]>]) -> Result<Vec<u8>> {
+fn ics(menu: &Menu, object_ids: &[Vec<[u16; 3]>], palettes: &[PagePalettes]) -> Result<Vec<u8>> {
     let (width, height) = menu.video.size();
 
     let mut comp = BitWriter::new();
@@ -191,14 +220,14 @@ fn ics(menu: &Menu, object_ids: &[Vec<[u16; 3]>]) -> Result<Vec<u8>> {
     comp.u24(menu.user_timeout);
     comp.u8(menu.pages.len() as u8);
 
-    for (pi, (page, ids)) in menu.pages.iter().zip(object_ids).enumerate() {
+    for (pi, ((page, ids), pal)) in menu.pages.iter().zip(object_ids).zip(palettes).enumerate() {
         comp.u8(pi as u8).u8(0);
         comp.bytes(&[0; 8]); // UO mask
-        effect_sequence(&mut comp, page, ids, pi, page.fade_in, true);
-        effect_sequence(&mut comp, page, ids, pi, page.fade_out, false);
+        effect_sequence(&mut comp, page, ids, &pal.fade, page.fade_in, true);
+        effect_sequence(&mut comp, page, ids, &pal.fade, page.fade_out, false);
         comp.u8(0); // animation frame rate code
         comp.u16(page.default_button).u16(NO_BUTTON);
-        comp.u8(pi as u8); // palette id
+        comp.u8(pal.id); // palette id
         comp.u8(page.buttons.len() as u8); // one BOG per button
         for (b, objs) in page.buttons.iter().zip(ids) {
             comp.u16(b.id).u8(1);
@@ -247,6 +276,7 @@ pub struct DisplaySet {
     /// (segment, decode duration in 90 kHz ticks), excluding the ICS.
     segments: Vec<(Vec<u8>, u64)>,
     object_ids: Vec<Vec<[u16; 3]>>,
+    palettes: Vec<PagePalettes>,
     decode: u64,
     plane_clear: u64,
 }
@@ -259,21 +289,43 @@ pub fn prepare(menu: &Menu) -> Result<DisplaySet> {
     let mut segments: Vec<(Vec<u8>, u64)> = Vec::new();
     let mut object_ids = Vec::new();
     let mut objects: Vec<(u16, &Bitmap, Vec<u8>)> = Vec::new();
-    for (pi, page) in menu.pages.iter().enumerate() {
-        if page.buttons.len() > 255 {
-            bail!("a menu page can have at most 255 buttons");
+    if let Some(page) = menu.pages.iter().find(|p| p.buttons.len() > 255) {
+        bail!("a menu page can have at most 255 buttons ({})", page.buttons.len());
+    }
+    let fading: Vec<bool> = menu.pages.iter().map(|p| p.fade_in > 0 || p.fade_out > 0).collect();
+    let palettes = plan_palettes(menu.pages.len(), &fading);
+    let page_bitmaps: Vec<Vec<&Bitmap>> =
+        menu.pages.iter().map(|page| page.buttons.iter().flat_map(|b| [&b.normal, &b.selected, &b.activated]).collect()).collect();
+    // One palette per page, or one for all when there are more pages than
+    // palettes allowed.
+    let shared = menu.pages.len() > MAX_PALETTES;
+    let mut quantized: Vec<Option<palette::Quantized>> = Vec::new();
+    if shared {
+        let all: Vec<&Bitmap> = page_bitmaps.iter().flatten().copied().collect();
+        let q = palette::quantize(&all)?;
+        let mut rest = q.indexes.clone().into_iter();
+        for bitmaps in &page_bitmaps {
+            let indexes: Vec<Vec<u8>> = rest.by_ref().take(bitmaps.len()).collect();
+            quantized.push(Some(palette::Quantized { palette: q.palette.clone(), indexes }));
         }
-        let bitmaps: Vec<&Bitmap> = page.buttons.iter().flat_map(|b| [&b.normal, &b.selected, &b.activated]).collect();
-        if bitmaps.is_empty() {
+    } else {
+        for bitmaps in &page_bitmaps {
+            quantized.push(if bitmaps.is_empty() { None } else { Some(palette::quantize(bitmaps)?) });
+        }
+    }
+    let mut written = std::collections::HashSet::new();
+    for (pi, (page, bitmaps)) in menu.pages.iter().zip(&page_bitmaps).enumerate() {
+        let Some(q) = &quantized[pi] else {
             object_ids.push(Vec::new());
             continue;
-        }
-        let q = palette::quantize(&bitmaps)?;
-        segments.push((pds_with_id(&q, pi as u8), 0));
-        if page.fade_in > 0 || page.fade_out > 0 {
-            for step in 0..FADE_STEPS {
-                if let Some(id) = fade_palette_id(pi, step) {
-                    segments.push((pds_scaled(&q, id, (step + 1) as f32 / (FADE_STEPS + 1) as f32), 0));
+        };
+        let pal = &palettes[pi];
+        // Each palette once (pages sharing one write it once).
+        if written.insert(pal.id) {
+            segments.push((pds_with_id(q, pal.id), 0));
+            for (k, id) in pal.fade.iter().enumerate() {
+                if written.insert(*id) {
+                    segments.push((pds_scaled(q, *id, (k + 1) as f32 / (pal.fade.len() + 1) as f32), 0));
                 }
             }
         }
@@ -308,7 +360,7 @@ pub fn prepare(menu: &Menu) -> Result<DisplaySet> {
     }
     let decode = segments.iter().map(|s| s.1).sum();
     let (w, h) = menu.video.size();
-    Ok(DisplaySet { segments, object_ids, decode, plane_clear: decode_ticks(w as u64 * h as u64 / 2) })
+    Ok(DisplaySet { segments, object_ids, palettes, decode, plane_clear: decode_ticks(w as u64 * h as u64 / 2) })
 }
 
 impl DisplaySet {
@@ -325,7 +377,7 @@ impl DisplaySet {
             dts: Some(dts),
             random_access: false,
         };
-        let mut out = vec![pes(&ics(menu, &self.object_ids)?, present, start)];
+        let mut out = vec![pes(&ics(menu, &self.object_ids, &self.palettes)?, present, start)];
         let mut t = start;
         for (seg, dur) in &self.segments {
             let dts = t;
@@ -346,6 +398,29 @@ pub fn encode(menu: &Menu, present_pts: u64) -> Result<Vec<Pes>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palettes_stay_within_eight() {
+        // A single page with a fade: its palette and five fade steps.
+        let p = plan_palettes(1, &[true]);
+        assert_eq!((p[0].id, p[0].fade.clone()), (0, vec![1, 2, 3, 4, 5]));
+        // Three pop-up pages that fade: 3 own palettes, 5 left, one step each is too few.
+        let p = plan_palettes(3, &[true, true, true]);
+        assert!(p.iter().all(|pp| pp.fade.is_empty()));
+        assert_eq!(p.iter().map(|pp| pp.id).collect::<Vec<_>>(), vec![0, 1, 2]);
+        // Two pages, only the first fading: two palettes, then steps 2–6.
+        let p = plan_palettes(2, &[true, false]);
+        assert_eq!(p[0].fade, vec![2, 3, 4, 5, 6]);
+        assert!(p[1].fade.is_empty());
+        // More pages than palettes: one shared palette, and shared fade steps.
+        let p = plan_palettes(12, &[true; 12]);
+        assert!(p.iter().all(|pp| pp.id == 0 && pp.fade == vec![1, 2, 3, 4, 5]));
+        for pages in 1..20 {
+            for pp in plan_palettes(pages, &vec![true; pages]) {
+                assert!(pp.id < 8 && pp.fade.iter().all(|f| *f < 8), "{pages} pages");
+            }
+        }
+    }
     use crate::bluray::nav::hdmv::Command;
 
     fn solid(w: u16, h: u16, rgba: [u8; 4]) -> Bitmap {

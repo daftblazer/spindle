@@ -6,7 +6,8 @@ use super::Bitmap;
 use anyhow::{anyhow, Result};
 use imagequant::RGBA;
 
-/// Bitmaps mapped onto one palette. Index 0 is always fully transparent.
+/// Bitmaps mapped onto one palette. Index 0 is always fully transparent,
+/// and index 255 is left unused (players treat it as reserved).
 pub struct Quantized {
     /// Straight-alpha RGBA palette entries.
     pub palette: Vec<[u8; 4]>,
@@ -38,7 +39,8 @@ fn pixels(b: &Bitmap) -> Vec<RGBA> {
 pub fn quantize(bitmaps: &[&Bitmap]) -> Result<Quantized> {
     let err = |e: imagequant::Error| anyhow!("palette quantization failed: {e}");
     let mut attr = imagequant::new();
-    attr.set_max_colors(255).map_err(err)?;
+    // Entries 1–254: 0 is the transparent one, 255 is left alone.
+    attr.set_max_colors(254).map_err(err)?;
     attr.set_quality(0, 100).map_err(err)?;
     attr.set_speed(3).map_err(err)?;
 
