@@ -23,9 +23,9 @@ pub struct Inspector {
     rebuild_queued: Cell<bool>,
     /// The main text row of the current page (label/text/name).
     primary: RefCell<Option<gtk::Widget>>,
-    /// What the page shows, to keep its scroll position when it's rebuilt
-    /// for the same thing.
-    shown: Cell<Option<(Node, Option<Id>)>>,
+    /// The tab last shown for each kind of page, kept while moving between
+    /// titles, menus or items.
+    tab: RefCell<std::collections::HashMap<&'static str, String>>,
 }
 
 /// A row that copies this title's track choices to every other title.
@@ -51,44 +51,39 @@ fn apply_to_all_row(doc: &Rc<Document>, id: Id, apply: fn(&mut Project, Id) -> u
     row
 }
 
-/// The scrolled window inside a page.
-fn scroller(w: &gtk::Widget) -> Option<gtk::ScrolledWindow> {
-    if let Some(s) = w.downcast_ref::<gtk::ScrolledWindow>() {
-        return Some(s.clone());
-    }
-    let mut child = w.first_child();
-    while let Some(c) = child {
-        if let Some(s) = scroller(&c) {
-            return Some(s);
-        }
-        child = c.next_sibling();
-    }
-    None
+/// Property pages as tabs, with an inline switcher above them.
+struct Tabs {
+    stack: adw::ViewStack,
 }
 
-/// Scroll `page` to `pos` once it has been laid out tall enough.
-fn restore_scroll(page: &adw::PreferencesPage, pos: f64) {
-    let Some(adj) = scroller(page.upcast_ref()).map(|s| s.vadjustment()) else { return };
-    let handler: Rc<Cell<Option<glib::SignalHandlerId>>> = Rc::default();
-    let h = handler.clone();
-    let id = adj.connect_changed(move |adj| {
-        if adj.upper() - adj.page_size() >= pos || adj.upper() > 0.0 {
-            adj.set_value(pos);
-            if adj.upper() - adj.page_size() >= pos {
-                if let Some(id) = h.take() {
-                    adj.disconnect(id);
-                }
-            }
-        }
-    });
-    handler.set(Some(id));
-    // Stop adjusting once the page has settled.
-    let adj2 = adj.clone();
-    glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
-        if let Some(id) = handler.take() {
-            adj2.disconnect(id);
-        }
-    });
+impl Tabs {
+    fn new() -> Self {
+        Tabs { stack: adw::ViewStack::builder().vexpand(true).build() }
+    }
+
+    /// A tab named `name` (for remembering it) titled `title`.
+    fn add(&self, name: &str, title: &str) -> adw::PreferencesPage {
+        let page = adw::PreferencesPage::new();
+        self.stack.add_titled(&page, Some(name), title);
+        page
+    }
+
+    fn widget(&self) -> gtk::Box {
+        let switcher = adw::InlineViewSwitcher::builder()
+            .stack(&self.stack)
+            .display_mode(adw::InlineViewSwitcherDisplayMode::Labels)
+            // Whole names, not "G…".
+            .can_shrink(false)
+            .halign(gtk::Align::Center)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(6)
+            .build();
+        let b = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).vexpand(true).build();
+        b.append(&switcher);
+        b.append(&self.stack);
+        b
+    }
 }
 
 /// A row of icon buttons for alignment actions.
@@ -175,7 +170,7 @@ impl Inspector {
             geometry: RefCell::new(None),
             rebuild_queued: Cell::new(false),
             primary: RefCell::new(None),
-            shown: Cell::new(None),
+            tab: RefCell::default(),
         });
         let weak = Rc::downgrade(&insp);
         doc.connect(move |c| {
@@ -220,39 +215,43 @@ impl Inspector {
     }
 
     pub fn rebuild(self: &Rc<Self>) {
-        let now = (self.doc.node(), self.doc.item());
-        let scroll = match self.shown.replace(Some(now)) {
-            Some(before) if before == now => self.container.first_child().and_then(|c| scroller(&c)).map(|s| s.vadjustment().value()),
-            _ => None,
-        };
         while let Some(c) = self.container.first_child() {
             self.container.remove(&c);
         }
         *self.geometry.borrow_mut() = None;
         *self.primary.borrow_mut() = None;
-        let page = adw::PreferencesPage::new();
-        page.set_vexpand(true);
         let n_selected = self.doc.selection().len();
         if n_selected > 1 {
+            let page = adw::PreferencesPage::builder().vexpand(true).build();
             self.multi_page(&page, n_selected);
             self.title.set_title(&gettext("Selection"));
             self.title.set_subtitle(&ngettext("{} item", "{} items", n_selected as u32).replace("{}", &n_selected.to_string()));
             self.container.append(&page);
             return;
         }
-        let (title, subtitle) = match (self.doc.node(), self.doc.item()) {
+        let tabs = Tabs::new();
+        let (kind, title, subtitle) = match (self.doc.node(), self.doc.item()) {
             (Node::Menu(m), None) => {
-                self.menu_page(&page, m);
-                (gettext("Menu"), self.doc.project().menu(m).map(|m| m.name.clone()).unwrap_or_default())
+                let main = tabs.add("menu", &gettext("Menu"));
+                let background = tabs.add("background", &gettext("Background"));
+                let timing = tabs.add("timing", &gettext("Timing"));
+                self.menu_page(&main, &background, &timing, m);
+                ("menu", gettext("Menu"), self.doc.project().menu(m).map(|m| m.name.clone()).unwrap_or_default())
             }
             (Node::Menu(m), Some(item)) => {
                 let kind = self.doc.project().menu(m).and_then(|mm| mm.item(item)).map(|i| i.kind_name()).unwrap_or("");
-                self.item_page(&page, m, item);
-                (gettext(kind), String::new())
+                let main = tabs.add("item", &gettext(kind));
+                let layout = tabs.add("layout", &gettext("Layout"));
+                self.item_page(&main, &layout, m, item);
+                ("item", gettext(kind), String::new())
             }
             (Node::Title(t), _) => {
-                self.title_page(&page, t);
-                (gettext("Title"), self.doc.project().title(t).map(|t| t.name.clone()).unwrap_or_default())
+                let general = tabs.add("general", &gettext("General"));
+                let video = tabs.add("video", &gettext("Video"));
+                let audio = tabs.add("audio", &gettext("Audio"));
+                let subtitles = tabs.add("subtitles", &gettext("Subtitles"));
+                self.title_page(&general, &video, &audio, &subtitles, t);
+                ("title", gettext("Title"), self.doc.project().title(t).map(|t| t.name.clone()).unwrap_or_default())
             }
             (Node::None, _) => {
                 let status = adw::StatusPage::builder()
@@ -268,10 +267,19 @@ impl Inspector {
         };
         self.title.set_title(&title);
         self.title.set_subtitle(&subtitle);
-        self.container.append(&page);
-        if let Some(pos) = scroll.filter(|p| *p > 0.0) {
-            restore_scroll(&page, pos);
+        // The tab last used for this kind of page.
+        if let Some(name) = self.tab.borrow().get(kind) {
+            if tabs.stack.child_by_name(name).is_some() {
+                tabs.stack.set_visible_child_name(name);
+            }
         }
+        let weak = Rc::downgrade(self);
+        tabs.stack.connect_visible_child_name_notify(move |stack| {
+            if let (Some(this), Some(name)) = (weak.upgrade(), stack.visible_child_name()) {
+                this.tab.borrow_mut().insert(kind, name.to_string());
+            }
+        });
+        self.container.append(&tabs.widget());
     }
 
     fn multi_page(&self, page: &adw::PreferencesPage, n: usize) {
@@ -289,7 +297,7 @@ impl Inspector {
         page.add(&delete_button(&gettext("Delete Items"), "win.delete-item"));
     }
 
-    fn menu_page(&self, page: &adw::PreferencesPage, id: Id) {
+    fn menu_page(&self, page: &adw::PreferencesPage, background: &adw::PreferencesPage, timing: &adw::PreferencesPage, id: Id) {
         let doc = &self.doc;
         let p = doc.project();
         let Some(m) = p.menu(id) else { return };
@@ -401,7 +409,7 @@ impl Inspector {
             ));
             g.add(&start);
         }
-        page.add(&g);
+        background.add(&g);
 
         let g = group(&gettext("Sound"));
         let audio: Vec<(Id, String)> = p
@@ -426,9 +434,9 @@ impl Inspector {
         });
         row.set_subtitle(&gettext("Seconds, for motion menus and music"));
         g.add(&row);
-        page.add(&g);
+        background.add(&g);
 
-        self.timing_group(page, id);
+        self.timing_group(timing, id);
         page.add(&delete_button(&gettext("Delete Menu"), "win.delete-node"));
     }
 
@@ -621,7 +629,7 @@ impl Inspector {
         }
     }
 
-    fn item_page(&self, page: &adw::PreferencesPage, menu: Id, item: Id) {
+    fn item_page(&self, page: &adw::PreferencesPage, layout: &adw::PreferencesPage, menu: Id, item: Id) {
         let doc = &self.doc;
         let p = doc.project();
         let Some(m) = p.menu(menu) else { return };
@@ -849,7 +857,7 @@ impl Inspector {
                         }
                     }));
                 }
-                page.add(&g);
+                layout.add(&g);
             }
             ItemKind::Text(t) => {
                 let g = group(&gettext("Text"));
@@ -988,7 +996,7 @@ impl Inspector {
                 page.add(&g);
             }
         }
-        self.geometry_group(page, menu, item, it.rect);
+        self.geometry_group(layout, menu, item, it.rect);
         let g = group(&gettext("Layer"));
         let hidden = rows::switch(doc, &gettext("Hidden"), it.hidden, Change::Structure, move |p, v| {
             if let Some(i) = p.menu_mut(menu).and_then(|m| m.item_mut(item)) {
@@ -1016,7 +1024,7 @@ impl Inspector {
             order.append(&b);
         }
         g.add(&order);
-        page.add(&g);
+        layout.add(&g);
         page.add(&delete_button(&gettext("Delete"), "win.delete-item"));
     }
 
@@ -1539,7 +1547,7 @@ impl Inspector {
         page.add(&g);
     }
 
-    fn title_page(&self, page: &adw::PreferencesPage, id: Id) {
+    fn title_page(&self, page: &adw::PreferencesPage, video: &adw::PreferencesPage, audio: &adw::PreferencesPage, subtitles: &adw::PreferencesPage, id: Id) {
         let doc = &self.doc;
         let p = doc.project();
         let Some(t) = p.title(id) else { return };
@@ -1602,10 +1610,10 @@ impl Inspector {
             page.add(&g);
         }
 
-        self.video_group(page, id);
-        self.audio_group(page, id);
-        self.subtitles_group(page, id);
-        self.languages_group(page, id);
+        self.video_group(video, id);
+        self.audio_group(audio, id);
+        self.languages_group(audio, id);
+        self.subtitles_group(subtitles, id);
 
         // Pop-up menu during playback.
         let popups: Vec<(Id, String)> = p.popup_menus().map(|m| (m.id, m.name.clone())).collect();
