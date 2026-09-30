@@ -435,7 +435,7 @@ fn metadata(nodes: &[Node], lay: &Layout, label: &str, time: Timestamp) -> Vec<u
             ad.u32(n.fid_bytes as u32).u32(n.fid_block);
             EntryInfo {
                 file_type: FILE_TYPE_DIRECTORY,
-                permissions: 0x2529,
+                permissions: PERMISSIONS_DIR,
                 link_count: 1 + subdirs,
                 size: n.fid_bytes,
                 blocks: n.fid_bytes.div_ceil(SECTOR),
@@ -446,7 +446,7 @@ fn metadata(nodes: &[Node], lay: &Layout, label: &str, time: Timestamp) -> Vec<u
         } else {
             EntryInfo {
                 file_type: FILE_TYPE_FILE,
-                permissions: 0x2108,
+                permissions: PERMISSIONS_FILE,
                 link_count: 1,
                 size: n.size,
                 blocks: n.size.div_ceil(SECTOR),
@@ -459,6 +459,15 @@ fn metadata(nodes: &[Node], lay: &Layout, label: &str, time: Timestamp) -> Vec<u
     }
     area
 }
+
+/// UDF permission bits (ECMA-167 4/14.9.5): for other, group and owner in
+/// turn (5 bits apart), execute = 1, write = 2, read = 4, change
+/// attributes = 8, delete = 16. Read-only discs: folders r-x, files r--.
+const fn permissions(bits: u32) -> u32 {
+    bits | (bits << 5) | (bits << 10)
+}
+const PERMISSIONS_DIR: u32 = permissions(4 | 1);
+const PERMISSIONS_FILE: u32 = permissions(4);
 
 fn metadata_file_entry(file_type: u8, start: u32, lay: &Layout, time: Timestamp, location: u32) -> Vec<u8> {
     let size = lay.meta_blocks as u64 * SECTOR;
@@ -642,6 +651,13 @@ pub fn write_image(dir: &Path, iso: &Path, label: &str, mut progress: impl FnMut
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn everyone_can_read() {
+        // Linux refuses directories without the read bits.
+        assert_eq!(PERMISSIONS_DIR, 0x14A5);
+        assert_eq!(PERMISSIONS_FILE, 0x1084);
+    }
 
     #[test]
     fn crc_matches_ecma_example() {
