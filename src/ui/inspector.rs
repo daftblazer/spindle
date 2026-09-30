@@ -172,6 +172,13 @@ impl Inspector {
             primary: RefCell::new(None),
             tab: RefCell::default(),
         });
+        // Development aid: open pages on this tab (for screenshots).
+        #[cfg(debug_assertions)]
+        if let Ok(name) = std::env::var("SPINDLE_SCREENSHOT_TAB") {
+            for kind in ["title", "menu", "item"] {
+                insp.tab.borrow_mut().insert(kind, name.clone());
+            }
+        }
         let weak = Rc::downgrade(&insp);
         doc.connect(move |c| {
             let Some(i) = weak.upgrade() else { return };
