@@ -52,9 +52,11 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     });
     let explain = |f: VideoFormat| {
         if f.is_4x3() {
-            gettext("For 4:3 televisions: wide video is letterboxed, and so are the menus")
+            gettext("SD (DVD resolution) for 4:3 TVs: wide video is letterboxed, and 16:9 menus are too")
         } else if f.is_sd() {
-            gettext("Standard definition, 16:9")
+            gettext("SD (DVD resolution), widescreen")
+        } else if f.interlaced() {
+            gettext("Interlaced video stays interlaced; film and progressive video are carried as fields")
         } else {
             String::new()
         }

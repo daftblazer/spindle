@@ -59,16 +59,16 @@ impl VideoFormat {
         match self {
             VideoFormat::P1080_23976 => "1080p 23.976",
             VideoFormat::P1080_24 => "1080p 24",
-            VideoFormat::I1080_25 => "1080 25 (PAL)",
-            VideoFormat::I1080_2997 => "1080 29.97 (NTSC)",
+            VideoFormat::I1080_25 => "1080i 25 (PAL)",
+            VideoFormat::I1080_2997 => "1080i 29.97 (NTSC)",
             VideoFormat::P720_23976 => "720p 23.976",
             VideoFormat::P720_24 => "720p 24",
             VideoFormat::P720_50 => "720p 50",
             VideoFormat::P720_5994 => "720p 59.94",
-            VideoFormat::I576_25 => "SD 576i 25 (PAL) 16:9",
-            VideoFormat::I480_2997 => "SD 480i 29.97 (NTSC) 16:9",
-            VideoFormat::I576_25_4x3 => "SD 576i 25 (PAL) 4:3",
-            VideoFormat::I480_2997_4x3 => "SD 480i 29.97 (NTSC) 4:3",
+            VideoFormat::I576_25 => "576i PAL 16:9",
+            VideoFormat::I480_2997 => "480i NTSC 16:9",
+            VideoFormat::I576_25_4x3 => "576i PAL 4:3",
+            VideoFormat::I480_2997_4x3 => "480i NTSC 4:3",
         }
     }
 
