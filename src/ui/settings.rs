@@ -14,8 +14,14 @@ use std::rc::Rc;
 const AUDIO_BITRATES: [u32; 5] = [192, 256, 384, 448, 640];
 
 pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
-    let dialog = adw::PreferencesDialog::builder().title(gettext("Disc Settings")).build();
-    let page = adw::PreferencesPage::new();
+    let dialog = adw::PreferencesDialog::builder().title(gettext("Disc Settings")).content_width(720).build();
+    // One tab each: the disc, video, audio, subtitles and languages.
+    let tab = |title: String, icon: &str| adw::PreferencesPage::builder().title(title).icon_name(icon).build();
+    let disc_page = tab(gettext("Disc"), "media-optical-symbolic");
+    let video_page = tab(gettext("Video"), "video-display-symbolic");
+    let audio_page = tab(gettext("Audio"), "audio-speakers-symbolic");
+    let subtitle_page = tab(gettext("Subtitles"), "media-view-subtitles-symbolic");
+    let language_page = tab(gettext("Languages"), "preferences-desktop-locale-symbolic");
     let d = doc.project().disc.clone();
     let first_play = doc.project().first_play;
 
@@ -41,7 +47,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         row.set_subtitle(&gettext("Menu opened by the remote's Top Menu button"));
         g.add(&row);
     }
-    page.add(&g);
+    disc_page.add(&g);
 
     let g = rows::group(&gettext("Video"));
     g.set_description(Some(&gettext("All titles and menus are converted to this Blu-ray video format")));
@@ -72,7 +78,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     g.add(&br);
     quality_row(doc, &g, d.quality);
     encoder_rows(doc, &g, d.encoder);
-    page.add(&g);
+    video_page.add(&g);
 
     let g = rows::group(&gettext("Audio"));
     g.set_description(Some(&gettext(
@@ -97,10 +103,10 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     loud.set_subtitle(&gettext("Measures every track and sets it to −23 LUFS (EBU R128), so titles play at the same volume. Tracks are then re-encoded rather than copied."));
     loud.set_subtitle_lines(3);
     g.add(&loud);
-    page.add(&g);
+    audio_page.add(&g);
 
-    subtitle_group(doc, &page);
-    languages_group(doc, &page);
+    subtitle_group(doc, &subtitle_page);
+    languages_group(doc, &language_page);
 
     let g = rows::group(&gettext("Capacity"));
     let size_row = adw::ActionRow::builder().title(gettext("Estimated Size")).build();
@@ -108,7 +114,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     bar.add_offset_value("full", 1.0);
     size_row.add_suffix(&bar);
     g.add(&size_row);
-    page.add(&g);
+    disc_page.add(&g);
     let update = {
         let (size_row, bar) = (size_row.downgrade(), bar.downgrade());
         let doc = Rc::downgrade(doc);
@@ -127,7 +133,9 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         }
     });
 
-    dialog.add(&page);
+    for page in [&disc_page, &video_page, &audio_page, &subtitle_page, &language_page] {
+        dialog.add(page);
+    }
     dialog.present(Some(parent));
 }
 
