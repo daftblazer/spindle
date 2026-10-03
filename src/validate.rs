@@ -5,7 +5,7 @@
 //! estimates.
 
 use crate::bluray::AudioCodec;
-use crate::model::{language_name, Action, AudioSource, EndAction, FirstPlay, Id, Project, SubtitleSource, MAX_AUDIO_TRACKS};
+use crate::model::{language_name, Action, AudioSource, EndAction, FirstPlay, Id, Project, SubtitleSource, SubtitleTrack, MAX_AUDIO_TRACKS};
 use gettextrs::gettext;
 use std::collections::HashSet;
 
@@ -69,12 +69,26 @@ fn copied_kbps(codec: AudioCodec, source: Option<u64>) -> f64 {
     source.map_or(typical, |b| b as f64 / 1000.0) + core
 }
 
-/// Transport overhead (packet headers, PSI, subtitles) in kbit/s.
-const OVERHEAD_KBPS: f64 = 400.0;
+/// Program tables and clock references in kbit/s.
+const OVERHEAD_KBPS: f64 = 100.0;
+
+/// Growth of a stream once it is in transport packets (192 bytes carrying
+/// 184, plus PES headers), with x264's slight overshoot of its target.
+const MUX: f64 = 1.07;
+
+/// Typical bitrate on disc in kbit/s of a subtitle track. The pictures are
+/// only made during the build, and styled ASS (signs, karaoke) varies a lot.
+fn subtitle_kbps(track: &SubtitleTrack) -> f64 {
+    if track.is_ass() {
+        250.0
+    } else {
+        60.0
+    }
+}
 
 /// Size of each title on disc in bytes: `(re-encoded seconds, fixed bytes)`.
-/// Fixed bytes cover kept video, audio and overhead; re-encoded seconds are
-/// multiplied by the video bitrate.
+/// Fixed bytes cover kept video, audio, subtitles and overhead; re-encoded
+/// seconds are multiplied by the video bitrate (and [`MUX`]).
 fn size_parts(p: &Project) -> (f64, f64) {
     let (mut secs, mut fixed) = (0.0, 0.0);
     for t in &p.titles {
@@ -85,22 +99,24 @@ fn size_parts(p: &Project) -> (f64, f64) {
         let set = crate::media::transcode::EncodeSettings::for_disc(&p.disc);
         for (input, _) in crate::build::title_audio(p, t, &set, 0.0).unwrap_or_default() {
             let source = if input.file.is_some() { None } else { own.iter().find(|s| s.index == input.index).and_then(|s| s.bit_rate) };
-            let kbps = match input.copy {
-                Some(codec) => copied_kbps(codec, source),
-                None => audio_kbps(p, input.output_channels()),
-            };
+            let kbps = MUX
+                * match input.copy {
+                    Some(codec) => copied_kbps(codec, source),
+                    None => audio_kbps(p, input.output_channels()),
+                };
             if input.file.is_some() {
                 extra_audio += kbps;
             } else {
                 audio += kbps;
             }
         }
+        let subtitles: f64 = t.disc_subtitles().map(subtitle_kbps).sum();
         match std::fs::metadata(&a.path) {
             // Kept video (with its own audio) is about the size of the source file.
-            Ok(m) if t.keep_video => fixed += m.len() as f64 * 1.03 + d * extra_audio * 1000.0 / 8.0,
+            Ok(m) if t.keep_video => fixed += m.len() as f64 * 1.03 + d * (extra_audio + subtitles) * 1000.0 / 8.0,
             _ => {
                 secs += d;
-                fixed += d * (audio + extra_audio + OVERHEAD_KBPS) * 1000.0 / 8.0;
+                fixed += d * (audio + extra_audio + subtitles + OVERHEAD_KBPS) * 1000.0 / 8.0;
             }
         }
     }
@@ -113,7 +129,7 @@ fn size_parts(p: &Project) -> (f64, f64) {
 
 pub fn estimated_bytes(p: &Project) -> f64 {
     let (secs, fixed) = size_parts(p);
-    fixed + secs * p.disc.video_bitrate as f64 * 1000.0 / 8.0
+    fixed + secs * p.disc.video_bitrate as f64 * MUX * 1000.0 / 8.0
 }
 
 /// Video bitrate (kbit/s) that makes the project fill `capacity` bytes,
@@ -123,7 +139,7 @@ pub fn fit_bitrate(p: &Project, capacity: f64) -> Option<u32> {
     if secs <= 0.0 {
         return None;
     }
-    let kbps = (capacity * MARGIN - fixed) * 8.0 / 1000.0 / secs;
+    let kbps = (capacity * MARGIN - fixed) * 8.0 / 1000.0 / secs / MUX;
     Some(kbps.floor().max(0.0) as u32)
 }
 
@@ -484,5 +500,17 @@ mod tests {
         q.disc.video_bitrate = kbps;
         let bytes = estimated_bytes(&q);
         assert!(bytes <= 25.0e9 * MARGIN && bytes > 25.0e9 * MARGIN * 0.99, "{bytes}");
+    }
+
+    #[test]
+    fn subtitles_and_packets_take_room() {
+        let (mut p, t) = project();
+        let plain = estimated_bytes(&p);
+        // An hour of video in transport packets is more than the bare stream.
+        assert!(plain > 3600.0 * p.disc.video_bitrate as f64 * 1000.0 / 8.0 * 1.05, "{plain}");
+        let track = crate::model::external_track(std::path::Path::new("signs.ass"), None);
+        assert!(track.is_ass());
+        p.title_mut(t).unwrap().subtitles.push(track);
+        assert_eq!(estimated_bytes(&p) - plain, 3600.0 * 250.0 * 1000.0 / 8.0);
     }
 }
