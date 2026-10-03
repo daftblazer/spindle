@@ -32,13 +32,26 @@ pub struct Mark {
     pub time: u32,
 }
 
+/// A clip holding a pop-up menu, which the player loads before the
+/// playlist starts so the menu is there wherever playback goes.
+#[derive(Debug, Clone)]
+pub struct SubClip {
+    pub clip_id: String,
+    /// In/out time in 45 kHz ticks.
+    pub in_time: u32,
+    pub out_time: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct Playlist {
     pub items: Vec<PlayItem>,
     pub marks: Vec<Mark>,
+    /// The interactive graphics streams of the items are in this clip
+    /// rather than their own.
+    pub popup: Option<SubClip>,
 }
 
-fn write_stn(w: &mut BitWriter, streams: &[EsInfo]) {
+fn write_stn(w: &mut BitWriter, streams: &[EsInfo], sub_ig: bool) {
     let count = |f: fn(&EsKind) -> bool| streams.iter().filter(|s| f(&s.kind)).count() as u8;
     let n_video = count(|k| matches!(k, EsKind::Video(_)));
     let n_audio = count(|k| matches!(k, EsKind::Audio { .. }));
@@ -60,9 +73,14 @@ fn write_stn(w: &mut BitWriter, streams: &[EsInfo]) {
     ];
     for f in order {
         for s in streams.iter().filter(|s| f(&s.kind)) {
-            // stream_entry: type 1 = stream in main path clip
             let l = w.begin_len8();
-            w.u8(1).u16(s.pid).bytes(&[0; 6]);
+            if sub_ig && matches!(s.kind, EsKind::Ig { .. }) {
+                // stream_entry type 2: clip 0 of sub path 0
+                w.u8(2).u8(0).u8(0).u16(s.pid).bytes(&[0; 4]);
+            } else {
+                // stream_entry type 1: stream in the main path clip
+                w.u8(1).u16(s.pid).bytes(&[0; 6]);
+            }
             w.end_len8(l);
 
             // stream_attributes
@@ -88,7 +106,7 @@ fn write_stn(w: &mut BitWriter, streams: &[EsInfo]) {
     w.end_len16(len);
 }
 
-fn write_play_item(w: &mut BitWriter, pi: &PlayItem) {
+fn write_play_item(w: &mut BitWriter, pi: &PlayItem, sub_ig: bool) {
     let len = w.begin_len16();
     w.ascii(&pi.clip_id, 5).ascii("M2TS", 4);
     w.zeros(11).flag(false /* multi angle */).bits(4, 1 /* connection condition */);
@@ -101,7 +119,7 @@ fn write_play_item(w: &mut BitWriter, pi: &PlayItem) {
         StillMode::Time(t) => w.u8(1).u16(t),
         StillMode::Infinite => w.u8(2).u16(0),
     };
-    write_stn(w, &pi.streams);
+    write_stn(w, &pi.streams, sub_ig);
     w.end_len16(len);
 }
 
@@ -123,9 +141,24 @@ impl Playlist {
         let list_pos = w.len();
         w.patch_u32(list_pos_at, list_pos as u32);
         let len = w.begin_len32();
-        w.u16(0).u16(self.items.len() as u16).u16(0 /* subpaths */);
+        w.u16(0).u16(self.items.len() as u16).u16(self.popup.is_some() as u16 /* subpaths */);
         for pi in &self.items {
-            write_play_item(&mut w, pi);
+            write_play_item(&mut w, pi, self.popup.is_some());
+        }
+        if let Some(sub) = &self.popup {
+            let len = w.begin_len32();
+            w.u8(0).u8(3); // SubPath_type: interactive graphics presentation menu
+            w.zeros(15).flag(false /* repeat */);
+            w.u8(0).u8(1); // one SubPlayItem
+            let item = w.begin_len16();
+            w.ascii(&sub.clip_id, 5).ascii("M2TS", 4);
+            w.zeros(27).bits(4, 1 /* connection condition */).flag(false /* multi clip */);
+            w.u8(0); // ref_to_STC_id
+            w.u32(sub.in_time).u32(sub.out_time);
+            // Starts with the first PlayItem.
+            w.u16(0).u32(self.items.first().map_or(0, |pi| pi.in_time));
+            w.end_len16(item);
+            w.end_len32(len);
         }
         w.end_len32(len);
 

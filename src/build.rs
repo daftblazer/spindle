@@ -16,7 +16,7 @@ use crate::bluray::nav::clpi::ClipInfo;
 use crate::bluray::nav::hdmv::{Cmp, Command, Operand};
 use crate::bluray::nav::index::{Index, ObjectRef, PlaybackType};
 use crate::bluray::nav::mobj::MovieObject;
-use crate::bluray::nav::mpls::{Mark, PlayItem, Playlist, StillMode};
+use crate::bluray::nav::mpls::{Mark, PlayItem, Playlist, StillMode, SubClip};
 use crate::bluray::ts::{self, demux::Pes};
 use crate::bluray::{EsInfo, EsKind, PID_AUDIO_FIRST, PID_IG_FIRST, PID_PG_FIRST, PID_VIDEO};
 use crate::bluray::AudioCodec;
@@ -135,6 +135,9 @@ fn title_key(i: usize) -> String {
 fn intro_key(i: usize) -> String {
     format!("intro-{i}")
 }
+
+/// A finished title or intro: its playlist number, playlist and clips.
+type Built = (u32, Playlist, Vec<(u32, ClipInfo)>);
 
 /// What building a title involves.
 struct TitlePlan<'p> {
@@ -327,6 +330,13 @@ impl<'a> Builder<'a> {
         Some(1 + (self.menus.len() + self.project.titles.len() + k) as u32)
     }
 
+    /// Clip of the pop-up menu of title `i`: after the menus, titles and
+    /// intros.
+    fn popup_clip(&self, i: usize) -> u32 {
+        let intros = self.menus.iter().filter(|m| m.intro.is_some()).count();
+        1 + (self.menus.len() + self.project.titles.len() + intros + i) as u32
+    }
+
     /// Titles are encoded in two passes (Best quality with x264).
     fn two_pass(&self) -> bool {
         self.settings.quality == transcode::Quality::Best && !self.settings.effective_encoder().is_hardware()
@@ -505,9 +515,9 @@ impl<'a> Builder<'a> {
         }
         self.check_cancel()?;
         encode_cache::record_speed(&speed_key(&self.settings), encoded.into_inner().unwrap(), started.elapsed().as_secs_f64());
-        for (n, pl, ci) in results.into_inner().unwrap() {
+        for (n, pl, cis) in results.into_inner().unwrap() {
             playlists.push((n, pl));
-            clips.push((n, ci));
+            clips.extend(cis);
         }
         Ok((playlists, clips))
     }
@@ -965,7 +975,7 @@ impl<'a> Builder<'a> {
     }
 
     /// Build title `i`; also returns the seconds of video it encoded.
-    fn build_title(&self, t: &Title, i: usize) -> Result<((u32, Playlist, ClipInfo), f64)> {
+    fn build_title(&self, t: &Title, i: usize) -> Result<(Built, f64)> {
         let p = self.project;
         let n = self.title_clip(i);
         let key = title_key(i);
@@ -1053,18 +1063,36 @@ impl<'a> Builder<'a> {
             }
         }
 
-        // Pop-up menu: one display set at the start of the clip. (Players
-        // treat each repeat as a new menu, resetting it mid-use.)
-        if let Some(menu) = self.popup_menu(t, i, 1 + chapters.len()) {
-            self.tracker.update(&key, TaskState::Running, work, "Adding the pop-up menu");
-            let first_pts = ts::first_video_pts(&tmp)?;
-            let ig_index = streams.len();
-            streams.push(EsInfo { pid: PID_IG_FIRST, kind: EsKind::Ig { lang: "und".into() } });
-            extra.extend(ig::encode(&menu, first_pts)?.into_iter().map(|p| (ig_index, p)));
-        }
         self.stage(format!("Multiplexing title “{}”", t.name));
         let stats = self.remux(&key, &tmp, n, &streams, extra, (work, duration)).with_context(|| format!("multiplexing “{}”", t.name))?;
         let (ci, in_t, out_t) = self.clip_info(&stats, streams.clone())?;
+        let mut clips = vec![(n, ci)];
+
+        // Pop-up menu: a clip of its own that players load before the title
+        // starts, so it is there after seeking or starting at a chapter.
+        let mut popup = None;
+        if let Some(menu) = self.popup_menu(t, i, 1 + chapters.len()) {
+            self.tracker.update(&key, TaskState::Running, work, "Adding the pop-up menu");
+            let pn = self.popup_clip(i);
+            let es = EsInfo { pid: PID_IG_FIRST, kind: EsKind::Ig { lang: "und".into() } };
+            let pes = ig::encode(&menu, in_t as u64 * 2)?;
+            let start = pes.first().and_then(|p| p.pts).map_or(in_t, |pts| (pts / 2) as u32);
+            let end = start + 45_000;
+            let stats = ts::mux_alone(&layout::stream_path(&self.out, pn), es.clone(), pes).with_context(|| format!("the pop-up menu of “{}”", t.name))?;
+            clips.push((
+                pn,
+                ClipInfo {
+                    ts_recording_rate: (ts::mux::MUX_RATE / 8) as u32,
+                    num_source_packets: stats.num_packets,
+                    presentation_start: start,
+                    presentation_end: end,
+                    streams: vec![es.clone()],
+                    ep_map: Vec::new(),
+                },
+            ));
+            streams.push(es);
+            popup = Some(SubClip { clip_id: clip_name(pn), in_time: start, out_time: end });
+        }
         let size = std::fs::metadata(layout::stream_path(&self.out, n)).map_or(0, |m| m.len());
         self.tracker.update(&key, TaskState::Done, 0.0, &format!("{:.2} GB", size as f64 / 1e9));
 
@@ -1084,13 +1112,14 @@ impl<'a> Builder<'a> {
                 streams,
             }],
             marks,
+            popup,
         };
-        Ok(((n, pl, ci), encoded))
+        Ok(((n, pl, clips), encoded))
     }
 
     /// The intro video of disc menu `i` as its own clip (no buttons), and
     /// the seconds of video encoded.
-    fn build_intro(&self, i: usize) -> Result<((u32, Playlist, ClipInfo), f64)> {
+    fn build_intro(&self, i: usize) -> Result<(Built, f64)> {
         let m = self.menus[i];
         let n = self.intro_playlist(i).context("menu without intro")?;
         let asset = m.intro.and_then(|a| self.project.asset(a)).context("intro video is missing")?;
@@ -1119,8 +1148,9 @@ impl<'a> Builder<'a> {
         let pl = Playlist {
             items: vec![PlayItem { clip_id: clip_name(n), in_time: in_t, out_time: out_t, still: StillMode::None, streams }],
             marks: vec![Mark { play_item: 0, time: in_t }],
+            popup: None,
         };
-        Ok(((n, pl, ci), duration))
+        Ok(((n, pl, vec![(n, ci)]), duration))
     }
 
     /// Disc menu clip `n`; `done` is the menus' work before it.
@@ -1205,6 +1235,7 @@ impl<'a> Builder<'a> {
         let pl = Playlist {
             items: vec![PlayItem { clip_id: clip_name(n), in_time: in_t, out_time: out_t, still: still_mode, streams }],
             marks: vec![Mark { play_item: 0, time: in_t }],
+            popup: None,
         };
         Ok((pl, ci))
     }

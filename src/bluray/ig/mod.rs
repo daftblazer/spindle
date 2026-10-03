@@ -212,11 +212,15 @@ fn ics(menu: &Menu, object_ids: &[Vec<[u16; 3]>], palettes: &[PagePalettes]) -> 
     let (width, height) = menu.video.size();
 
     let mut comp = BitWriter::new();
-    comp.flag(false) // stream_model: multiplexed
+    // Pop-up menus are in a clip of their own, loaded before the title
+    // plays; disc menus are multiplexed with their video.
+    comp.flag(menu.popup) // stream_model: out of mux
         .flag(menu.popup) // ui_model
         .zeros(6);
-    comp.zeros(7).bits(33, 0); // composition_time_out_pts
-    comp.zeros(7).bits(33, 0); // selection_time_out_pts
+    if !menu.popup {
+        comp.zeros(7).bits(33, 0); // composition_time_out_pts
+        comp.zeros(7).bits(33, 0); // selection_time_out_pts
+    }
     comp.u24(menu.user_timeout);
     comp.u8(menu.pages.len() as u8);
 

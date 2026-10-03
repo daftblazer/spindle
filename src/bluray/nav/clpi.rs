@@ -106,7 +106,10 @@ impl ClipInfo {
         let len = w.begin_len32();
         w.u16(0);
         w.u8(1); // clip_stream_type: AV stream
-        w.u8(1); // application_type: main TS for main path of movie
+        // application_type: main TS of a movie, or (without video) the
+        // sub TS of an interactive graphics menu
+        let main = self.streams.iter().any(|s| matches!(s.kind, EsKind::Video(_)));
+        w.u8(if main { 1 } else { 5 });
         w.zeros(31).flag(false); // is_ATC_delta
         w.u32(self.ts_recording_rate);
         w.u32(self.num_source_packets);

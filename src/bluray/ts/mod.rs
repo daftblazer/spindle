@@ -81,6 +81,17 @@ pub fn remux(
     )
 }
 
+/// Write a clip holding only `packets` of one stream (a pop-up menu, which
+/// the player loads whole before the title plays).
+pub fn mux_alone(output: &Path, stream: EsInfo, packets: Vec<Pes>) -> Result<MuxStats> {
+    let file = File::create(output).with_context(|| format!("creating {}", output.display()))?;
+    let mut muxer = Muxer::new(BufWriter::new(file), vec![stream]);
+    for pes in packets {
+        muxer.push(0, pes);
+    }
+    muxer.run(|| Ok(None), |_| true)
+}
+
 /// PTS of the first video access unit in a transport stream.
 pub fn first_video_pts(input: &Path) -> Result<u64> {
     let mut demux = Demuxer::open(input)?;
