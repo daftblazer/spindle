@@ -105,6 +105,130 @@ fn plan_palettes(pages: usize, fading: &[bool]) -> Vec<PagePalettes> {
         .collect()
 }
 
+/// Smallest width and height of an IG object.
+const MIN_OBJECT: i32 = 8;
+
+/// Left, top, right and bottom edges.
+type Edges = [i32; 4];
+
+fn overlap(a: &Edges, b: &Edges) -> bool {
+    a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
+}
+
+/// `v` moved down (or up) to a line of the grid over `lo..hi`: every
+/// [`MIN_OBJECT`] pixels from `lo`, ending at `hi`.
+fn grid_line(v: i32, lo: i32, hi: i32, up: bool) -> i32 {
+    let cells = (hi - lo) / MIN_OBJECT;
+    if v <= lo || v >= hi {
+        return v.clamp(lo, hi);
+    }
+    let k = if up { (v - lo + MIN_OBJECT - 1) / MIN_OBJECT } else { (v - lo) / MIN_OBJECT };
+    match (up, k >= cells) {
+        (true, true) => hi,
+        _ => lo + k.min(cells - 1) * MIN_OBJECT,
+    }
+}
+
+/// `src` (at `sx`, `sy`) drawn over `dst` (at `dx`, `dy`), both straight alpha.
+fn draw_over(dst: &mut Bitmap, dx: i32, dy: i32, src: &Bitmap, sx: i32, sy: i32) {
+    for y in 0..dst.height as i32 {
+        let v = y + dy - sy;
+        if v < 0 || v >= src.height as i32 {
+            continue;
+        }
+        for x in 0..dst.width as i32 {
+            let u = x + dx - sx;
+            if u < 0 || u >= src.width as i32 {
+                continue;
+            }
+            let s = &src.rgba[(v as usize * src.width as usize + u as usize) * 4..][..4];
+            let d = &mut dst.rgba[(y as usize * dst.width as usize + x as usize) * 4..][..4];
+            let (sa, da) = (s[3] as u32, d[3] as u32);
+            let under = da * (255 - sa);
+            let out = sa * 255 + under;
+            if out == 0 {
+                continue;
+            }
+            for c in 0..3 {
+                d[c] = ((s[c] as u32 * sa * 255 + d[c] as u32 * under + out / 2) / out) as u8;
+            }
+            d[3] = ((out + 127) / 255) as u8;
+        }
+    }
+}
+
+fn crop_at(b: &Bitmap, bx: i32, by: i32, e: &Edges) -> Bitmap {
+    let mut out = Bitmap { width: (e[2] - e[0]) as u16, height: (e[3] - e[1]) as u16, rgba: vec![0; ((e[2] - e[0]) * (e[3] - e[1]) * 4) as usize] };
+    draw_over(&mut out, e[0], e[1], b, bx, by);
+    out
+}
+
+/// Put `backdrop` (at `x`, `y`) behind the buttons of a pop-up page.
+/// Players draw the buttons of a page in no particular order, so they may
+/// not overlap: each button takes on the backdrop under it, and the rest
+/// of the backdrop is returned as pieces around the buttons. Buttons grow
+/// to a grid so that no piece is thinner than an object can be.
+pub fn lay_backdrop(x: u16, y: u16, backdrop: &Bitmap, buttons: &mut [Button]) -> Vec<(u16, u16, Bitmap)> {
+    let (px, py) = (x as i32, y as i32);
+    let panel: Edges = [px, py, px + backdrop.width as i32, py + backdrop.height as i32];
+    let mut rects: Vec<Edges> =
+        buttons.iter().map(|b| [b.x as i32, b.y as i32, b.x as i32 + b.normal.width as i32, b.y as i32 + b.normal.height as i32]).collect();
+    for i in 0..rects.len() {
+        if !overlap(&rects[i], &panel) {
+            continue;
+        }
+        // Grow each side to the grid unless that runs into another button.
+        for side in 0..4 {
+            let (lo, hi) = (panel[side % 2], panel[side % 2 + 2]);
+            let mut grown = rects[i];
+            grown[side] = grid_line(grown[side], lo, hi, side >= 2);
+            let outside = rects[i][side] < lo || rects[i][side] > hi;
+            if !outside && !rects.iter().enumerate().any(|(j, r)| j != i && overlap(&grown, r)) {
+                rects[i] = grown;
+            }
+        }
+        let b = &mut buttons[i];
+        let (bx, by) = (b.x as i32, b.y as i32);
+        for state in [&mut b.normal, &mut b.selected, &mut b.activated] {
+            let mut merged = crop_at(backdrop, px, py, &rects[i]);
+            draw_over(&mut merged, rects[i][0], rects[i][1], state, bx, by);
+            *state = merged;
+        }
+        (b.x, b.y) = (rects[i][0] as u16, rects[i][1] as u16);
+    }
+
+    // The backdrop left over, in rows between the buttons' top and bottom
+    // edges; pieces continue down through rows where they are the same.
+    let mut ys: Vec<i32> = rects.iter().flat_map(|r| [r[1], r[3]]).chain([panel[1], panel[3]]).map(|v| v.clamp(panel[1], panel[3])).collect();
+    ys.sort_unstable();
+    ys.dedup();
+    let mut pieces: Vec<Edges> = Vec::new();
+    for band in ys.windows(2) {
+        let mut covered: Vec<(i32, i32)> = rects
+            .iter()
+            .filter(|r| r[1] <= band[0] && r[3] >= band[1] && r[0] < panel[2] && r[2] > panel[0])
+            .map(|r| (r[0].max(panel[0]), r[2].min(panel[2])))
+            .collect();
+        covered.sort_unstable();
+        let mut at = panel[0];
+        for (x0, x1) in covered.into_iter().chain([(panel[2], panel[2])]) {
+            if x0 > at {
+                match pieces.iter_mut().find(|p| p[0] == at && p[2] == x0 && p[3] == band[0]) {
+                    Some(p) => p[3] = band[1],
+                    None => pieces.push([at, band[0], x0, band[1]]),
+                }
+            }
+            at = at.max(x1);
+        }
+    }
+    pieces
+        .into_iter()
+        .filter(|p| p[2] - p[0] >= MIN_OBJECT && p[3] - p[1] >= MIN_OBJECT)
+        .map(|p| (p[0] as u16, p[1] as u16, crop_at(backdrop, px, py, &p)))
+        .filter(|(_, _, b)| b.rgba.iter().skip(3).step_by(4).any(|a| *a > 0))
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct Menu {
     pub video: VideoFormat,
@@ -429,6 +553,45 @@ mod tests {
 
     fn solid(w: u16, h: u16, rgba: [u8; 4]) -> Bitmap {
         Bitmap { width: w, height: h, rgba: rgba.repeat(w as usize * h as usize) }
+    }
+
+    #[test]
+    fn backdrop_goes_around_buttons() {
+        let button = |x, y, w, h| Button {
+            id: 0,
+            numeric: 1,
+            x,
+            y,
+            up: 0,
+            down: 0,
+            left: 0,
+            right: 0,
+            normal: solid(w, h, [255, 255, 255, 128]),
+            selected: solid(w, h, [255, 200, 0, 255]),
+            activated: solid(w, h, [255, 200, 0, 255]),
+            commands: vec![],
+            auto_action: false,
+        };
+        // Two buttons out of line by a few pixels, one reaching past the backdrop.
+        let mut buttons = vec![button(30, 30, 21, 20), button(70, 33, 60, 20)];
+        let pieces = lay_backdrop(10, 10, &solid(100, 100, [0, 0, 255, 255]), &mut buttons);
+        let mut rects: Vec<Edges> = pieces.iter().map(|(x, y, b)| [*x as i32, *y as i32, (*x + b.width) as i32, (*y + b.height) as i32]).collect();
+        assert!(rects.iter().all(|r| r[2] - r[0] >= 8 && r[3] - r[1] >= 8), "{rects:?}");
+        rects.extend(buttons.iter().map(|b| [b.x as i32, b.y as i32, (b.x + b.normal.width) as i32, (b.y + b.normal.height) as i32]));
+        for (i, a) in rects.iter().enumerate() {
+            assert!(rects[i + 1..].iter().all(|b| !overlap(a, b)), "{rects:?}");
+        }
+        // Together they cover the backdrop.
+        let inside: i32 = rects.iter().map(|r| (r[2].min(110) - r[0].max(10)) * (r[3].min(110) - r[1].max(10))).sum();
+        assert_eq!(inside, 100 * 100);
+        // The buttons kept their look, over the backdrop.
+        let b = &buttons[0];
+        assert_eq!((b.x, b.y, b.normal.width, b.normal.height), (26, 26, 32, 24));
+        let px = |bmp: &Bitmap, x: usize, y: usize| bmp.rgba[(y * bmp.width as usize + x) * 4..][..4].to_vec();
+        assert_eq!(px(&b.normal, 0, 0), [0, 0, 255, 255]);
+        assert_eq!(px(&b.normal, 10, 10), [128, 128, 255, 255]);
+        assert_eq!(px(&b.selected, 10, 10), [255, 200, 0, 255]);
+        assert_eq!(b.selected, b.activated);
     }
 
     #[test]

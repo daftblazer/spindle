@@ -727,25 +727,6 @@ impl<'a> Builder<'a> {
             let nav = m.navigation();
             let id_of = |id: Id| base + items.iter().position(|i| i.id == id).unwrap_or(0) as u16;
             let mut buttons = Vec::new();
-            // Everything that isn't a button, as one button nothing leads to.
-            if let Some((x, y, bmp)) = render::render_static_bitmap(p, m, &images, &frame) {
-                let id = base + 0xFF;
-                buttons.push(ig::Button {
-                    id,
-                    numeric: 0xFFFF,
-                    x,
-                    y,
-                    up: id,
-                    down: id,
-                    left: id,
-                    right: id,
-                    normal: bmp.clone(),
-                    selected: bmp.clone(),
-                    activated: bmp,
-                    commands: vec![],
-                    auto_action: false,
-                });
-            }
             for (bi, item) in items.iter().enumerate() {
                 let b = item.button().unwrap();
                 let (x, y, _, _) = render::button_geometry(item, &frame);
@@ -764,6 +745,30 @@ impl<'a> Builder<'a> {
                     commands: self.popup_commands(b.action, title, &page_ids, marks),
                     auto_action: false,
                 });
+            }
+            // Everything that isn't a button, as buttons nothing leads to,
+            // in pieces around the real ones.
+            if let Some((x, y, bmp)) = render::render_static_bitmap(p, m, &images, &frame) {
+                let pieces = ig::lay_backdrop(x, y, &bmp, &mut buttons);
+                let room = 255 - buttons.len();
+                for (k, (x, y, piece)) in pieces.into_iter().take(room).enumerate() {
+                    let id = base + 0xFF - k as u16;
+                    buttons.push(ig::Button {
+                        id,
+                        numeric: 0xFFFF,
+                        x,
+                        y,
+                        up: id,
+                        down: id,
+                        left: id,
+                        right: id,
+                        normal: piece.clone(),
+                        selected: piece.clone(),
+                        activated: piece,
+                        commands: vec![],
+                        auto_action: false,
+                    });
+                }
             }
             let default = m.default_button.and_then(|d| items.iter().position(|i| i.id == d)).unwrap_or(0);
             let default_button = if items.is_empty() { ig::NO_BUTTON } else { base + default as u16 };
