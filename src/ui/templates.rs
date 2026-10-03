@@ -464,8 +464,10 @@ pub fn present(
         let fill = fill_logos.clone();
         import_image(Box::new(move |id| fill(Some(id))));
     });
+    // Redrawing every preview takes a while, so wait for a pause in typing.
+    let typing: Rc<RefCell<Option<glib::SourceId>>> = Rc::default();
     for (row, field) in [(&title_row, 0), (&season_row, 1), (&disc_row, 2)] {
-        let s = state.clone();
+        let (s, typing) = (state.clone(), typing.clone());
         row.connect_changed(move |r| {
             let text = r.text().to_string();
             match field {
@@ -473,7 +475,16 @@ pub fn present(
                 1 => *s.season.borrow_mut() = text,
                 _ => *s.disc.borrow_mut() = text,
             }
-            s.refresh();
+            if let Some(id) = typing.take() {
+                id.remove();
+            }
+            let (weak, done) = (Rc::downgrade(&s), typing.clone());
+            *typing.borrow_mut() = Some(glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+                done.take();
+                if let Some(s) = weak.upgrade() {
+                    s.refresh();
+                }
+            }));
         });
     }
     // Thumbnails arrive asynchronously.
