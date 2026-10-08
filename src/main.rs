@@ -194,6 +194,13 @@ fn preview_cli(args: &[String]) -> glib::ExitCode {
 fn main() -> glib::ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("spindle=info")).init();
 
+    // Play videos with software decoders: frames from the hardware ones
+    // can reach the screen before they are finished, flashing green.
+    if std::env::var_os("GST_PLUGIN_FEATURE_RANK").is_none() {
+        let hardware = ["h264", "h265", "mpeg2", "vp8", "vp9", "av1"].map(|c| format!("va{c}dec:NONE,vulkan{c}dec:NONE"));
+        std::env::set_var("GST_PLUGIN_FEATURE_RANK", hardware.join(","));
+    }
+
     let args: Vec<String> = std::env::args().collect();
     if args.len() == 4 && args[1] == "--build" {
         return build_cli(&args[2], Some(&args[3]));
