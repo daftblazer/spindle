@@ -1655,18 +1655,28 @@ impl Inspector {
             EndAction::PlayNextTitle => 1,
             EndAction::Loop => 2,
         };
-        g.add(&rows::combo(doc, &gettext("Action"), &ends, sel, Change::Content, move |p, i| {
+        let action = rows::combo(doc, &gettext("Action"), &ends, sel, Change::Content, move |p, i| {
             if let Some(t) = p.title_mut(id) {
                 t.end_action = [EndAction::ReturnToMenu, EndAction::PlayNextTitle, EndAction::Loop][i.min(2)];
             }
-        }));
+        });
+        g.add(&action);
         let menus: Vec<(Id, String)> = p.disc_menus().map(|m| (m.id, m.name.clone())).collect();
         let (labels, sel) = optional_choice(&gettext("First Menu"), &menus, t.return_menu);
-        g.add(&rows::combo(doc, &gettext("Menu"), &labels, sel, Change::Content, move |p, i| {
+        let menu = rows::combo(doc, &gettext("Menu"), &labels, sel, Change::Content, move |p, i| {
             if let Some(t) = p.title_mut(id) {
                 t.return_menu = pick(&menus, i);
             }
-        }));
+        });
+        g.add(&menu);
+        // The menu matters after the last title when playing on, and
+        // never when looping.
+        let show_menu = move |action: &adw::ComboRow| {
+            menu.set_visible(action.selected() != 2);
+            menu.set_subtitle(&if action.selected() == 1 { gettext("Shown after the last title") } else { String::new() });
+        };
+        show_menu(&action);
+        action.connect_selected_notify(show_menu);
         if p.titles.len() > 1 {
             g.add(&apply_to_all_row(doc, id, &gettext("Every title does the same when it finishes"), Project::apply_end_action_to_all));
         }
