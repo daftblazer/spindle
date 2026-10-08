@@ -16,6 +16,33 @@ pub struct EncodeSettings {
     pub audio_bitrate: u32,
     pub encoder: VideoEncoder,
     pub quality: Quality,
+    pub tune: Tune,
+}
+
+/// What the video is, so x264 spends its bits where that kind shows flaws.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default)]
+pub enum Tune {
+    #[default]
+    None,
+    /// Live action.
+    Film,
+    /// Flat colours and sharp lines (cartoons, anime).
+    Animation,
+    /// Keeps film grain.
+    Grain,
+}
+
+impl Tune {
+    pub const ALL: [Tune; 4] = [Tune::None, Tune::Film, Tune::Animation, Tune::Grain];
+
+    fn x264(self) -> Option<&'static str> {
+        match self {
+            Tune::None => None,
+            Tune::Film => Some("film"),
+            Tune::Animation => Some("animation"),
+            Tune::Grain => Some("grain"),
+        }
+    }
 }
 
 /// Speed against quality for x264.
@@ -61,6 +88,7 @@ impl EncodeSettings {
             audio_bitrate: d.audio_bitrate,
             encoder: d.encoder,
             quality: d.quality,
+            tune: d.tune,
         }
     }
 
@@ -199,11 +227,11 @@ fn video_args(set: &EncodeSettings, bitrate: u32, interlaced: Option<bool>) -> V
         None if set.video.interlaced() => x264.push_str(":fake-interlaced=1:pic-struct=1"),
         None => {}
     }
-    vec![
-        s("-c:v"),
-        s("libx264"),
-        s("-preset"),
-        s(set.quality.preset()),
+    let mut a = vec![s("-c:v"), s("libx264"), s("-preset"), s(set.quality.preset())];
+    if let Some(tune) = set.tune.x264() {
+        a.extend([s("-tune"), s(tune)]);
+    }
+    a.extend([
         s("-profile:v"),
         s("high"),
         s("-level:v"),
@@ -218,7 +246,8 @@ fn video_args(set: &EncodeSettings, bitrate: u32, interlaced: Option<bool>) -> V
         s("30000k"),
         s("-x264-params"),
         x264,
-    ]
+    ]);
+    a
 }
 
 /// Encoder options for output audio stream `n` in the disc's format.
@@ -476,7 +505,7 @@ mod tests {
     use super::*;
 
     fn settings(video: VideoFormat, encoder: VideoEncoder) -> EncodeSettings {
-        EncodeSettings { video, video_bitrate: 18_000, audio: AudioCodec::Ac3, audio_bitrate: 448, encoder, quality: Quality::Balanced }
+        EncodeSettings { video, video_bitrate: 18_000, audio: AudioCodec::Ac3, audio_bitrate: 448, encoder, quality: Quality::Balanced, tune: Tune::None }
     }
 
     fn arg_after<'a>(a: &'a [String], key: &str) -> Option<&'a str> {
@@ -534,6 +563,20 @@ mod tests {
         assert_eq!(arg_after(&a, "-c:a:2"), Some("ac3"));
         assert_eq!(arg_after(&a, "-ac:a:2"), Some("6"));
         assert_eq!(a.iter().filter(|x| *x == "0:a:1").count(), 2);
+    }
+
+    #[test]
+    fn tune() {
+        let (info, opts) = (MediaInfo::default(), VideoOptions::default());
+        let src = Source { path: Path::new("in.mkv"), info: &info, picture: &opts, burn: None };
+        let set = settings(VideoFormat::P1080_23976, VideoEncoder::Software);
+        let args = title_args(&src, &set, &[], &[], None, &Pass::Only, Path::new("out.ts"));
+        assert_eq!(arg_after(&args, "-tune"), None);
+        let args = title_args(&src, &EncodeSettings { tune: Tune::Animation, ..set }, &[], &[], None, &Pass::Only, Path::new("out.ts"));
+        assert_eq!(arg_after(&args, "-tune"), Some("animation"));
+        // Hardware encoders don't have these tunes.
+        let hw = EncodeSettings { tune: Tune::Animation, ..settings(VideoFormat::P1080_23976, VideoEncoder::Nvenc) };
+        assert_eq!(arg_after(&title_args(&src, &hw, &[], &[], None, &Pass::Only, Path::new("out.ts")), "-tune"), Some("hq"));
     }
 
     #[test]

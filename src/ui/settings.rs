@@ -77,6 +77,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     br.set_subtitle(&gettext("Mbit/s — about 18 fits two hours on a BD-25"));
     g.add(&br);
     quality_row(doc, &g, d.quality);
+    tune_row(doc, &g, d.tune);
     encoder_rows(doc, &g, d.encoder);
     video_page.add(&g);
 
@@ -155,6 +156,26 @@ fn quality_row(doc: &Rc<Document>, g: &adw::PreferencesGroup, current: crate::me
     row.set_subtitle(&explain(current));
     row.set_subtitle_lines(3);
     row.connect_selected_notify(move |r| r.set_subtitle(&explain(Quality::ALL[(r.selected() as usize).min(2)])));
+    g.add(&row);
+}
+
+/// The kind of video being encoded.
+pub(super) fn tune_row(doc: &Rc<Document>, g: &adw::PreferencesGroup, current: crate::media::transcode::Tune) {
+    use crate::media::transcode::Tune;
+    let labels = [gettext("General"), gettext("Film"), gettext("Animation"), gettext("Film Grain")];
+    let explain = |t: Tune| match t {
+        Tune::None => gettext("Suits any video"),
+        Tune::Film => gettext("Live action: keeps fine detail and texture"),
+        Tune::Animation => gettext("Cartoons and anime: clean lines and smooth flat colours"),
+        Tune::Grain => gettext("Keeps the grain of old or grainy film, which needs a high bitrate"),
+    };
+    let sel = Tune::ALL.iter().position(|t| *t == current).unwrap_or(0);
+    let row = rows::combo(doc, &gettext("Tuned For"), &labels, sel, Change::Content, |p, i| {
+        p.disc.tune = Tune::ALL[i.min(Tune::ALL.len() - 1)];
+    });
+    row.set_subtitle(&explain(current));
+    row.set_subtitle_lines(2);
+    row.connect_selected_notify(move |r| r.set_subtitle(&explain(Tune::ALL[(r.selected() as usize).min(Tune::ALL.len() - 1)])));
     g.add(&row);
 }
 
