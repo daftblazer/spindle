@@ -186,6 +186,9 @@ pub struct Builder<'a> {
     stop: AtomicBool,
     emit: &'a (dyn Fn(BuildEvent) + Sync),
     settings: EncodeSettings,
+    /// Settings of the disc menus and their intros, which can be in
+    /// another video format than the titles.
+    menu_settings: EncodeSettings,
     /// Settings of titles encoded ahead of a build.
     pre: EncodeSettings,
     /// Encoding titles ahead rather than building a disc.
@@ -317,6 +320,14 @@ fn object_for_menu(i: usize) -> u32 {
 impl<'a> Builder<'a> {
     pub fn new(project: &'a Project, out: &Path, cancel: &'a AtomicBool, emit: &'a (dyn Fn(BuildEvent) + Sync)) -> Self {
         let settings = EncodeSettings::for_disc(&project.disc);
+        // Menus in their own format don't take the titles' bitrate, which
+        // was chosen for another picture size.
+        let menu_video = project.disc.menu_format();
+        let menu_bitrate = match menu_video {
+            v if v == settings.video => settings.video_bitrate,
+            v if v.is_sd() => 6_000,
+            _ => 15_000,
+        };
         Builder {
             project,
             menus: project.disc_menus().collect(),
@@ -326,6 +337,7 @@ impl<'a> Builder<'a> {
             stop: AtomicBool::new(false),
             emit,
             settings,
+            menu_settings: EncodeSettings { video: menu_video, video_bitrate: menu_bitrate, ..settings },
             pre: EncodeSettings::for_pre_encode(&project.disc),
             only_encode: false,
             tracker: Tracker { emit, tasks: Mutex::new(Vec::new()) },
@@ -742,7 +754,8 @@ impl<'a> Builder<'a> {
             first_play: ObjectRef { object_id: 0, playback_type: PlaybackType::Interactive },
             top_menu: top,
             titles,
-            video: p.disc.video,
+            // The format players start in: that of what is shown first.
+            video: if m_count > 0 { self.menu_settings.video } else { p.disc.video },
         };
         (index, objects)
     }
@@ -1222,9 +1235,9 @@ impl<'a> Builder<'a> {
             .collect();
         let opts = crate::media::picture::VideoOptions::default();
         let src = transcode::Source { path: &asset.path, info: &asset.info, picture: &opts, burn: None };
-        let args = transcode::title_args(&src, &self.settings, &[], &audio, None, &transcode::Pass::Only, &tmp);
+        let args = transcode::title_args(&src, &self.menu_settings, &[], &audio, None, &transcode::Pass::Only, &tmp);
         self.encode(&key, args, duration, 0.0, "Encoding")?;
-        let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(self.settings.video) }];
+        let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(self.menu_settings.video) }];
         if asset.info.has_audio() {
             streams.push(self.audio_es(&asset.info, "und"));
         }
@@ -1242,7 +1255,7 @@ impl<'a> Builder<'a> {
     /// Disc menu clip `n`; `done` is the menus' work before it.
     fn build_menu(&self, m: &Menu, n: u32, done: f64) -> Result<(Playlist, ClipInfo)> {
         let p = self.project;
-        let frame = render::DiscFrame::for_menu(self.settings.video, m.shape);
+        let frame = render::DiscFrame::for_menu(self.menu_settings.video, m.shape);
         self.tracker.update("menus", TaskState::Running, done, &format!("Drawing “{}”", m.name));
         self.stage(format!("Rendering menu “{}”", m.name));
         let images = ImageCache::new_sync();
@@ -1291,20 +1304,20 @@ impl<'a> Builder<'a> {
             motion.map(|a| (a.path.as_path(), &a.info, m.background.video_start)),
             audio.map(|a| (a.path.as_path(), &a.info)),
             duration,
-            &self.settings,
+            &self.menu_settings,
             &tmp,
         );
         self.encode("menus", args, duration, done, &format!("Encoding “{}”", m.name))?;
 
         self.stage(format!("Multiplexing menu “{}”", m.name));
-        let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(self.settings.video) }];
+        let mut streams = vec![EsInfo { pid: PID_VIDEO, kind: EsKind::Video(self.menu_settings.video) }];
         if let Some(a) = audio {
             streams.push(self.audio_es(&a.info, "und"));
         }
         let mut extra = Vec::new();
         if !buttons.is_empty() {
             let first_pts = ts::first_video_pts(&tmp)?;
-            let mut ig_menu = ig::Menu::single(self.settings.video, buttons, default_button);
+            let mut ig_menu = ig::Menu::single(self.menu_settings.video, buttons, default_button);
             ig_menu.pages[0].fade_in = seconds_to_ticks(m.fade_in);
             ig_menu.pages[0].fade_out = seconds_to_ticks(m.fade_out);
             let ig_index = streams.len();

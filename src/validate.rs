@@ -148,7 +148,14 @@ pub fn fit_bitrate(p: &Project, capacity: f64) -> Option<u32> {
     Some(kbps.floor().max(0.0) as u32)
 }
 
-pub const MIN_VIDEO_KBPS: u32 = 4000;
+/// Lowest bitrate Fit to Disc offers: SD holds up at far less than HD.
+pub fn min_video_kbps(p: &Project) -> u32 {
+    if p.disc.video.is_sd() {
+        1500
+    } else {
+        4000
+    }
+}
 pub const MAX_VIDEO_KBPS: u32 = 35000;
 
 /// Menus and titles a viewer can get to from First Play.

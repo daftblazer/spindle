@@ -197,7 +197,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                 let fits: Vec<(&'static str, u32)> = validate::DISCS
                     .iter()
                     .filter_map(|(name, cap)| Some((*name, validate::fit_bitrate(&p, *cap)?.min(validate::MAX_VIDEO_KBPS))))
-                    .filter(|(_, kbps)| *kbps >= validate::MIN_VIDEO_KBPS)
+                    .filter(|(_, kbps)| *kbps >= validate::min_video_kbps(&p))
                     .collect();
                 (validate::check(&p), validate::estimated_bytes(&p), fits)
             };

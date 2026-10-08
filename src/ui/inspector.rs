@@ -335,7 +335,7 @@ impl Inspector {
                 m.shape = if i == 1 { MenuShape::Standard } else { MenuShape::Wide };
             }
         });
-        shape.set_subtitle(&match (m.shape, p.disc.video.is_4x3()) {
+        shape.set_subtitle(&match (m.shape, p.disc.format_of(m).is_4x3()) {
             (MenuShape::Wide, true) => gettext("Shown letterboxed on this 4:3 disc"),
             (MenuShape::Wide, false) => gettext("For widescreen TVs"),
             (MenuShape::Standard, true) => gettext("Designed in the middle of the canvas, which fills 4:3 TVs"),

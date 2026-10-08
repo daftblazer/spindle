@@ -50,10 +50,10 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     disc_page.add(&g);
 
     let g = rows::group(&gettext("Video"));
-    g.set_description(Some(&gettext("All titles and menus are converted to this Blu-ray video format")));
+    g.set_description(Some(&gettext("Titles are converted to this Blu-ray video format, and menus too unless they have their own")));
     let formats: Vec<String> = VideoFormat::ALL.iter().map(|f| f.label().to_string()).collect();
     let sel = VideoFormat::ALL.iter().position(|f| *f == d.video).unwrap_or(0);
-    let format_row = rows::combo(doc, &gettext("Format"), &formats, sel, Change::Content, |p, i| {
+    let format_row = rows::combo(doc, &gettext("Title Format"), &formats, sel, Change::Content, |p, i| {
         p.disc.video = VideoFormat::ALL[i.min(VideoFormat::ALL.len() - 1)];
     });
     let explain = |f: VideoFormat| {
@@ -71,7 +71,16 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     format_row.set_subtitle_lines(2);
     format_row.connect_selected_notify(move |r| r.set_subtitle(&explain(VideoFormat::ALL[(r.selected() as usize).min(VideoFormat::ALL.len() - 1)])));
     g.add(&format_row);
-    let br = rows::spin(doc, &gettext("Average Bitrate"), d.video_bitrate as f64 / 1000.0, 4.0, 35.0, 1.0, 0, Change::Content, |p, v| {
+    let mut menu_formats = vec![gettext("Same as Titles")];
+    menu_formats.extend(formats.iter().cloned());
+    let sel = d.menu_video.and_then(|v| VideoFormat::ALL.iter().position(|f| *f == v)).map_or(0, |i| i + 1);
+    let menu_row = rows::combo(doc, &gettext("Menu Format"), &menu_formats, sel, Change::Content, |p, i| {
+        p.disc.menu_video = i.checked_sub(1).and_then(|i| VideoFormat::ALL.get(i)).copied();
+    });
+    menu_row.set_subtitle(&gettext("Menus can stay in HD on a disc of SD titles, which leaves room for many more"));
+    menu_row.set_subtitle_lines(2);
+    g.add(&menu_row);
+    let br = rows::spin(doc, &gettext("Average Bitrate"), d.video_bitrate as f64 / 1000.0, 1.5, 35.0, 0.5, 1, Change::Content, |p, v| {
         p.disc.video_bitrate = (v * 1000.0) as u32;
     });
     br.set_subtitle(&gettext("Mbit/s — about 18 fits two hours on a BD-25"));

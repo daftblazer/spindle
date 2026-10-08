@@ -437,7 +437,7 @@ fn make_menu(tm: &TemplateMenu, name: &str, f: &Fill) -> (Menu, HashMap<Id, Id>)
 pub(super) fn build(t: &CustomTemplate, input: Input, images: &HashMap<Id, Id>) -> Output {
     let (edition, count) = (input.edition().unwrap_or_default(), input.count());
     // The 4:3 design on 4:3 discs, when there is one.
-    let standard = t.standard.as_ref().filter(|_| input.p.disc.video.is_4x3());
+    let standard = t.standard.as_ref().filter(|_| input.p.disc.menu_format().is_4x3());
     let shape = if standard.is_some() { MenuShape::Standard } else { MenuShape::Wide };
     let (main_t, lay) = match standard {
         Some(s) => (&s.main, &s.episodes),

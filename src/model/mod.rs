@@ -32,7 +32,11 @@ pub const PROJECT_VERSION: u32 = 1;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DiscSettings {
     pub name: String,
+    /// Video format of the titles (and of their pop-up menus).
     pub video: VideoFormat,
+    /// Video format of the disc menus, when not that of the titles.
+    #[serde(default)]
+    pub menu_video: Option<VideoFormat>,
     pub audio: AudioCodec,
     /// Average video bitrate in kbit/s.
     pub video_bitrate: u32,
@@ -80,11 +84,29 @@ fn yes() -> bool {
     true
 }
 
+impl DiscSettings {
+    /// Video format of the disc menus.
+    pub fn menu_format(&self) -> VideoFormat {
+        self.menu_video.unwrap_or(self.video)
+    }
+
+    /// Video format `menu` is shown in: pop-up menus are drawn over the
+    /// titles.
+    pub fn format_of(&self, menu: &Menu) -> VideoFormat {
+        if menu.popup {
+            self.video
+        } else {
+            self.menu_format()
+        }
+    }
+}
+
 impl Default for DiscSettings {
     fn default() -> Self {
         DiscSettings {
             name: "SPINDLE".into(),
             video: VideoFormat::default(),
+            menu_video: None,
             audio: AudioCodec::default(),
             video_bitrate: 18_000,
             audio_bitrate: 448,
