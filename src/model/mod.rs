@@ -287,6 +287,18 @@ impl Project {
 
     /// Give every other title the subtitle choices of title `from` (on/off,
     /// order, language, name, forced, burn-in and the default track).
+    /// Give every other title the "when finished" action and menu of
+    /// `from`. Returns how many titles changed.
+    pub fn apply_end_action_to_all(&mut self, from: Id) -> usize {
+        let Some(src) = self.title(from).map(|t| (t.end_action, t.return_menu)) else { return 0 };
+        let mut changed = 0;
+        for t in self.titles.iter_mut().filter(|t| t.id != from && (t.end_action, t.return_menu) != src) {
+            (t.end_action, t.return_menu) = src;
+            changed += 1;
+        }
+        changed
+    }
+
     pub fn apply_subtitles_to_all(&mut self, from: Id) -> usize {
         let Some((src, default)) = self.title(from).map(|t| (t.subtitles.clone(), t.default_subtitle)) else { return 0 };
         let embedded = |s: &SubtitleTrack| match s.source {
@@ -864,6 +876,22 @@ mod tests {
         assert_eq!(audio.len(), 1);
         assert_eq!(audio[0].lang, "fra");
         assert_eq!(audio[0].source, AudioSource::Embedded { index: 0 });
+    }
+
+    #[test]
+    fn end_action_for_all_titles() {
+        let mut p = Project::default();
+        let ids: Vec<Id> = (0..3)
+            .map(|_| {
+                let asset = new_id();
+                p.assets.push(Asset { id: asset, path: "a.mkv".into(), kind: AssetKind::Video, info: Default::default() });
+                p.ensure_title_for(asset).unwrap()
+            })
+            .collect();
+        p.title_mut(ids[1]).unwrap().end_action = EndAction::PlayNextTitle;
+        assert_eq!(p.apply_end_action_to_all(ids[1]), 2);
+        assert!(p.titles.iter().all(|t| t.end_action == EndAction::PlayNextTitle));
+        assert_eq!(p.apply_end_action_to_all(ids[1]), 0);
     }
 
     #[test]

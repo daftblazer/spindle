@@ -28,10 +28,10 @@ pub struct Inspector {
     tab: RefCell<std::collections::HashMap<&'static str, String>>,
 }
 
-/// A row that copies this title's track choices to every other title.
-fn apply_to_all_row(doc: &Rc<Document>, id: Id, apply: fn(&mut Project, Id) -> usize) -> adw::ButtonRow {
+/// A row that copies some of this title's settings to every other title.
+fn apply_to_all_row(doc: &Rc<Document>, id: Id, tooltip: &str, apply: fn(&mut Project, Id) -> usize) -> adw::ButtonRow {
     let row = adw::ButtonRow::builder().title(gettext("Apply to All Titles")).start_icon_name("edit-copy-symbolic").build();
-    row.set_tooltip_text(Some(&gettext("Tracks are matched by their stream number, or by language for separate files")));
+    row.set_tooltip_text(Some(tooltip));
     let doc = doc.clone();
     row.connect_activated(move |row| {
         let overlay = row.ancestor(adw::ToastOverlay::static_type()).and_downcast::<adw::ToastOverlay>();
@@ -1340,7 +1340,7 @@ impl Inspector {
         add.set_action_name(Some("win.add-audio"));
         g.add(&add);
         if p.titles.len() > 1 && !t.audio.is_empty() {
-            g.add(&apply_to_all_row(doc, id, Project::apply_audio_to_all));
+            g.add(&apply_to_all_row(doc, id, &gettext("Tracks are matched by their stream number, or by language for separate files"), Project::apply_audio_to_all));
         }
         page.add(&g);
     }
@@ -1549,7 +1549,7 @@ impl Inspector {
         add.set_action_name(Some("win.add-subtitle"));
         g.add(&add);
         if p.titles.len() > 1 && !t.subtitles.is_empty() {
-            g.add(&apply_to_all_row(doc, id, Project::apply_subtitles_to_all));
+            g.add(&apply_to_all_row(doc, id, &gettext("Tracks are matched by their stream number, or by language for separate files"), Project::apply_subtitles_to_all));
         }
         page.add(&g);
     }
@@ -1667,6 +1667,9 @@ impl Inspector {
                 t.return_menu = pick(&menus, i);
             }
         }));
+        if p.titles.len() > 1 {
+            g.add(&apply_to_all_row(doc, id, &gettext("Every title does the same when it finishes"), Project::apply_end_action_to_all));
+        }
         page.add(&g);
 
         let g = group(&gettext("Chapters"));
