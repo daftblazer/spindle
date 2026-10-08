@@ -63,6 +63,21 @@ pub struct DiscSettings {
     /// Bring every encoded audio track to the same loudness (EBU R128).
     #[serde(default)]
     pub normalize_loudness: bool,
+    /// Quality of titles encoded ahead of a build (x264's CRF).
+    #[serde(default = "default_crf")]
+    pub crf: u8,
+    /// Builds use the titles encoded ahead rather than encoding them at
+    /// the average bitrate.
+    #[serde(default = "yes")]
+    pub use_pre_encodes: bool,
+}
+
+fn default_crf() -> u8 {
+    18
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for DiscSettings {
@@ -82,6 +97,8 @@ impl Default for DiscSettings {
             quality: Default::default(),
             tune: Default::default(),
             normalize_loudness: false,
+            crf: default_crf(),
+            use_pre_encodes: true,
         }
     }
 }

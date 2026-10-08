@@ -11,6 +11,7 @@ pub mod frame_picker;
 pub mod inspector;
 pub mod media_bin;
 pub mod player;
+pub mod pre_encode;
 pub mod preview_dialog;
 pub mod regenerate;
 pub mod save_template;

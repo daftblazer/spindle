@@ -8,6 +8,7 @@ src/build.rs
 src/document.rs
 src/shortcuts-dialog.ui
 src/ui/build_dialog.rs
+src/ui/pre_encode.rs
 src/ui/canvas.rs
 src/ui/inspector.rs
 src/ui/media_bin.rs

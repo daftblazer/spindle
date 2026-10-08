@@ -91,7 +91,8 @@ fn subtitle_kbps(track: &SubtitleTrack) -> f64 {
 /// seconds are multiplied by the video bitrate (and [`MUX`]).
 fn size_parts(p: &Project) -> (f64, f64) {
     let (mut secs, mut fixed) = (0.0, 0.0);
-    for t in &p.titles {
+    let ahead = if p.disc.use_pre_encodes { crate::build::pre_encodes(p) } else { Vec::new() };
+    for (i, t) in p.titles.iter().enumerate() {
         let Some(a) = p.asset(t.asset) else { continue };
         let d = a.info.duration;
         let own = a.info.audio();
@@ -114,10 +115,14 @@ fn size_parts(p: &Project) -> (f64, f64) {
         match std::fs::metadata(&a.path) {
             // Kept video (with its own audio) is about the size of the source file.
             Ok(m) if t.keep_video => fixed += m.len() as f64 * 1.03 + d * (extra_audio + subtitles) * 1000.0 / 8.0,
-            _ => {
-                secs += d;
-                fixed += d * (audio + extra_audio + subtitles + OVERHEAD_KBPS) * 1000.0 / 8.0;
-            }
+            _ => match ahead.get(i).and_then(|f| std::fs::metadata(f.as_ref()?).ok()) {
+                // Encoded ahead: its size is known, audio included.
+                Some(m) => fixed += m.len() as f64 + d * (subtitles + OVERHEAD_KBPS) * 1000.0 / 8.0,
+                None => {
+                    secs += d;
+                    fixed += d * (audio + extra_audio + subtitles + OVERHEAD_KBPS) * 1000.0 / 8.0;
+                }
+            },
         }
     }
     // Menus: short loops at a low bitrate.

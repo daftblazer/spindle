@@ -17,6 +17,9 @@ pub struct EncodeSettings {
     pub encoder: VideoEncoder,
     pub quality: Quality,
     pub tune: Tune,
+    /// Constant quality (x264's CRF: lower is better and bigger) instead
+    /// of the average bitrate.
+    pub crf: Option<u8>,
 }
 
 /// What the video is, so x264 spends its bits where that kind shows flaws.
@@ -89,7 +92,14 @@ impl EncodeSettings {
             encoder: d.encoder,
             quality: d.quality,
             tune: d.tune,
+            crf: None,
         }
+    }
+
+    /// The settings for encoding titles ahead of a build: x264 at
+    /// constant quality.
+    pub fn for_pre_encode(d: &crate::model::DiscSettings) -> Self {
+        EncodeSettings { crf: Some(d.crf), encoder: VideoEncoder::Software, ..Self::for_disc(d) }
     }
 
     /// The encoder actually used: hardware encoders can't make the
@@ -231,15 +241,13 @@ fn video_args(set: &EncodeSettings, bitrate: u32, interlaced: Option<bool>) -> V
     if let Some(tune) = set.tune.x264() {
         a.extend([s("-tune"), s(tune)]);
     }
+    let rate = match set.crf {
+        Some(q) => [s("-crf"), s(q)],
+        None => [s("-b:v"), format!("{bitrate}k")],
+    };
+    a.extend([s("-profile:v"), s("high"), s("-level:v"), s("4.1"), s("-pix_fmt"), s("yuv420p")]);
+    a.extend(rate);
     a.extend([
-        s("-profile:v"),
-        s("high"),
-        s("-level:v"),
-        s("4.1"),
-        s("-pix_fmt"),
-        s("yuv420p"),
-        s("-b:v"),
-        format!("{bitrate}k"),
         s("-maxrate"),
         s("38000k"),
         s("-bufsize"),
@@ -505,7 +513,7 @@ mod tests {
     use super::*;
 
     fn settings(video: VideoFormat, encoder: VideoEncoder) -> EncodeSettings {
-        EncodeSettings { video, video_bitrate: 18_000, audio: AudioCodec::Ac3, audio_bitrate: 448, encoder, quality: Quality::Balanced, tune: Tune::None }
+        EncodeSettings { video, video_bitrate: 18_000, audio: AudioCodec::Ac3, audio_bitrate: 448, encoder, quality: Quality::Balanced, tune: Tune::None, crf: None }
     }
 
     fn arg_after<'a>(a: &'a [String], key: &str) -> Option<&'a str> {
@@ -577,6 +585,18 @@ mod tests {
         // Hardware encoders don't have these tunes.
         let hw = EncodeSettings { tune: Tune::Animation, ..settings(VideoFormat::P1080_23976, VideoEncoder::Nvenc) };
         assert_eq!(arg_after(&title_args(&src, &hw, &[], &[], None, &Pass::Only, Path::new("out.ts")), "-tune"), Some("hq"));
+    }
+
+    #[test]
+    fn constant_quality() {
+        let (info, opts) = (MediaInfo::default(), VideoOptions::default());
+        let src = Source { path: Path::new("in.mkv"), info: &info, picture: &opts, burn: None };
+        let set = EncodeSettings { crf: Some(18), ..settings(VideoFormat::P1080_23976, VideoEncoder::Software) };
+        let args = title_args(&src, &set, &[], &[], None, &Pass::Only, Path::new("out.ts"));
+        assert_eq!(arg_after(&args, "-crf"), Some("18"));
+        assert_eq!(arg_after(&args, "-b:v"), None);
+        // Still within what a player can take in.
+        assert_eq!(arg_after(&args, "-maxrate"), Some("38000k"));
     }
 
     #[test]

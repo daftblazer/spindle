@@ -456,6 +456,10 @@
         <attribute name="action">win.disc-settings</attribute>
       </item>
       <item>
+        <attribute name="label" translatable="yes">_Encode Titles…</attribute>
+        <attribute name="action">win.encode-titles</attribute>
+      </item>
+      <item>
         <attribute name="label" translatable="yes">_Burn Disc Image…</attribute>
         <attribute name="action">win.burn-image</attribute>
       </item>

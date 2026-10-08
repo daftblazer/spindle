@@ -165,7 +165,8 @@ Custom templates: `--save-template PROJECT OUT.spindle-template NAME
 [DESCRIPTION]`, `--install-template FILE`, and a `.spindle-template` file (or
 a saved template's name) in place of the style for `--apply-template`.
 
-Other commands: `--preview PROJECT TITLE START SECONDS [SUBTITLE]`,
+Other commands: `--encode-titles PROJECT` (encode the titles ahead of a
+build), `--preview PROJECT TITLE START SECONDS [SUBTITLE]`,
 `--check-video FILE`, `--make-image FOLDER IMAGE [LABEL]`,
 `--render-menus PROJECT DIR` (every menu as a PNG) and `--disc-status DRIVE`.
 

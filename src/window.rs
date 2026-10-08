@@ -493,6 +493,7 @@ impl SpindleWindow {
         add("redo", |w| w.doc().redo());
         add("import", |w| w.import_dialog());
         add("build", |w| ui::build_dialog::present(&w.doc(), w));
+        add("encode-titles", |w| ui::pre_encode::present(&w.doc(), w));
         add("disc-settings", |w| ui::settings::present(&w.doc(), w));
         add("regenerate-episodes", |w| ui::regenerate::present(&w.doc(), w));
         add("save-template", |w| {
