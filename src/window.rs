@@ -331,6 +331,9 @@ impl SpindleWindow {
             glib::timeout_add_seconds_local_once(delay, move || {
                 let paintable = gtk::WidgetPaintable::new(Some(&win2));
                 let snapshot = gtk::Snapshot::new();
+                // `SPINDLE_SCREENSHOT_SCALE=2` renders it at twice the size.
+                let scale = std::env::var("SPINDLE_SCREENSHOT_SCALE").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.0);
+                snapshot.scale(scale, scale);
                 paintable.snapshot(&snapshot, win2.width() as f64, win2.height() as f64);
                 if let (Some(node), Some(renderer)) = (snapshot.to_node(), win2.renderer()) {
                     let tex = renderer.render_texture(&node, None);
