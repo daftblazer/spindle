@@ -1,6 +1,23 @@
+<div align="center">
+
+<img src="data/icons/hicolor/scalable/apps/io.github.daftblazer.Spindle.svg" width="128" height="128" alt="">
+
 # Spindle
 
-Spindle is a GNOME app for authoring Blu-ray discs with interactive menus, in
+**Author Blu-ray discs with real menus, on Linux.**
+
+Import your videos, design the menus, and build a disc that plays in any Blu-ray player.
+
+[![CI](https://github.com/daftblazer/spindle/actions/workflows/ci.yml/badge.svg)](https://github.com/daftblazer/spindle/actions/workflows/ci.yml)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](COPYING)
+![GTK 4 and libadwaita](https://img.shields.io/badge/GTK%204-libadwaita-4a86cf.svg)
+![Rust](https://img.shields.io/badge/made%20with-Rust-b7410e.svg)
+
+<img src="docs/screenshots/editor.png" width="900" alt="Spindle's menu editor: a main menu on the canvas, with the menus, pop-up menus and titles in the sidebar and the selected button's settings on the right">
+
+</div>
+
+Spindle is a Linux app for authoring Blu-ray discs with interactive menus, in
 the spirit of DVDStyler. You import videos, design menus by dragging buttons,
 text and pictures around a canvas (or start from a template), link buttons to
 titles, chapters and other menus, and build a disc image, a BDMV folder, or
@@ -8,6 +25,58 @@ burn a BD-R/BD-RE directly.
 
 Built with Rust, GTK 4 and libadwaita. Discs use native HDMV navigation and
 menus (no BD-J, no Java), written by Spindle's own muxer and format writers.
+
+## A quick tour
+
+### Start from a template
+
+Pick a style and a colour palette and Spindle makes the whole disc's menus:
+a main menu, episode pages with thumbnails, a Setup menu for audio and
+subtitles, and pop-up menus. Everything it makes can then be edited, and your
+own designs can be saved as templates to use again.
+
+<p align="center">
+<img src="docs/screenshots/templates.png" width="820" alt="The template gallery, with TV Show, Movie, Collection and My Templates categories and a preview of each style">
+</p>
+
+These are menus as the disc shows them, in six of the built-in styles:
+
+<p align="center">
+<img src="docs/screenshots/menus.png" width="900" alt="Six rendered menus in the Showcase, Streaming, Broadcast, Classic, Minimal and Split styles">
+</p>
+
+### Pop-up menus over the video
+
+Viewers press the remote's Pop-up key to jump to a chapter, change the audio
+or subtitles, or go back to the episodes, without leaving what they're
+watching.
+
+<p align="center">
+<img src="docs/screenshots/popup.png" width="820" alt="A pop-up menu being edited: a bar of buttons along the bottom of the picture">
+</p>
+
+### Audio, subtitles and chapters for every title
+
+Choose and order the audio tracks, add subtitles and extra audio from other
+files, place chapters, and set up language choices such as "Japanese with
+English subtitles" once for the whole disc. Audio that players can decode is
+copied as it is.
+
+<p align="center">
+<img src="docs/screenshots/title.png" width="820" alt="A title with its player, chapter markers and audio tracks, and what each language choice plays">
+</p>
+
+### Build an image or burn a disc
+
+Spindle checks the project, estimates the size and time, fits the bitrate to
+a BD-25, BD-50 or BD-100, and writes an ISO image or a BDMV folder, or burns
+and verifies a disc.
+
+<p align="center">
+<img src="docs/screenshots/build.png" width="820" alt="The Build Disc dialog showing the output format, file, estimated size and estimated time">
+</p>
+
+<sub>The show in these screenshots, *Far Meridian*, is made up, and its artwork was drawn for them.</sub>
 
 ## Features
 
@@ -25,8 +94,9 @@ menus (no BD-J, no Java), written by Spindle's own muxer and format writers.
   look to every button
 - 16:9 menus, and 4:3 menus that fill the screen on 4:3 discs
 - Still menus, motion menus (a looping video background with a chosen start
-  point), menu music, intro videos that play first, fades, and timeouts that
-  play a title or show another menu
+  point), menu music (a whole file, or a section looped from a song or an
+  episode, which you can listen to first), intro videos that play first,
+  fades, and timeouts that play a title or show another menu
 - **Pop-up menus** shown over the movie with the remote's Pop-up key:
   chapters, audio and subtitle choices, and links back to the menus
 - **Language setup**: presets such as "English" (English audio, signs and
