@@ -403,7 +403,7 @@ impl<'a> Builder<'a> {
 
     fn menu_duration(&self, m: &Menu) -> f64 {
         if m.is_motion() {
-            m.duration.max(1.0)
+            self.project.menu_loop(m)
         } else {
             STILL_MENU_SECONDS
         }

@@ -624,7 +624,6 @@ impl SpindleWindow {
             let win = w.clone();
             w.pick_audio(move |asset| {
                 let doc = win.doc();
-                let length = doc.project().asset(asset).map(|a| a.info.duration).filter(|d| *d > 1.0);
                 if doc.project().asset(asset).is_some_and(|a| !a.info.has_audio()) {
                     win.toast(&gettext("That file has no sound"));
                     return;
@@ -632,10 +631,6 @@ impl SpindleWindow {
                 doc.edit(Change::Structure, |p| {
                     if let Some(m) = p.menu_mut(menu) {
                         m.audio = Some(asset);
-                        // Loop the whole song (within reason).
-                        if let Some(d) = length {
-                            m.duration = d.clamp(5.0, 600.0).floor();
-                        }
                     }
                 });
             });

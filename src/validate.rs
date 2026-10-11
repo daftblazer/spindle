@@ -127,7 +127,7 @@ fn size_parts(p: &Project) -> (f64, f64) {
     }
     // Menus: short loops at a low bitrate.
     for m in &p.menus {
-        fixed += m.duration.max(1.0) * 8000.0 * 1000.0 / 8.0;
+        fixed += p.menu_loop(m) * 8000.0 * 1000.0 / 8.0;
     }
     (secs, fixed)
 }

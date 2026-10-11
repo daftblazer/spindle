@@ -28,6 +28,8 @@ pub fn new_id() -> Id {
 }
 
 pub const PROJECT_VERSION: u32 = 1;
+/// The longest a menu's loop can be, in seconds.
+pub const MAX_MENU_LOOP: f64 = 600.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DiscSettings {
@@ -601,6 +603,18 @@ impl Project {
         self.menus.iter_mut().find(|m| m.id == id)
     }
 
+    /// Length of a menu's music, in seconds, if it has any.
+    pub fn menu_music_length(&self, m: &Menu) -> Option<f64> {
+        let a = m.audio.and_then(|a| self.asset(a))?;
+        (a.info.has_audio() && a.info.duration > 0.0).then_some(a.info.duration)
+    }
+
+    /// How long a menu's loop lasts, in seconds: as long as its music, or
+    /// its Loop Length when it only has a motion video.
+    pub fn menu_loop(&self, m: &Menu) -> f64 {
+        self.menu_music_length(m).map_or(m.duration, |d| d.min(MAX_MENU_LOOP)).max(1.0)
+    }
+
     /// Add a title for a video asset (or return the existing one).
     pub fn ensure_title_for(&mut self, asset: Id) -> Option<Id> {
         if let Some(t) = self.titles.iter().find(|t| t.asset == asset) {
@@ -855,6 +869,21 @@ mod tests {
         assert_eq!(t2.default_subtitle, None);
         // Nothing left to change.
         assert_eq!(p.apply_audio_to_all(titles[0]), 0);
+    }
+
+    #[test]
+    fn menu_lasts_as_long_as_its_music() {
+        let mut p = Project::default();
+        let menu = p.menus[0].clone();
+        assert_eq!(p.menu_loop(&menu), menu.duration);
+        let asset = new_id();
+        let info = MediaInfo { duration: 23.7, audio_codec: Some("flac".into()), audio_channels: 2, ..Default::default() };
+        p.assets.push(Asset { id: asset, path: "/tmp/music.flac".into(), kind: AssetKind::Audio, info });
+        p.menus[0].audio = Some(asset);
+        let menu = p.menus[0].clone();
+        assert_eq!(p.menu_loop(&menu), 23.7);
+        p.assets[0].info.duration = 3600.0;
+        assert_eq!(p.menu_loop(&menu), MAX_MENU_LOOP);
     }
 
     #[test]

@@ -449,7 +449,8 @@ pub struct Menu {
     pub background: Background,
     /// Audio asset looped with the menu.
     pub audio: Option<Id>,
-    /// Loop length for motion backgrounds / audio, in seconds.
+    /// Loop length of a motion background, in seconds. Music plays for its
+    /// own length instead (see `Project::menu_loop`).
     pub duration: f64,
     pub items: Vec<MenuItem>,
     pub default_button: Option<Id>,

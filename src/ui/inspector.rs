@@ -396,7 +396,7 @@ impl Inspector {
         g.add(&image_row);
         let videos = assets_of(&p, &[AssetKind::Video]);
         let (labels, sel) = optional_choice(&gettext("None"), &videos, m.background.video);
-        let row = rows::combo(doc, &gettext("Motion Video"), &labels, sel, Change::Content, move |p, i| {
+        let row = rows::combo(doc, &gettext("Motion Video"), &labels, sel, Change::Structure, move |p, i| {
             if let Some(m) = p.menu_mut(id) {
                 m.background.video = pick(&videos, i);
             }
@@ -409,12 +409,23 @@ impl Inspector {
                     m.background.video_start = t;
                 }
             });
+            let music = p.menu_music_length(m).is_some();
             start.set_subtitle(&format!(
                 "{} · {}",
                 format_time(m.background.video_start),
-                gettext("the loop lasts the menu's Loop Length")
+                if music { gettext("the loop lasts as long as the music") } else { gettext("the loop lasts the menu's Loop Length") }
             ));
             g.add(&start);
+            // With music, the menu lasts as long as the music does.
+            if !music {
+                let row = rows::spin(doc, &gettext("Loop Length"), m.duration, 1.0, MAX_MENU_LOOP, 1.0, 0, Change::Content, move |p, v| {
+                    if let Some(m) = p.menu_mut(id) {
+                        m.duration = v;
+                    }
+                });
+                row.set_subtitle(&gettext("Seconds"));
+                g.add(&row);
+            }
         }
         background.add(&g);
 
@@ -431,16 +442,13 @@ impl Inspector {
                 m.audio = pick(&audio, i);
             }
         });
-        music_row.set_subtitle(&gettext("Loops while the menu is shown"));
+        music_row.set_subtitle(&match p.menu_music_length(m) {
+            Some(d) if d > MAX_MENU_LOOP => gettext("Plays its first {} minutes, then starts over").replace("{}", &((MAX_MENU_LOOP / 60.0) as u32).to_string()),
+            Some(d) => format!("{} · {}", format_time(d), gettext("plays to its end, then starts over")),
+            None => gettext("Plays to its end, then starts over"),
+        });
         music_row.add_suffix(&pick_button(&gettext("Choose Music File…"), "win.menu-music"));
         g.add(&music_row);
-        let row = rows::spin(doc, &gettext("Loop Length"), m.duration, 1.0, 600.0, 1.0, 0, Change::Content, move |p, v| {
-            if let Some(m) = p.menu_mut(id) {
-                m.duration = v;
-            }
-        });
-        row.set_subtitle(&gettext("Seconds, for motion menus and music"));
-        g.add(&row);
         background.add(&g);
 
         self.timing_group(timing, id);
