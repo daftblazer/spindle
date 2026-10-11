@@ -38,6 +38,7 @@ Menus** to rebuild just the episode pages.
   "author": "…",
   "palette": { "top": …, "bottom": …, "panel": …, "text": …, "dim": …, "selected": …, "activated": … },
   "fonts": { "heading": "Montserrat", "body": "Montserrat" },
+  "shape": "Wide",
   "main": { "name": "Main Menu", "background": …, "items": [ … ], "default_button": "<item id>" },
   "episodes": {
     "page": { "name": "Episodes", "background": …, "items": [ … ] },
@@ -50,7 +51,6 @@ Menus** to rebuild just the episode pages.
     "chapters": { "page": { … }, "slot": [ … ], "columns": 12, "rows": 1, "step": [112, 0] },
     "audio": { "page": { … }, "slot": [ … ], "columns": 3, "rows": 1, "step": [420, 0] }
   },
-  "standard": { "main": { … }, "episodes": { … }, "setup": { … }, "popup": { … } },
   "images": { "<id>": { "name": "logo.png", "data": "<base64>" } }
 }
 ```
@@ -124,19 +124,25 @@ Spindle in the palette.
 Templates can be applied without pop-up menus: turn off **Pop-up Menus** in
 the template gallery, or add `--no-popups` on the command line.
 
-### 4:3 menus
+### 16:9 or 4:3
 
-`standard` (optional) holds the same menus designed for 4:3 screens, used
-when the disc is one of the 4:3 SD formats (its `setup` and `popup` are
-optional, as above; the 16:9 ones aren't used on a 4:3 disc). A 4:3 design uses the middle
-1440 × 1080 of the canvas (x from 240 to 1680), which fills a 4:3 screen;
-its safe area is 5% in from those edges. Without `standard`, 4:3 discs get
-the 16:9 design letterboxed.
+A template is designed for one shape of screen. `"shape"` is `"Wide"` (16:9,
+the default) or `"Standard"` (4:3). A 4:3 design uses the middle 1440 × 1080
+of the canvas (x from 240 to 1680), which fills the screen of a 4:3 SD disc;
+its safe area is 5% in from those edges. For a show on both kinds of disc,
+make two templates ("Night Sky" and "Night Sky (4:3)").
+
+Either can be applied to any disc: a 16:9 template on a 4:3 disc is
+letterboxed, and a 4:3 template on a 16:9 disc sits in the middle of the
+screen. The template gallery says when a template was made for the other
+shape.
 
 In Spindle, a menu's **Shape** (in its properties) is 16:9 or 4:3; the
-canvas shades the sides of 4:3 menus. Saving 4:3 menus as a template under
-the name of one with only 16:9 menus (or the other way round) puts both in
-one template.
+canvas shades the sides of 4:3 menus. Saving 4:3 menus makes a 4:3 template.
+
+Older templates could hold a 4:3 design beside the 16:9 one, in
+`"standard"`. Spindle reads such a file as two templates, the 4:3 one with
+" (4:3)" after its name, and keeps them as two files in *My Templates*.
 
 ### Placeholders
 

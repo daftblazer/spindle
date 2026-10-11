@@ -4,7 +4,7 @@
 //! title lines, preview every generated menu and apply it to the project.
 
 use crate::document::{Change, Document, Node};
-use crate::model::{Menu, Project};
+use crate::model::{Menu, MenuShape, Project};
 use crate::render::{self, ImageCache};
 use crate::templates::{self, custom, Category, Options, Style, THEMES};
 use std::path::PathBuf;
@@ -90,8 +90,8 @@ impl State {
             v.append(&pic);
             v.append(&gtk::Label::builder().label(&t.name).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).css_classes(["heading"]).build());
             let mut about = t.description.clone();
-            if t.has_standard() {
-                about = if about.is_empty() { gettext("16:9 and 4:3") } else { format!("{about} · {}", gettext("16:9 and 4:3")) };
+            if t.shape == MenuShape::Standard {
+                about = if about.is_empty() { gettext("For 4:3 discs") } else { format!("{about} · {}", gettext("For 4:3 discs")) };
             }
             if !t.author.is_empty() {
                 about = if about.is_empty() { gettext("By {}").replace("{}", &t.author) } else { format!("{about} · {}", gettext("By {}").replace("{}", &t.author)) };
@@ -183,7 +183,15 @@ impl State {
             self.pages.append(&page_card(&p, m, &self.images));
         }
         let n = p.menus.len() as u32;
-        self.summary.set_label(&ngettext("Creates {} menu", "Creates {} menus", n).replace("{}", &n.to_string()));
+        let mut summary = ngettext("Creates {} menu", "Creates {} menus", n).replace("{}", &n.to_string());
+        // A template made for the other shape of screen still works.
+        let square = p.disc.menu_format().is_4x3();
+        match self.selected_custom().filter(|_| self.custom_mode.get()).map(|t| t.shape) {
+            Some(MenuShape::Standard) if !square => summary = format!("{summary} · {}", gettext("Made for 4:3 discs: on this 16:9 disc its menus sit in the middle of the screen")),
+            Some(MenuShape::Wide) if square => summary = format!("{summary} · {}", gettext("Made for 16:9 discs: on this 4:3 disc its menus are letterboxed")),
+            _ => {}
+        }
+        self.summary.set_label(&summary);
     }
 }
 
@@ -532,7 +540,12 @@ pub fn present(
             let root = d.root().and_downcast::<gtk::Window>();
             fd.open(root.as_ref(), gtk::gio::Cancellable::NONE, move |res| {
                 let Some(path) = res.ok().and_then(|f| f.path()) else { return };
-                let result = custom::load(&crate::media::portal::real_path(&path)).and_then(|t| custom::install(&t).map(|_| t.name));
+                let result = custom::load(&crate::media::portal::real_path(&path)).and_then(|all| {
+                    for t in &all {
+                        custom::install(t)?;
+                    }
+                    Ok(all[0].name.clone())
+                });
                 match result {
                     Ok(name) => {
                         s.reload_customs();

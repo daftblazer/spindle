@@ -127,7 +127,12 @@ fn new_project_cli(out: &str, files: &[String]) -> glib::ExitCode {
 /// STYLE can also be a `.spindle-template` file or the name of a saved one.
 fn template_cli(style: &str, theme: &str, project: &str, extra: &[String]) -> glib::ExitCode {
     let custom = if style.ends_with(".spindle-template") {
-        match templates::custom::load(std::path::Path::new(style)) {
+        // An older file with a 16:9 and a 4:3 design gives the disc's.
+        let shape = match model::Project::load(std::path::Path::new(project)) {
+            Ok(p) if p.disc.menu_format().is_4x3() => model::MenuShape::Standard,
+            _ => model::MenuShape::Wide,
+        };
+        match templates::custom::load_for(std::path::Path::new(style), shape) {
             Ok(t) => Some(std::sync::Arc::new(t)),
             Err(e) => {
                 eprintln!("error: {e:#}");
@@ -314,10 +319,12 @@ fn main() -> glib::ExitCode {
     }
     // --install-template FILE: add a template to the ones in the app.
     if args.len() == 3 && args[1] == "--install-template" {
-        let res = templates::custom::load(std::path::Path::new(&args[2])).and_then(|t| templates::custom::install(&t));
+        let res = templates::custom::load(std::path::Path::new(&args[2])).and_then(|all| all.iter().map(templates::custom::install).collect::<anyhow::Result<Vec<_>>>());
         return match res {
-            Ok(path) => {
-                println!("{}", path.display());
+            Ok(paths) => {
+                for path in paths {
+                    println!("{}", path.display());
+                }
                 glib::ExitCode::SUCCESS
             }
             Err(e) => {

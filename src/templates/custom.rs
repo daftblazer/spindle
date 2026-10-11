@@ -3,7 +3,8 @@
 //! Custom templates: a main menu and an episode page layout, and optionally
 //! the Setup and pop-up menus, saved from a project (or written by hand) as
 //! one `.spindle-template` JSON file, with its pictures inside, to use again
-//! on other shows or share.
+//! on other shows or share. A template is designed for one shape of
+//! screen, 16:9 or 4:3.
 //!
 //! Items are Spindle menu items. Text can hold placeholders: `{title}`,
 //! `{season}`, `{disc}`, `{edition}` ("Season 2 · Disc 1") and `{count}`
@@ -35,6 +36,10 @@ pub struct CustomTemplate {
     /// Colours of the Setup and pop-up menus made with it.
     pub palette: Palette,
     pub fonts: Fonts,
+    /// The shape of screen it is designed for: 16:9, or 4:3 (in the middle
+    /// of the canvas).
+    #[serde(default)]
+    pub shape: MenuShape,
     pub main: TemplateMenu,
     pub episodes: EpisodeLayout,
     /// The Setup menu, with a slot for each language choice. Without it
@@ -44,23 +49,24 @@ pub struct CustomTemplate {
     /// The pop-up menus. Without them Spindle makes them in the palette.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub popup: Option<PopupLayout>,
-    /// The same menus designed for 4:3 screens (in the middle of the
-    /// canvas), used on 4:3 discs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub standard: Option<Standard>,
+    /// Templates used to carry a 4:3 design beside the 16:9 one; such a
+    /// file is read as two templates (see `split`).
+    #[serde(default, skip_serializing)]
+    standard: Option<Standard>,
     /// Pictures used by items and backgrounds, by the id they use.
     #[serde(default)]
     pub images: BTreeMap<Id, Image>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Standard {
-    pub main: TemplateMenu,
-    pub episodes: EpisodeLayout,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub setup: Option<EpisodeLayout>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub popup: Option<PopupLayout>,
+/// The 4:3 design of an older template file.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct Standard {
+    main: TemplateMenu,
+    episodes: EpisodeLayout,
+    #[serde(default)]
+    setup: Option<EpisodeLayout>,
+    #[serde(default)]
+    popup: Option<PopupLayout>,
 }
 
 /// The menus shown over a title with the remote's Pop-up key.
@@ -78,35 +84,50 @@ pub struct PopupLayout {
 }
 
 impl CustomTemplate {
-    /// Whether the template has menus made for 4:3 screens.
-    pub fn has_standard(&self) -> bool {
-        self.standard.is_some()
+    /// The templates in a file: one, or the 16:9 and the 4:3 design of a
+    /// file from when one template held both (the 4:3 one named "… (4:3)").
+    fn split(mut self) -> Vec<CustomTemplate> {
+        let Some(s) = self.standard.take() else { return vec![self] };
+        let mut square = CustomTemplate {
+            name: format!("{} (4:3)", self.name),
+            shape: MenuShape::Standard,
+            main: s.main,
+            episodes: s.episodes,
+            setup: s.setup,
+            popup: s.popup,
+            ..self.clone()
+        };
+        // Saved from 4:3 menus alone, they stood in for the 16:9 design.
+        if square.main == self.main {
+            square.name = self.name;
+            return vec![square];
+        }
+        square.drop_unused_images();
+        self.drop_unused_images();
+        vec![self, square]
     }
 
-    /// Put the design of `other` for the shape it was saved from (the 4:3
-    /// one when it has only that) into this template.
-    pub fn combine(mut self, other: &CustomTemplate) -> CustomTemplate {
-        match &other.standard {
-            // Saved from 4:3 menus: its 4:3 design joins this one.
-            Some(s) if s.main == other.main => self.standard = Some(s.clone()),
-            _ => {
-                self.main = other.main.clone();
-                self.episodes = other.episodes.clone();
-                self.setup = other.setup.clone();
-                self.popup = other.popup.clone();
+    fn drop_unused_images(&mut self) {
+        let mut used = std::collections::HashSet::new();
+        let mut menu = |m: &TemplateMenu, slot: &[TemplateItem]| {
+            used.extend(m.background.image);
+            for ti in m.items.iter().chain(slot) {
+                match &ti.item.kind {
+                    ItemKind::Image(i) => used.extend([i.asset]),
+                    ItemKind::Button(b) => used.extend([b.images.normal, b.images.selected, b.images.activated].into_iter().flatten()),
+                    _ => {}
+                }
             }
+        };
+        menu(&self.main, &[]);
+        let lists = [Some(&self.episodes), self.setup.as_ref(), self.popup.as_ref().and_then(|p| p.chapters.as_ref()), self.popup.as_ref().and_then(|p| p.audio.as_ref())];
+        for l in lists.into_iter().flatten() {
+            menu(&l.page, &l.slot);
         }
-        self.name = other.name.clone();
-        if !other.description.is_empty() {
-            self.description = other.description.clone();
+        if let Some(p) = &self.popup {
+            menu(&p.menu, &[]);
         }
-        if !other.author.is_empty() {
-            self.author = other.author.clone();
-        }
-        self.palette = other.palette;
-        self.fonts = other.fonts.clone();
-        self.images.extend(other.images.clone());
-        self
+        self.images.retain(|id, _| used.contains(id));
     }
 }
 
@@ -267,12 +288,27 @@ pub fn library_dir() -> PathBuf {
     gtk::glib::user_data_dir().join("spindle").join("templates")
 }
 
-pub fn load(path: &Path) -> anyhow::Result<CustomTemplate> {
+/// The templates in a file: one, or two from an older file holding a 16:9
+/// and a 4:3 design.
+pub fn load(path: &Path) -> anyhow::Result<Vec<CustomTemplate>> {
     let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let t: CustomTemplate = serde_json::from_slice(&data).with_context(|| format!("{} isn't a Spindle template", path.display()))?;
-    anyhow::ensure!(t.format == FORMAT, "{} isn't a Spindle template", path.display());
-    anyhow::ensure!(t.version <= 1, "{} needs a newer version of Spindle", path.display());
-    Ok(t)
+    parse(&data, &path.display().to_string())
+}
+
+/// The templates in the contents of file `name`.
+pub(super) fn parse(data: &[u8], name: &str) -> anyhow::Result<Vec<CustomTemplate>> {
+    let t: CustomTemplate = serde_json::from_slice(data).with_context(|| format!("{name} isn't a Spindle template"))?;
+    anyhow::ensure!(t.format == FORMAT, "{name} isn't a Spindle template");
+    anyhow::ensure!(t.version <= 1, "{name} needs a newer version of Spindle");
+    Ok(t.split())
+}
+
+/// The template of `path` to use on a disc of this shape, for a file
+/// holding two.
+pub fn load_for(path: &Path, shape: MenuShape) -> anyhow::Result<CustomTemplate> {
+    let mut all = load(path)?;
+    let i = all.iter().position(|t| t.shape == shape).unwrap_or(0);
+    Ok(all.swap_remove(i))
 }
 
 pub fn save(t: &CustomTemplate, path: &Path) -> anyhow::Result<()> {
@@ -282,14 +318,46 @@ pub fn save(t: &CustomTemplate, path: &Path) -> anyhow::Result<()> {
 /// Saved templates, by name.
 pub fn library() -> Vec<(PathBuf, CustomTemplate)> {
     let Ok(rd) = std::fs::read_dir(library_dir()) else { return vec![] };
-    let mut out: Vec<(PathBuf, CustomTemplate)> = rd
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == EXTENSION))
-        .filter_map(|p| load(&p).ok().map(|t| (p, t)))
-        .collect();
+    let files: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == EXTENSION)).collect();
+    let mut out = Vec::new();
+    for path in files {
+        let Ok(mut parts) = load(&path) else { continue };
+        if parts.len() == 1 {
+            out.push((path, parts.remove(0)));
+            continue;
+        }
+        // A file with a 16:9 and a 4:3 design becomes a file for each.
+        let saved: Vec<Option<PathBuf>> = parts.iter().map(|t| save_new(t, &path).ok()).collect();
+        if saved.iter().all(Option::is_some) {
+            let _ = std::fs::remove_file(&path);
+        }
+        out.extend(parts.into_iter().zip(saved).map(|(t, new)| (new.unwrap_or_else(|| path.clone()), t)));
+    }
     out.sort_by_key(|a| a.1.name.to_lowercase());
     out
+}
+
+/// A free file name in the library for `t`.
+fn library_path(t: &CustomTemplate) -> PathBuf {
+    let dir = library_dir();
+    let slug: String = t.name.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
+    let slug = slug.split('-').filter(|s| !s.is_empty()).collect::<Vec<_>>().join("-");
+    let slug = if slug.is_empty() { "template".to_string() } else { slug };
+    let mut path = dir.join(format!("{slug}.{EXTENSION}"));
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{slug}-{n}.{EXTENSION}"));
+        n += 1;
+    }
+    path
+}
+
+/// Write `t` to a new file in the library, beside `old`.
+fn save_new(t: &CustomTemplate, old: &Path) -> anyhow::Result<PathBuf> {
+    let path = library_path(t);
+    anyhow::ensure!(path != old, "no free name");
+    save(t, &path)?;
+    Ok(path)
 }
 
 pub fn find(name: &str) -> Option<CustomTemplate> {
@@ -303,14 +371,7 @@ pub fn install(t: &CustomTemplate) -> anyhow::Result<PathBuf> {
     if let Some((old, _)) = library().into_iter().find(|(_, o)| o.name == t.name) {
         let _ = std::fs::remove_file(old);
     }
-    let slug: String = t.name.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
-    let slug = slug.split('-').filter(|s| !s.is_empty()).collect::<Vec<_>>().join("-");
-    let mut path = dir.join(format!("{}.{EXTENSION}", if slug.is_empty() { "template" } else { &slug }));
-    let mut n = 2;
-    while path.exists() {
-        path = dir.join(format!("{slug}-{n}.{EXTENSION}"));
-        n += 1;
-    }
+    let path = library_path(t);
     save(t, &path)?;
     Ok(path)
 }
@@ -579,13 +640,7 @@ fn common_vars(input: &Input) -> Vec<(&'static str, String)> {
 
 impl<'a> Extras<'a> {
     pub(super) fn new(t: &'a CustomTemplate, input: &Input, images: &'a HashMap<Id, Id>) -> Self {
-        // The 4:3 designs on 4:3 discs, when there are any.
-        let standard = t.standard.as_ref().filter(|_| input.p.disc.menu_format().is_4x3());
-        let (setup, popup, shape) = match standard {
-            Some(s) => (s.setup.as_ref(), s.popup.as_ref(), MenuShape::Standard),
-            None => (t.setup.as_ref(), t.popup.as_ref(), MenuShape::Wide),
-        };
-        Extras { setup, popup, shape, vars: common_vars(input), first: input.episodes.first().map(|e| (e.asset, e.poster)), images }
+        Extras { setup: t.setup.as_ref(), popup: t.popup.as_ref(), shape: t.shape, vars: common_vars(input), first: input.episodes.first().map(|e| (e.asset, e.poster)), images }
     }
 
     fn language_entries(languages: &[LanguagePreset], back: Id) -> Vec<(Vec<(&'static str, String)>, Action)> {
@@ -666,13 +721,7 @@ impl<'a> Extras<'a> {
 /// Menus from custom template `t`: the main menu, then the episode pages.
 pub(super) fn build(t: &CustomTemplate, input: Input, images: &HashMap<Id, Id>) -> Output {
     let common = common_vars(&input);
-    // The 4:3 design on 4:3 discs, when there is one.
-    let standard = t.standard.as_ref().filter(|_| input.p.disc.menu_format().is_4x3());
-    let shape = if standard.is_some() { MenuShape::Standard } else { MenuShape::Wide };
-    let (main_t, lay) = match standard {
-        Some(s) => (&s.main, &s.episodes),
-        None => (&t.main, &t.episodes),
-    };
+    let (shape, main_t, lay) = (t.shape, &t.main, &t.episodes);
     let Input { episodes, main: base, setup, .. } = input;
     let per_page = lay.per_page();
     let n_pages = episodes.len().div_ceil(per_page).max(1);
@@ -1132,9 +1181,6 @@ pub fn from_project(p: &Project, name: &str, description: &str, author: &str) ->
     let theme = THEMES[info.as_ref().map_or_else(|| detect_theme(p), |t| t.theme).min(THEMES.len() - 1)];
     let (heading, body) = style.map_or(("Cantarell", "Cantarell"), |s| s.fonts());
     let episodes = EpisodeLayout { page: page_t, slot: slot_t.items, columns: columns as u32, rows: rows as u32, step: [dx, dy], order, center: false };
-    // Menus made for 4:3 are the 4:3 design, and stand in for the 16:9
-    // one until that is saved too (see `combine`).
-    let standard = (main.shape == MenuShape::Standard).then(|| Standard { main: main_t.clone(), episodes: episodes.clone(), setup: setup_t.clone(), popup: popup_t.clone() });
     Ok(CustomTemplate {
         format: FORMAT.into(),
         version: 1,
@@ -1151,11 +1197,12 @@ pub fn from_project(p: &Project, name: &str, description: &str, author: &str) ->
             activated: theme.activated,
         },
         fonts: Fonts { heading: heading.into(), body: body.into() },
+        shape: main.shape,
         main: main_t,
         episodes,
         setup: setup_t,
         popup: popup_t,
-        standard,
+        standard: None,
         images,
     })
 }

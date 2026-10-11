@@ -20,10 +20,13 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>, toast: impl F
 
     let g = adw::PreferencesGroup::builder()
         .description(gettext(
-            "Saves the main menu and the layout of the episode pages. Applied to another show, the title, season, episode names, running times and stills are filled in, and there are as many pages as its episodes need. The Setup and pop-up menus are saved as they look; a project without them gets ones in the template's colours.\n\nTo give a template 4:3 menus as well, make 4:3 menus (Shape in the menu's properties) and save them under the same name.",
+            "Saves the main menu and the layout of the episode pages. Applied to another show, the title, season, episode names, running times and stills are filled in, and there are as many pages as its episodes need. The Setup and pop-up menus are saved as they look; a project without them gets ones in the template's colours.\n\nA template is for one shape of screen: 16:9, or 4:3 when the menus are 4:3 (Shape in the menu's properties).",
         ))
         .build();
-    let name = adw::EntryRow::builder().title(gettext("Name")).text(format!("{} {}", doc.project().disc.name, gettext("Menus"))).build();
+    // 4:3 menus make a 4:3 template, named apart from a 16:9 one.
+    let square = doc.project().first_menu().is_some_and(|m| m.shape == crate::model::MenuShape::Standard);
+    let suggested = format!("{} {}{}", doc.project().disc.name, gettext("Menus"), if square { " (4:3)" } else { "" });
+    let name = adw::EntryRow::builder().title(gettext("Name")).text(suggested).build();
     let description = adw::EntryRow::builder().title(gettext("Description (optional)")).build();
     let author = adw::EntryRow::builder().title(gettext("Made By (optional)")).build();
     g.add(&name);
@@ -68,19 +71,9 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>, toast: impl F
         let (make, d, toast) = (make.clone(), dialog.clone(), toast.clone());
         save.connect_clicked(move |_| {
             let Some(t) = make() else { return };
-            // Saving the other shape under the same name adds it: 16:9 and
-            // 4:3 designs travel in one template.
-            let (t, joined) = match custom::find(&t.name) {
-                Some(old) if old.standard.is_some() || t.standard.is_some() => (old.combine(&t), true),
-                _ => (t, false),
-            };
             match custom::install(&t) {
                 Ok(_) => {
-                    toast(if joined && t.has_standard() {
-                        gettext("Saved to My Templates, with 16:9 and 4:3 menus")
-                    } else {
-                        gettext("Saved to My Templates")
-                    });
+                    toast(gettext("Saved to My Templates"));
                     d.close();
                 }
                 Err(e) => toast(e.to_string()),

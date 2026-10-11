@@ -1290,37 +1290,54 @@ mod tests {
     }
 
     #[test]
-    fn templates_carry_a_4x3_design() {
+    fn templates_are_for_one_shape() {
         use crate::bluray::VideoFormat;
-        // A 16:9 design, then a 4:3 one saved under the same name.
         let mut wide = project(8);
+        wide.disc.languages = languages(&["English", "Deutsch"]);
         apply(&mut wide, &opts(Style::Showcase, 3));
         let t_wide = custom::from_project(&wide, "Both", "", "").unwrap();
-        assert!(!t_wide.has_standard());
-        let mut square = project(8);
+        assert_eq!(t_wide.shape, MenuShape::Wide);
+        let mut square = wide.clone();
         apply(&mut square, &opts(Style::Minimal, 7));
         for m in &mut square.menus {
             m.shape = MenuShape::Standard;
         }
-        let t_square = custom::from_project(&square, "Both", "", "").unwrap();
-        assert!(t_square.has_standard());
-        let both = t_wide.clone().combine(&t_square);
-        assert_eq!(both.main, t_wide.main);
-        assert_eq!(both.standard.as_ref().unwrap().main, t_square.main);
-        // Saving the 16:9 design again keeps the 4:3 one.
-        assert_eq!(both.clone().combine(&t_wide).standard, both.standard);
+        let t_square = custom::from_project(&square, "Both (4:3)", "", "").unwrap();
+        assert_eq!(t_square.shape, MenuShape::Standard);
 
+        // Each makes menus of its own shape, whatever the disc.
         let with = |c: &custom::CustomTemplate| Options { custom: Some(std::sync::Arc::new(c.clone())), ..opts(Style::Classic, 0) };
-        let mut sd = project(20);
-        sd.disc.video = VideoFormat::I480_2997_4x3;
-        apply(&mut sd, &with(&both));
-        let pages = episode_pages(&sd);
-        assert!(sd.menu(pages[0]).unwrap().shape == MenuShape::Standard);
-        assert!(sd.menus[0].shape == MenuShape::Standard);
-        // 16:9 discs get the 16:9 design.
-        let mut hd = project(20);
-        apply(&mut hd, &with(&both));
-        assert!(hd.menus.iter().all(|m| m.shape == MenuShape::Wide));
+        for format in [VideoFormat::I480_2997_4x3, VideoFormat::P1080_23976] {
+            for t in [&t_wide, &t_square] {
+                let mut p = project(20);
+                p.disc.languages = languages(&["English", "Deutsch"]);
+                p.disc.video = format;
+                apply(&mut p, &with(t));
+                assert!(p.menus.iter().all(|m| m.shape == t.shape), "{format:?}");
+            }
+        }
+
+        // A file from when one template held both designs is two templates.
+        let json = |t: &custom::CustomTemplate| serde_json::to_value(t).unwrap();
+        let mut old = json(&t_wide);
+        let sq = json(&t_square);
+        old["standard"] = serde_json::json!({ "main": sq["main"], "episodes": sq["episodes"] });
+        old.as_object_mut().unwrap().remove("shape");
+        let parts = custom::parse(old.to_string().as_bytes(), "old").unwrap();
+        assert_eq!(parts.iter().map(|t| (t.name.as_str(), t.shape)).collect::<Vec<_>>(), [("Both", MenuShape::Wide), ("Both (4:3)", MenuShape::Standard)]);
+        assert_eq!((&parts[0].main, &parts[0].setup), (&t_wide.main, &t_wide.setup));
+        assert_eq!((&parts[1].main, &parts[1].episodes), (&t_square.main, &t_square.episodes));
+        // The 4:3 design had no Setup or pop-up menus of its own.
+        assert!(parts[1].setup.is_none() && parts[1].popup.is_none());
+        // Written again, each is a plain template.
+        let again = custom::parse(json(&parts[1]).to_string().as_bytes(), "new").unwrap();
+        assert_eq!(again, [parts[1].clone()]);
+
+        // One saved from 4:3 menus alone is a 4:3 template of the same name.
+        let mut old = json(&t_wide);
+        old["standard"] = serde_json::json!({ "main": old["main"], "episodes": old["episodes"] });
+        let parts = custom::parse(old.to_string().as_bytes(), "old").unwrap();
+        assert_eq!(parts.iter().map(|t| (t.name.as_str(), t.shape)).collect::<Vec<_>>(), [("Both", MenuShape::Standard)]);
     }
 
     fn languages(names: &[&str]) -> Vec<LanguagePreset> {
