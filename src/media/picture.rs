@@ -266,7 +266,10 @@ pub fn plan_with(info: &MediaInfo, opts: &VideoOptions, disc: VideoFormat, burn:
     let film = opts.deinterlace == Deinterlace::InverseTelecine || (!deinterlaced && (src_rate - 24000.0 / 1001.0).abs() < 0.01);
     let pulldown = interlaced.is_none() && disc.interlaced() && disc.fps() == (30000, 1001) && film;
     if pulldown {
-        f.push("fps=24000/1001,telecine=first_field=top:pattern=23".into());
+        // Every frame is marked top field first: the telecine filter leaves
+        // the whole ones unmarked, and x264 would code those as bottom
+        // field first, which players show with their fields swapped.
+        f.push("fps=24000/1001,telecine=first_field=top:pattern=23,setfield=tff".into());
         interlaced = Some(true);
     } else if interlaced.is_none() {
         let (n, d) = disc.fps();
@@ -399,6 +402,8 @@ mod tests {
         assert_eq!((p.area.w, p.area.h), (704, 480));
         assert!(p.filters.contains("setsar=10/11"));
         assert!(p.pulldown);
+        // Every telecined frame is marked top field first for the encoder.
+        assert!(p.filters.contains("telecine=first_field=top:pattern=23,setfield=tff"));
         // 16:9 video is letterboxed on it.
         let p = plan(&info(1920, 1080, (25, 1)), &VideoOptions::default(), VideoFormat::I576_25_4x3);
         assert_eq!((p.area.w, p.area.h), (720, 442));
