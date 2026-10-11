@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Custom templates: a main menu and an episode page layout saved from a
-//! project (or written by hand) as one `.spindle-template` JSON file, with
-//! its pictures inside, to use again on other shows or share.
+//! Custom templates: a main menu and an episode page layout, and optionally
+//! the Setup and pop-up menus, saved from a project (or written by hand) as
+//! one `.spindle-template` JSON file, with its pictures inside, to use again
+//! on other shows or share.
 //!
 //! Items are Spindle menu items. Text can hold placeholders: `{title}`,
 //! `{season}`, `{disc}`, `{edition}` ("Season 2 · Disc 1") and `{count}`
@@ -36,6 +37,13 @@ pub struct CustomTemplate {
     pub fonts: Fonts,
     pub main: TemplateMenu,
     pub episodes: EpisodeLayout,
+    /// The Setup menu, with a slot for each language choice. Without it
+    /// Spindle makes one in the palette.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<EpisodeLayout>,
+    /// The pop-up menus. Without them Spindle makes them in the palette.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub popup: Option<PopupLayout>,
     /// The same menus designed for 4:3 screens (in the middle of the
     /// canvas), used on 4:3 discs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -49,6 +57,24 @@ pub struct CustomTemplate {
 pub struct Standard {
     pub main: TemplateMenu,
     pub episodes: EpisodeLayout,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<EpisodeLayout>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub popup: Option<PopupLayout>,
+}
+
+/// The menus shown over a title with the remote's Pop-up key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PopupLayout {
+    /// The pop-up itself, with buttons linked to `chapters`, `audio`,
+    /// `episodes` and `main_menu`.
+    pub menu: TemplateMenu,
+    /// Its page of chapters, with a slot for each chapter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapters: Option<EpisodeLayout>,
+    /// Its page of language choices, with a slot for each.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<EpisodeLayout>,
 }
 
 impl CustomTemplate {
@@ -66,6 +92,8 @@ impl CustomTemplate {
             _ => {
                 self.main = other.main.clone();
                 self.episodes = other.episodes.clone();
+                self.setup = other.setup.clone();
+                self.popup = other.popup.clone();
             }
         }
         self.name = other.name.clone();
@@ -147,6 +175,16 @@ pub enum Link {
     Episode,
     Previous,
     Next,
+    /// The pop-up's page of chapters.
+    Chapters,
+    /// The pop-up's page of language choices.
+    Audio,
+    /// From a pop-up page back to the pop-up menu.
+    Back,
+    /// Play the slot's chapter.
+    Chapter,
+    /// Choose the slot's language.
+    Language,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -186,6 +224,10 @@ pub struct EpisodeLayout {
     pub step: [f64; 2],
     #[serde(default)]
     pub order: Order,
+    /// In a list of chapters or languages shorter than `columns × rows`:
+    /// keep the slots in the middle of the space the full list takes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub center: bool,
 }
 
 impl EpisodeLayout {
@@ -201,6 +243,20 @@ impl EpisodeLayout {
             Order::Columns => (k / rows, k % rows),
         };
         (c as f64 * self.step[0], r as f64 * self.step[1])
+    }
+
+    /// How far a list of `n` slots moves to stay in the middle of the
+    /// space a full one takes.
+    fn centering(&self, n: usize) -> (f64, f64) {
+        if !self.center || n == 0 {
+            return (0.0, 0.0);
+        }
+        let (cols, rows) = (self.columns.max(1) as usize, self.rows.max(1) as usize);
+        let (used_cols, used_rows) = match self.order {
+            Order::Rows => (n.min(cols), n.div_ceil(cols)),
+            Order::Columns => (n.div_ceil(rows), n.min(rows)),
+        };
+        (cols.saturating_sub(used_cols) as f64 * self.step[0] / 2.0, rows.saturating_sub(used_rows) as f64 * self.step[1] / 2.0)
     }
 }
 
@@ -433,9 +489,183 @@ fn make_menu(tm: &TemplateMenu, name: &str, f: &Fill) -> (Menu, HashMap<Id, Id>)
     (m, ids)
 }
 
+/// A list from layout `lay`: its page, and a slot for each of `entries`
+/// (placeholders and what the slot's link does). Returns the menu and the
+/// first button of each slot. `None` when there are more entries than slots.
+fn make_list(lay: &EpisodeLayout, name: &str, page: &Fill, entry: Link, entries: &[(Vec<(&'static str, String)>, Action)]) -> Option<(Menu, Vec<Id>)> {
+    if entries.is_empty() || entries.len() > lay.per_page() {
+        return None;
+    }
+    let (mut m, _) = make_menu(&lay.page, name, page);
+    let shift = lay.centering(entries.len());
+    let mut firsts = Vec::new();
+    for (k, (vars, action)) in entries.iter().enumerate() {
+        let mut v = page.vars.clone();
+        v.extend(vars.iter().cloned());
+        let link = |l: Link| if l == entry { Some(*action) } else { (page.link)(l) };
+        let f = Fill { vars: v, link: &link, still: page.still, images: page.images };
+        let (dx, dy) = lay.offset(k);
+        let items = make_items(&lay.slot, (dx + shift.0, dy + shift.1), &f, &mut HashMap::new());
+        firsts.push(items.iter().find(|i| i.button().is_some()).map(|i| i.id)?);
+        m.items.extend(items);
+    }
+    Some((m, firsts))
+}
+
+/// Move the linked buttons of `m` together where others of their row or
+/// column were left out (a pop-up without chapters, say): a row closes up
+/// around its middle, a column towards its top.
+fn close_gaps(tm: &TemplateMenu, m: &mut Menu, ids: &HashMap<Id, Id>) {
+    let linked: Vec<&TemplateItem> = tm.items.iter().filter(|i| i.link.is_some() && i.item.button().is_some()).collect();
+    let kept = |i: &TemplateItem| ids.get(&i.item.id).is_some_and(|id| m.item(*id).is_some());
+    let mut moves: Vec<(Id, f64, f64)> = Vec::new();
+    let mut done: Vec<Id> = Vec::new();
+    for horizontal in [true, false] {
+        for first in &linked {
+            if done.contains(&first.item.id) {
+                continue;
+            }
+            let along = |i: &TemplateItem| if horizontal { (i.item.rect.x, i.item.rect.w) } else { (i.item.rect.y, i.item.rect.h) };
+            let across = |i: &TemplateItem| if horizontal { i.item.rect.y } else { i.item.rect.x };
+            let mut line: Vec<&TemplateItem> = linked.iter().copied().filter(|i| !done.contains(&i.item.id) && (across(i) - across(first)).abs() < 1.0).collect();
+            if line.len() < 2 {
+                continue;
+            }
+            line.sort_by(|a, b| along(a).0.total_cmp(&along(b).0));
+            done.extend(line.iter().map(|i| i.item.id));
+            let present: Vec<&&TemplateItem> = line.iter().filter(|i| kept(i)).collect();
+            if present.len() == line.len() || present.is_empty() {
+                continue;
+            }
+            let gap = along(line[1]).0 - (along(line[0]).0 + along(line[0]).1);
+            let (start, end) = (along(line[0]).0, along(line[line.len() - 1]).0 + along(line[line.len() - 1]).1);
+            let total: f64 = present.iter().map(|i| along(i).1).sum::<f64>() + gap * (present.len() - 1) as f64;
+            let mut at = if horizontal { start + (end - start - total) / 2.0 } else { start };
+            for i in present {
+                let delta = at - along(i).0;
+                moves.push((ids[&i.item.id], if horizontal { delta } else { 0.0 }, if horizontal { 0.0 } else { delta }));
+                at += along(i).1 + gap;
+            }
+        }
+    }
+    for (id, dx, dy) in moves {
+        if let Some(it) = m.items.iter_mut().find(|i| i.id == id) {
+            it.rect = Rect::new(it.rect.x + dx, it.rect.y + dy, it.rect.w, it.rect.h);
+        }
+    }
+}
+
+/// The template's own Setup and pop-up menus.
+pub(super) struct Extras<'a> {
+    setup: Option<&'a EpisodeLayout>,
+    popup: Option<&'a PopupLayout>,
+    shape: MenuShape,
+    vars: Vec<(&'static str, String)>,
+    /// The first episode's still.
+    first: Option<(Id, f64)>,
+    images: &'a HashMap<Id, Id>,
+}
+
+/// The placeholders that work anywhere.
+fn common_vars(input: &Input) -> Vec<(&'static str, String)> {
+    vec![
+        ("title", input.name.clone()),
+        ("season", input.season.clone()),
+        ("disc", input.disc.clone()),
+        ("edition", input.edition().unwrap_or_default()),
+        ("count", input.count()),
+    ]
+}
+
+impl<'a> Extras<'a> {
+    pub(super) fn new(t: &'a CustomTemplate, input: &Input, images: &'a HashMap<Id, Id>) -> Self {
+        // The 4:3 designs on 4:3 discs, when there are any.
+        let standard = t.standard.as_ref().filter(|_| input.p.disc.menu_format().is_4x3());
+        let (setup, popup, shape) = match standard {
+            Some(s) => (s.setup.as_ref(), s.popup.as_ref(), MenuShape::Standard),
+            None => (t.setup.as_ref(), t.popup.as_ref(), MenuShape::Wide),
+        };
+        Extras { setup, popup, shape, vars: common_vars(input), first: input.episodes.first().map(|e| (e.asset, e.poster)), images }
+    }
+
+    fn language_entries(languages: &[LanguagePreset], back: Id) -> Vec<(Vec<(&'static str, String)>, Action)> {
+        languages.iter().map(|l| (vec![("name", l.name.clone())], Action::SetLanguage { preset: l.id, menu: Some(back) })).collect()
+    }
+
+    /// A list menu, with the button of `default` (or the first) selected.
+    fn list(&self, lay: &EpisodeLayout, name: &str, link: &dyn Fn(Link) -> Option<Action>, entry: Link, entries: &[(Vec<(&'static str, String)>, Action)], default: usize) -> Option<Menu> {
+        let still = |_: Still| self.first;
+        let f = Fill { vars: self.vars.clone(), link, still: &still, images: self.images };
+        let (mut m, firsts) = make_list(lay, name, &f, entry, entries)?;
+        m.default_button = firsts.get(default).or(firsts.first()).copied();
+        m.shape = self.shape;
+        Some(m)
+    }
+
+    /// The Setup menu, when the template has one that holds every choice.
+    pub(super) fn setup(&self, languages: &[LanguagePreset], default: Option<Id>, home: Id) -> Option<Menu> {
+        let link = |l: Link| matches!(l, Link::MainMenu | Link::Back).then_some(Action::ShowMenu(home));
+        let default = languages.iter().position(|l| Some(l.id) == default).unwrap_or(0);
+        self.list(self.setup?, &gettext("Setup"), &link, Link::Language, &Self::language_entries(languages, home), default)
+    }
+
+    fn popup_link(input: &PopupInput, chapters: Option<Id>, audio: Option<Id>, back: Option<Id>) -> impl Fn(Link) -> Option<Action> {
+        let (episodes, main, setup) = (input.episodes, input.main, input.setup);
+        move |l: Link| {
+            match l {
+                Link::Chapters => chapters,
+                Link::Audio => audio,
+                Link::Episodes => episodes,
+                Link::MainMenu => Some(main),
+                Link::Setup => setup,
+                Link::Back => back,
+                _ => None,
+            }
+            .map(Action::ShowMenu)
+        }
+    }
+
+    fn as_popup(mut m: Menu) -> Menu {
+        m.popup = true;
+        m.background = Menu::new_popup("").background;
+        m
+    }
+
+    /// The pop-up menu itself.
+    pub(super) fn popup_main(&self, input: &PopupInput, chapters: Option<Id>, audio: Option<Id>) -> Option<Menu> {
+        let tm = &self.popup?.menu;
+        let link = Self::popup_link(input, chapters, audio, None);
+        let still = |_: Still| self.first;
+        let f = Fill { vars: self.vars.clone(), link: &link, still: &still, images: self.images };
+        let (mut m, ids) = make_menu(tm, &tm.name, &f);
+        close_gaps(tm, &mut m, &ids);
+        if m.default_button.is_none() {
+            let first = m.buttons().next().map(|b| b.id);
+            m.default_button = first;
+        }
+        m.shape = self.shape;
+        Some(Self::as_popup(m))
+    }
+
+    /// The pop-up's page of chapters; chapters past its last slot are left out.
+    pub(super) fn popup_chapters(&self, input: &PopupInput, back: Id) -> Option<Menu> {
+        let lay = self.popup?.chapters.as_ref()?;
+        let link = Self::popup_link(input, None, None, Some(back));
+        let entries: Vec<_> = (0..input.max_chapters.min(lay.per_page())).map(|i| (vec![("number", (i + 1).to_string())], Action::PlayChapter(i as u32))).collect();
+        self.list(lay, &popup_chapters_name(), &link, Link::Chapter, &entries, 0).map(Self::as_popup)
+    }
+
+    /// The pop-up's page of language choices, when it holds them all.
+    pub(super) fn popup_audio(&self, input: &PopupInput, back: Id) -> Option<Menu> {
+        let lay = self.popup?.audio.as_ref()?;
+        let link = Self::popup_link(input, None, None, Some(back));
+        self.list(lay, &popup_audio_name(), &link, Link::Language, &Self::language_entries(input.languages, back), 0).map(Self::as_popup)
+    }
+}
+
 /// Menus from custom template `t`: the main menu, then the episode pages.
 pub(super) fn build(t: &CustomTemplate, input: Input, images: &HashMap<Id, Id>) -> Output {
-    let (edition, count) = (input.edition().unwrap_or_default(), input.count());
+    let common = common_vars(&input);
     // The 4:3 design on 4:3 discs, when there is one.
     let standard = t.standard.as_ref().filter(|_| input.p.disc.menu_format().is_4x3());
     let shape = if standard.is_some() { MenuShape::Standard } else { MenuShape::Wide };
@@ -443,11 +673,10 @@ pub(super) fn build(t: &CustomTemplate, input: Input, images: &HashMap<Id, Id>) 
         Some(s) => (&s.main, &s.episodes),
         None => (&t.main, &t.episodes),
     };
-    let Input { name, season, disc, episodes, main: base, setup, .. } = input;
+    let Input { episodes, main: base, setup, .. } = input;
     let per_page = lay.per_page();
     let n_pages = episodes.len().div_ceil(per_page).max(1);
     let page_ids: Vec<Id> = (0..n_pages).map(|_| new_id()).collect();
-    let common = vec![("title", name.clone()), ("season", season.clone()), ("disc", disc.clone()), ("edition", edition.clone()), ("count", count.clone())];
     let first = episodes.first();
 
     // Main menu
@@ -644,7 +873,46 @@ fn template_menu(
     TemplateMenu { name: m.name.clone(), background, items, default_button: m.default_button, fade_in: m.fade_in, fade_out: m.fade_out }
 }
 
-/// Turn the project's main menu and episode pages into a template.
+/// Make list menu `m` into a layout: its buttons that `is_entry` become one
+/// slot (the first of them, labelled `label`), repeated the way they are
+/// laid out; the rest is the page.
+#[allow(clippy::too_many_arguments)]
+fn list_layout(
+    p: &Project,
+    m: &Menu,
+    is_entry: &dyn Fn(&Action) -> bool,
+    entry: Link,
+    label: &str,
+    link: &dyn Fn(&Action) -> Option<Link>,
+    still: &dyn Fn(Id) -> Option<Still>,
+    text: &dyn Fn(&str) -> String,
+    images: &mut BTreeMap<Id, Image>,
+) -> Option<EpisodeLayout> {
+    let entries: Vec<&MenuItem> = m.buttons().filter(|b| b.button().is_some_and(|b| is_entry(&b.action))).collect();
+    let first = *entries.first()?;
+    let (r0, n) = (first.rect, entries.len());
+    let is = |it: &MenuItem| entries.iter().any(|e| e.id == it.id);
+    let page = template_menu(p, m, |it| !is(it), link, still, text, images);
+    let mut slot = template_menu(p, m, |it| it.id == first.id, &|_| Some(entry), still, &|_| label.to_string(), images).items;
+    let across = entries.get(1).is_none_or(|b| (b.rect.y - r0.y).abs() < 1.0);
+    let (columns, rows, step) = if across {
+        // Wide enough for the longest label (as far as the row has room
+        // for them all), and as many as the row holds.
+        let gap = entries.get(1).map_or(24.0, |b| b.rect.x - (r0.x + r0.w)).max(0.0);
+        let room = (SAFE_AREA.x + SAFE_AREA.w - r0.x - gap * (n - 1) as f64) / n as f64;
+        let w = entries.iter().map(|b| b.rect.w).fold(r0.w, f64::max).min(room.max(r0.w));
+        let dx = w + gap;
+        slot.iter_mut().for_each(|s| s.item.rect.w = w);
+        let fit = ((SAFE_AREA.x + SAFE_AREA.w - r0.x - w) / dx).floor().max(0.0) as usize + 1;
+        (fit.max(n), 1, [dx, 0.0])
+    } else {
+        (1, n, [0.0, entries[1].rect.y - r0.y])
+    };
+    Some(EpisodeLayout { page, slot, columns: columns as u32, rows: rows as u32, step, order: Order::Rows, center: false })
+}
+
+/// Turn the project's main menu and episode pages into a template, with
+/// its Setup and pop-up menus when it has them.
 pub fn from_project(p: &Project, name: &str, description: &str, author: &str) -> anyhow::Result<CustomTemplate> {
     let pages = episode_pages(p);
     anyhow::ensure!(!pages.is_empty(), "the project has no episode pages (menus named “Episodes”)");
@@ -657,7 +925,16 @@ pub fn from_project(p: &Project, name: &str, description: &str, author: &str) ->
         .context("the project has no main menu")?;
     let main = p.menu(main_id).context("the project has no main menu")?;
     let page0 = p.menu(pages[0]).context("episode page missing")?;
-    let setup = p.menus.iter().find(|m| m.buttons().any(|b| matches!(b.button().map(|b| b.action), Some(Action::SetLanguage { .. })))).map(|m| m.id);
+    let is_chapter = |a: &Action| matches!(a, Action::PlayChapter(_));
+    let is_language = |a: &Action| matches!(a, Action::SetLanguage { .. });
+    let has = |m: &Menu, f: &dyn Fn(&Action) -> bool| m.buttons().any(|b| b.button().is_some_and(|b| f(&b.action)));
+    let setup_menu = p.disc_menus().find(|m| has(m, &is_language));
+    let setup = setup_menu.map(|m| m.id);
+    // The pop-up menu and its pages.
+    let popup_chapters = p.popup_menus().find(|m| has(m, &is_chapter));
+    let popup_audio = p.popup_menus().find(|m| has(m, &is_language));
+    let own_page = |m: &&Menu| !has(m, &is_chapter) && !has(m, &is_language);
+    let popup_main = p.disc.popup_menu.and_then(|id| p.menu(id)).filter(|m| m.popup).filter(own_page).or_else(|| p.popup_menus().find(own_page));
     let eps = episodes(p);
 
     // Text that came from the template's inputs goes back to placeholders.
@@ -835,14 +1112,29 @@ pub fn from_project(p: &Project, name: &str, description: &str, author: &str) ->
     }
     page_t.default_button = None;
 
-    // Colours and fonts for Setup and the pop-ups.
+    // The Setup and pop-up menus.
+    let extra_link = |a: &Action| match a {
+        Action::ShowMenu(m) if Some(*m) == popup_chapters.map(|m| m.id) => Some(Link::Chapters),
+        Action::ShowMenu(m) if Some(*m) == popup_audio.map(|m| m.id) => Some(Link::Audio),
+        Action::ShowMenu(m) if Some(*m) == popup_main.map(|m| m.id) => Some(Link::Back),
+        Action::ShowMenu(m) if *m == main_id => Some(Link::MainMenu),
+        other => main_link(other),
+    };
+    let setup_t = setup_menu.and_then(|m| list_layout(p, m, &is_language, Link::Language, "{name}", &extra_link, &main_still, &common, &mut images));
+    let popup_t = popup_main.map(|m| PopupLayout {
+        menu: template_menu(p, m, |_| true, &extra_link, &main_still, &common, &mut images),
+        chapters: popup_chapters.and_then(|m| list_layout(p, m, &is_chapter, Link::Chapter, "{number}", &extra_link, &main_still, &common, &mut images)),
+        audio: popup_audio.and_then(|m| list_layout(p, m, &is_language, Link::Language, "{name}", &extra_link, &main_still, &common, &mut images)),
+    });
+
+    // Colours and fonts for Setup and the pop-ups Spindle makes itself.
     let style = info.as_ref().and_then(|t| Style::from_id(&t.style));
     let theme = THEMES[info.as_ref().map_or_else(|| detect_theme(p), |t| t.theme).min(THEMES.len() - 1)];
     let (heading, body) = style.map_or(("Cantarell", "Cantarell"), |s| s.fonts());
-    let episodes = EpisodeLayout { page: page_t, slot: slot_t.items, columns: columns as u32, rows: rows as u32, step: [dx, dy], order };
+    let episodes = EpisodeLayout { page: page_t, slot: slot_t.items, columns: columns as u32, rows: rows as u32, step: [dx, dy], order, center: false };
     // Menus made for 4:3 are the 4:3 design, and stand in for the 16:9
     // one until that is saved too (see `combine`).
-    let standard = (main.shape == MenuShape::Standard).then(|| Standard { main: main_t.clone(), episodes: episodes.clone() });
+    let standard = (main.shape == MenuShape::Standard).then(|| Standard { main: main_t.clone(), episodes: episodes.clone(), setup: setup_t.clone(), popup: popup_t.clone() });
     Ok(CustomTemplate {
         format: FORMAT.into(),
         version: 1,
@@ -861,6 +1153,8 @@ pub fn from_project(p: &Project, name: &str, description: &str, author: &str) ->
         fonts: Fonts { heading: heading.into(), body: body.into() },
         main: main_t,
         episodes,
+        setup: setup_t,
+        popup: popup_t,
         standard,
         images,
     })

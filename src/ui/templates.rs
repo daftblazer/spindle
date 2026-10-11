@@ -27,6 +27,7 @@ struct State {
     season: RefCell<String>,
     disc: RefCell<String>,
     logo: Cell<Option<crate::model::Id>>,
+    popups: Cell<bool>,
     styles: gtk::FlowBox,
     style_cards: RefCell<Vec<(Style, gtk::Picture)>>,
     theme_buttons: Vec<gtk::ToggleButton>,
@@ -55,6 +56,7 @@ impl State {
             disc: self.disc.borrow().clone(),
             logo: self.logo.get(),
             custom: if self.custom_mode.get() { self.selected_custom() } else { None },
+            popups: self.popups.get(),
         }
     }
 
@@ -358,6 +360,12 @@ pub fn present(
         .build();
     logo_row.add_suffix(&import);
     group.add(&logo_row);
+    let popups_row = adw::SwitchRow::builder()
+        .title(gettext("Pop-up Menus"))
+        .subtitle(gettext("Chapters, audio and subtitles over the video, with the remote's Pop-up key"))
+        .active(true)
+        .build();
+    group.add(&popups_row);
     body.append(&group);
 
     // Generated pages
@@ -390,6 +398,7 @@ pub fn present(
         season: RefCell::new(String::new()),
         disc: RefCell::new(String::new()),
         logo: Cell::new(None),
+        popups: Cell::new(true),
         styles: styles.clone(),
         style_cards: RefCell::new(Vec::new()),
         theme_buttons: theme_buttons.clone(),
@@ -451,6 +460,11 @@ pub fn present(
             }
         });
     }
+    let s = state.clone();
+    popups_row.connect_active_notify(move |r| {
+        s.popups.set(r.is_active());
+        s.refresh();
+    });
     let (s, choices) = (state.clone(), logo_choices.clone());
     logo_row.connect_selected_notify(move |r| {
         let pick = (r.selected() as usize).checked_sub(1).and_then(|i| choices.borrow().get(i).copied());

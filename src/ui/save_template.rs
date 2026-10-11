@@ -20,7 +20,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>, toast: impl F
 
     let g = adw::PreferencesGroup::builder()
         .description(gettext(
-            "Saves the main menu and the layout of the episode pages. Applied to another show, the title, season, episode names, running times and stills are filled in, and there are as many pages as its episodes need. Setup and pop-up menus are made in the template's colours.\n\nTo give a template 4:3 menus as well, make 4:3 menus (Shape in the menu's properties) and save them under the same name.",
+            "Saves the main menu and the layout of the episode pages. Applied to another show, the title, season, episode names, running times and stills are filled in, and there are as many pages as its episodes need. The Setup and pop-up menus are saved as they look; a project without them gets ones in the template's colours.\n\nTo give a template 4:3 menus as well, make 4:3 menus (Shape in the menu's properties) and save them under the same name.",
         ))
         .build();
     let name = adw::EntryRow::builder().title(gettext("Name")).text(format!("{} {}", doc.project().disc.name, gettext("Menus"))).build();

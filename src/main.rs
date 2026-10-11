@@ -149,8 +149,10 @@ fn template_cli(style: &str, theme: &str, project: &str, extra: &[String]) -> gl
         if let Ok(t) = theme.parse() {
             opts.theme = t;
         }
-        opts.season = extra.first().cloned().unwrap_or_default();
-        opts.disc = extra.get(1).cloned().unwrap_or_default();
+        opts.popups = !extra.iter().any(|a| a == "--no-popups");
+        let mut lines = extra.iter().filter(|a| *a != "--no-popups");
+        opts.season = lines.next().cloned().unwrap_or_default();
+        opts.disc = lines.next().cloned().unwrap_or_default();
         templates::apply(&mut p, &opts);
         p.save(path)
     });
@@ -295,7 +297,7 @@ fn main() -> glib::ExitCode {
             }
         };
     }
-    // --apply-template STYLE THEME PROJECT [SEASON [DISC]] (THEME "-" = the style's own)
+    // --apply-template STYLE THEME PROJECT [SEASON [DISC]] [--no-popups] (THEME "-" = the style's own)
     // --save-template PROJECT OUT.spindle-template NAME [DESCRIPTION]: save the
     // project's main menu and episode pages as a custom template.
     if (5..=6).contains(&args.len()) && args[1] == "--save-template" {
@@ -324,7 +326,7 @@ fn main() -> glib::ExitCode {
             }
         };
     }
-    if (5..=7).contains(&args.len()) && args[1] == "--apply-template" {
+    if (5..=8).contains(&args.len()) && args[1] == "--apply-template" {
         return template_cli(&args[2], &args[3], &args[4], &args[5..]);
     }
 

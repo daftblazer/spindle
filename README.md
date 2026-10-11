@@ -118,14 +118,14 @@ colour palettes, with optional **Season** and **Disc** lines:
 - **Movie**: Classic, Showcase and Minimal, with scene selection and extras
 - **Collection**: a simple list of every title
 
-Templates also create the Setup menu and pop-up menus, and can use an
-imported logo instead of the title text. **Regenerate Episode Menus**
+Templates also create the Setup menu and, if you want them, pop-up menus,
+and can use an imported logo instead of the title text. **Regenerate Episode Menus**
 makes the episode pages again (after adding episodes, or in another style)
 while keeping every other menu and relinking the buttons that led to them.
 
 Your own designs can be saved as **custom templates** (Save Menus as
-Template…), used on other shows, and exported as a single
-`.spindle-template` file to share. See
+Template…), Setup and pop-up menus included, used on other shows, and
+exported as a single `.spindle-template` file to share. See
 [docs/custom-templates.md](docs/custom-templates.md) for the format.
 
 ### Titles
@@ -223,7 +223,7 @@ Discs can be made without the GUI:
 
 ```sh
 spindle --new-project show.spindle episodes/*.mkv            # titles from media files
-spindle --apply-template showcase - show.spindle "Season 2" "Disc 1"
+spindle --apply-template showcase - show.spindle "Season 2" "Disc 1"   # add --no-popups for no pop-up menus
 spindle --build show.spindle "Show Season 2.iso"             # or a folder name for BDMV
 spindle --burn "Show Season 2.iso" /dev/sr0                  # burn and verify
 ```

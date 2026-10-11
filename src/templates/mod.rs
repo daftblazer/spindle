@@ -341,11 +341,13 @@ pub struct Options {
     pub logo: Option<Id>,
     /// A saved template to use instead of `style` and `theme`.
     pub custom: Option<std::sync::Arc<custom::CustomTemplate>>,
+    /// Make pop-up menus, shown over the titles with the Pop-up key.
+    pub popups: bool,
 }
 
 impl Options {
     pub fn new(style: Style, title: &str) -> Self {
-        Options { style, theme: style.default_theme(), title: title.into(), season: String::new(), disc: String::new(), logo: None, custom: None }
+        Options { style, theme: style.default_theme(), title: title.into(), season: String::new(), disc: String::new(), logo: None, custom: None, popups: true }
     }
 
     fn ctx(&self) -> Ctx {
@@ -611,41 +613,31 @@ impl Ctx {
         m
     }
 
-    /// Pop-up menu with chapters, audio & subtitles and links out, plus
-    /// the pages it opens. The first menu is the pop-up itself.
-    fn popup_menus(&self, name: &str, max_chapters: usize, languages: &[LanguagePreset], links: &[(String, Action)]) -> Vec<Menu> {
-        let mut main = self.popup_page(&gettext("Pop-up Menu"), name);
-        let mut chapters = self.popup_page(&gettext("Pop-up · Chapters"), &gettext("Chapters"));
-        let mut audio = self.popup_page(&gettext("Pop-up · Audio & Subtitles"), &gettext("Audio & Subtitles"));
-        let mut entries = Vec::new();
-        if max_chapters > 1 {
-            entries.push((gettext("Chapters"), Action::ShowMenu(chapters.id)));
-        }
-        if languages.len() >= 2 {
-            entries.push((gettext("Audio & Subtitles"), Action::ShowMenu(audio.id)));
-        }
-        entries.extend(links.iter().cloned());
-        self.popup_row(&mut main, &entries);
+    /// The pop-up menu itself: a row of `entries`.
+    fn popup_main(&self, name: &str, entries: &[(String, Action)]) -> Menu {
+        let mut m = self.popup_page(&gettext("Pop-up Menu"), name);
+        self.popup_row(&mut m, entries);
+        m
+    }
 
-        let back = (gettext("‹ Back"), Action::ShowMenu(main.id));
-        let mut ch = vec![back.clone()];
-        ch.extend((0..max_chapters.min(12)).map(|i| ((i + 1).to_string(), Action::PlayChapter(i as u32))));
-        let ids = self.popup_row(&mut chapters, &ch);
-        chapters.default_button = ids.get(1).copied();
+    /// The pop-up's page of chapter numbers, going back to `back`.
+    fn popup_chapters(&self, max_chapters: usize, back: Id) -> Menu {
+        let mut m = self.popup_page(&popup_chapters_name(), &gettext("Chapters"));
+        let mut entries = vec![(gettext("‹ Back"), Action::ShowMenu(back))];
+        entries.extend((0..max_chapters.min(12)).map(|i| ((i + 1).to_string(), Action::PlayChapter(i as u32))));
+        let ids = self.popup_row(&mut m, &entries);
+        m.default_button = ids.get(1).copied();
+        m
+    }
 
-        let mut au = vec![back];
-        au.extend(languages.iter().map(|l| (l.name.clone(), Action::SetLanguage { preset: l.id, menu: Some(main.id) })));
-        let ids = self.popup_row(&mut audio, &au);
-        audio.default_button = ids.get(1).copied();
-
-        let mut out = vec![main];
-        if max_chapters > 1 {
-            out.push(chapters);
-        }
-        if languages.len() >= 2 {
-            out.push(audio);
-        }
-        out
+    /// The pop-up's page of language choices, going back to `back`.
+    fn popup_audio(&self, languages: &[LanguagePreset], back: Id) -> Menu {
+        let mut m = self.popup_page(&popup_audio_name(), &gettext("Audio & Subtitles"));
+        let mut entries = vec![(gettext("‹ Back"), Action::ShowMenu(back))];
+        entries.extend(languages.iter().map(|l| (l.name.clone(), Action::SetLanguage { preset: l.id, menu: Some(back) })));
+        let ids = self.popup_row(&mut m, &entries);
+        m.default_button = ids.get(1).copied();
+        m
     }
 
     /// Language choices, each returning to `home`.
@@ -686,6 +678,27 @@ impl Ctx {
         }
         pages
     }
+}
+
+fn popup_chapters_name() -> String {
+    gettext("Pop-up · Chapters")
+}
+
+fn popup_audio_name() -> String {
+    gettext("Pop-up · Audio & Subtitles")
+}
+
+/// What the pop-up menus link to.
+struct PopupInput<'a> {
+    /// The show's name.
+    name: &'a str,
+    /// The most chapters any title has.
+    max_chapters: usize,
+    languages: &'a [LanguagePreset],
+    /// The first episode page.
+    episodes: Option<Id>,
+    main: Id,
+    setup: Option<Id>,
 }
 
 /// A title as shown in templates.
@@ -760,6 +773,37 @@ struct Output {
     title_item: Option<Id>,
     /// Extra buttons for the pop-up menu (e.g. Episodes).
     popup_links: Vec<(String, Action)>,
+}
+
+/// The pop-up menu and the pages it opens (the pop-up itself first), from
+/// the custom template's designs where it has them.
+fn popup_menus(cx: &Ctx, custom: Option<&custom::Extras>, input: &PopupInput, links: &[(String, Action)]) -> Vec<Menu> {
+    let (chapters_id, audio_id) = ((input.max_chapters > 1).then(new_id), (input.languages.len() >= 2).then(new_id));
+    let mut main = custom.and_then(|c| c.popup_main(input, chapters_id, audio_id)).unwrap_or_else(|| {
+        let mut entries = Vec::new();
+        if let Some(id) = chapters_id {
+            entries.push((gettext("Chapters"), Action::ShowMenu(id)));
+        }
+        if let Some(id) = audio_id {
+            entries.push((gettext("Audio & Subtitles"), Action::ShowMenu(id)));
+        }
+        entries.extend(links.iter().cloned());
+        cx.popup_main(input.name, &entries)
+    });
+    main.name = gettext("Pop-up Menu");
+    let back = main.id;
+    let mut out = vec![main];
+    if let Some(id) = chapters_id {
+        let mut m = custom.and_then(|c| c.popup_chapters(input, back)).unwrap_or_else(|| cx.popup_chapters(input.max_chapters, back));
+        m.id = id;
+        out.push(m);
+    }
+    if let Some(id) = audio_id {
+        let mut m = custom.and_then(|c| c.popup_audio(input, back)).unwrap_or_else(|| cx.popup_audio(input.languages, back));
+        m.id = id;
+        out.push(m);
+    }
+    out
 }
 
 /// The theme the project's menus were made with (by background color).
@@ -889,21 +933,23 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
     }
     let main = cx.menu(&gettext("Main Menu"));
     let main_id = main.id;
-    let setup = (p.disc.languages.len() >= 2).then(|| cx.setup_page(&p.disc.languages, p.default_language().map(|l| l.id), main_id));
+    let setup_id = (p.disc.languages.len() >= 2).then(new_id);
 
     let episodes = episodes(p);
-    let input = Input {
-        p,
-        cx,
-        name: name.clone(),
-        season: opts.season.clone(),
-        disc: opts.disc.clone(),
-        episodes,
-        main,
-        setup: setup.as_ref().map(|m| m.id),
-    };
+    let input = Input { p, cx, name: name.clone(), season: opts.season.clone(), disc: opts.disc.clone(), episodes, main, setup: setup_id };
+    // The custom template's own Setup and pop-up designs.
+    let extras = opts.custom.as_deref().map(|t| custom::Extras::new(t, &input, &images));
     let out = build(opts, input, &images);
     let cx = opts.ctx();
+    let default_language = p.default_language().map(|l| l.id);
+    let setup = setup_id.map(|id| {
+        let mut m = extras
+            .as_ref()
+            .and_then(|e| e.setup(&p.disc.languages, default_language, main_id))
+            .unwrap_or_else(|| cx.setup_page(&p.disc.languages, default_language, main_id));
+        m.id = id;
+        m
+    });
     let page_ids: Vec<Id> = out.menus.iter().skip(1).map(|m| m.id).collect();
     let mut menus = out.menus;
 
@@ -925,13 +971,30 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
     menus.extend(setup);
 
     // Pop-up menu for every title.
-    let max_chapters = p.titles.iter().map(|t| t.chapters.len() + 1).max().unwrap_or(0);
-    let mut links = out.popup_links;
-    links.push((gettext("Top Menu"), Action::ShowMenu(main_id)));
-    let popups = cx.popup_menus(&name, max_chapters, &p.disc.languages, &links);
+    let popups = if opts.popups {
+        let mut links = out.popup_links;
+        links.push((gettext("Top Menu"), Action::ShowMenu(main_id)));
+        let input = PopupInput {
+            name: &name,
+            max_chapters: p.titles.iter().map(|t| t.chapters.len() + 1).max().unwrap_or(0),
+            languages: &p.disc.languages,
+            episodes: page_ids.first().copied().filter(|_| !p.titles.is_empty()),
+            main: main_id,
+            setup: setup_id,
+        };
+        popup_menus(&cx, extras.as_ref(), &input, &links)
+    } else {
+        Vec::new()
+    };
     p.disc.popup_menu = popups.first().map(|m| m.id);
     menus.extend(popups);
     p.menus = menus;
+    // Titles that chose a pop-up menu of their own have lost it.
+    for t in &mut p.titles {
+        if matches!(t.popup, PopupChoice::Menu(m) if p.menus.iter().all(|x| x.id != m)) {
+            t.popup = PopupChoice::Default;
+        }
+    }
     for t in &mut p.titles {
         t.return_menu = out.return_to.iter().find(|(id, _)| *id == t.id).map(|(_, m)| *m);
     }
@@ -991,6 +1054,7 @@ pub fn last_options(p: &Project) -> Options {
             disc: t.disc.clone(),
             logo: None,
             custom: t.style.strip_prefix("custom:").and_then(custom::find).map(std::sync::Arc::new),
+            popups: p.popup_menus().next().is_some(),
         },
         None => Options { theme: detect_theme(p), ..Options::new(Style::Classic, &p.disc.name) },
     }
@@ -1257,6 +1321,123 @@ mod tests {
         let mut hd = project(20);
         apply(&mut hd, &with(&both));
         assert!(hd.menus.iter().all(|m| m.shape == MenuShape::Wide));
+    }
+
+    fn languages(names: &[&str]) -> Vec<LanguagePreset> {
+        names.iter().map(|n| LanguagePreset { id: new_id(), name: n.to_string(), audio: "eng".into(), subtitles: SubtitleMode::Off, subtitle_lang: String::new() }).collect()
+    }
+
+    fn actions(m: &Menu) -> Vec<Action> {
+        m.buttons().map(|b| b.button().unwrap().action).collect()
+    }
+
+    #[test]
+    fn popup_menus_are_optional() {
+        let mut p = project(4);
+        apply(&mut p, &opts(Style::Showcase, 0));
+        assert!(p.popup_menus().count() >= 2);
+        let own = p.popup_menus().last().unwrap().id;
+        p.titles[1].popup = PopupChoice::Menu(own);
+        // Applied again without them, they go, and nothing points at them.
+        apply(&mut p, &Options { popups: false, ..opts(Style::Showcase, 0) });
+        assert_eq!(p.popup_menus().count(), 0);
+        assert_eq!(p.disc.popup_menu, None);
+        assert_eq!(p.titles[1].popup, PopupChoice::Default);
+        assert!(!last_options(&p).popups);
+        check(&p);
+    }
+
+    #[test]
+    fn templates_carry_setup_and_popup_menus() {
+        let mut src = project(6);
+        src.disc.languages = languages(&["English", "Japanese · English Subtitles"]);
+        apply(&mut src, &opts(Style::Streaming, 2));
+        // Restyle them, to tell them from the ones Spindle makes.
+        let mark = Rgba::new(0.9, 0.1, 0.5, 1.0);
+        for m in src.menus.iter_mut().filter(|m| m.popup || m.name == "Setup") {
+            m.items.push(MenuItem::new_shape(mark, 0.0, Rect::new(100.0, 700.0, 40.0, 40.0)));
+        }
+        let t = custom::from_project(&src, "Mine", "", "").unwrap();
+        let popup = t.popup.as_ref().expect("the pop-up menu is saved");
+        assert!(t.setup.is_some() && popup.chapters.is_some() && popup.audio.is_some());
+        // It survives being written to a file.
+        let t: custom::CustomTemplate = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+
+        let with = |popups| Options { popups, custom: Some(std::sync::Arc::new(t.clone())), ..opts(Style::Classic, 0) };
+        let marked = |m: &Menu| m.items.iter().any(|i| matches!(&i.kind, ItemKind::Shape(s) if s.fill == mark));
+        let mut p = project(9);
+        p.disc.languages = languages(&["Deutsch", "English"]);
+        let main = apply(&mut p, &with(true));
+        check(&p);
+        let setup = p.disc_menus().find(|m| m.name == "Setup").unwrap();
+        assert!(marked(setup));
+        let chosen: Vec<Id> = actions(setup).iter().filter_map(|a| match a {
+            Action::SetLanguage { preset, menu } => {
+                assert_eq!(*menu, Some(main));
+                Some(*preset)
+            }
+            _ => None,
+        }).collect();
+        assert_eq!(chosen, p.disc.languages.iter().map(|l| l.id).collect::<Vec<_>>());
+        assert!(setup.buttons().any(|b| b.button().unwrap().label == "Deutsch"));
+        let popups: Vec<&Menu> = p.popup_menus().collect();
+        assert_eq!(popups.len(), 3);
+        assert!(popups.iter().all(|m| marked(m) && m.background.color.a == 0.0));
+        assert_eq!(p.disc.popup_menu, Some(popups[0].id));
+        // The pop-up opens its pages, the episodes and the main menu.
+        let links = actions(popups[0]);
+        for target in [popups[1].id, popups[2].id, episode_pages(&p)[0], main] {
+            assert!(links.contains(&Action::ShowMenu(target)));
+        }
+        // Its pages go back to it, and offer every chapter and language.
+        let chapters = p.titles.iter().map(|t| t.chapters.len() + 1).max().unwrap();
+        assert_eq!(actions(popups[1]).iter().filter(|a| matches!(a, Action::PlayChapter(_))).count(), chapters);
+        assert_eq!(actions(popups[2]).iter().filter(|a| matches!(a, Action::SetLanguage { menu, .. } if *menu == Some(popups[0].id))).count(), 2);
+        assert!(popups[1..].iter().all(|m| actions(m).contains(&Action::ShowMenu(popups[0].id))));
+
+        // More choices than the design holds: Spindle makes those menus.
+        let mut many = project(3);
+        many.disc.languages = languages(&["English", "Deutsch", "Français", "Español"]);
+        apply(&mut many, &with(true));
+        check(&many);
+        let setup = many.disc_menus().find(|m| m.name == "Setup").unwrap();
+        assert!(!marked(setup));
+        assert_eq!(actions(setup).iter().filter(|a| matches!(a, Action::SetLanguage { .. })).count(), 4);
+
+        // One language: no Setup, and the pop-up closes up without its button.
+        let mut one = project(3);
+        apply(&mut one, &with(true));
+        check(&one);
+        let popup = one.popup_menus().next().unwrap();
+        assert_eq!(popup.buttons().count(), popups[0].buttons().count() - 1);
+        let (mut left, mut right) = (f64::MAX, f64::MIN);
+        for b in popup.buttons() {
+            left = left.min(b.rect.x);
+            right = right.max(b.rect.x + b.rect.w);
+        }
+        assert!(((left + right) / 2.0 - DESIGN_WIDTH / 2.0).abs() < 1.0, "the row stays centred");
+
+        // And none at all when they aren't wanted.
+        apply(&mut one, &with(false));
+        assert_eq!(one.popup_menus().count(), 0);
+    }
+
+    #[test]
+    fn short_lists_stay_centred() {
+        let mut src = project(2);
+        src.disc.languages = languages(&["A", "B"]);
+        apply(&mut src, &opts(Style::Classic, 0));
+        let mut t = custom::from_project(&src, "Mine", "", "").unwrap();
+        // Room for six choices, a hundred apart.
+        let setup = t.setup.as_mut().unwrap();
+        let top = setup.slot[0].item.rect.y;
+        (setup.rows, setup.step, setup.center) = (6, [0.0, 100.0], true);
+        let mut p = project(2);
+        p.disc.languages = languages(&["A", "B", "C", "D"]);
+        apply(&mut p, &Options { custom: Some(std::sync::Arc::new(t)), ..opts(Style::Classic, 0) });
+        let setup = p.disc_menus().find(|m| m.name == "Setup").unwrap();
+        let ys: Vec<f64> = setup.buttons().filter(|b| matches!(b.button().unwrap().action, Action::SetLanguage { .. })).map(|b| b.rect.y).collect();
+        assert_eq!(ys, [top + 100.0, top + 200.0, top + 300.0, top + 400.0]);
     }
 
     #[test]
