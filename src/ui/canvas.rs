@@ -74,6 +74,9 @@ struct View {
     scale: f64,
     ox: f64,
     oy: f64,
+    /// The part of the canvas shown as the page: all of it, or the middle
+    /// for a 4:3 menu.
+    page: Rect,
 }
 
 impl View {
@@ -326,13 +329,15 @@ impl MenuCanvas {
         let a = &self.inner.area;
         let (w, h) = (a.width() as f64, a.height() as f64);
         let margin = 28.0;
-        let fit = ((w - 2.0 * margin) / DESIGN_WIDTH).min((h - 2.0 * margin) / DESIGN_HEIGHT).max(0.05);
+        let page = self.with_menu(|m| m.shape.frame()).unwrap_or(MenuShape::Wide.frame());
+        let fit = ((w - 2.0 * margin) / page.w).min((h - 2.0 * margin) / page.h).max(0.05);
         let scale = fit * self.inner.zoom.get();
         let (px, py) = self.inner.pan.get();
         View {
             scale,
-            ox: ((w - DESIGN_WIDTH * scale) / 2.0 + px).round(),
-            oy: ((h - DESIGN_HEIGHT * scale) / 2.0 + py).round(),
+            ox: ((w - page.w * scale) / 2.0 - page.x * scale + px).round(),
+            oy: ((h - page.h * scale) / 2.0 - page.y * scale + py).round(),
+            page,
         }
     }
 
@@ -1027,6 +1032,7 @@ impl MenuCanvas {
         let p = doc.project();
         let Some(menu) = doc.current_menu().and_then(|id| p.menu(id)) else { return };
         let v = self.view();
+        let page = v.page;
         let selection = doc.selection();
 
         cr.save().ok();
@@ -1036,12 +1042,12 @@ impl MenuCanvas {
         // drop shadow
         for (off, alpha) in [(2.0, 0.10), (5.0, 0.08), (10.0, 0.05)] {
             cr.set_source_rgba(0.0, 0.0, 0.0, alpha);
-            cr.rectangle(-off / 2.0 / v.scale, off / v.scale, DESIGN_WIDTH + off / v.scale, DESIGN_HEIGHT);
+            cr.rectangle(page.x - off / 2.0 / v.scale, page.y + off / v.scale, page.w + off / v.scale, page.h);
             cr.fill().ok();
         }
 
         cr.save().ok();
-        cr.rectangle(0.0, 0.0, DESIGN_WIDTH, DESIGN_HEIGHT);
+        cr.rectangle(page.x, page.y, page.w, page.h);
         cr.clip();
         let preview = self.inner.preview.get();
         let highlighted = if preview { self.inner.preview_button.get() } else { None };
@@ -1096,21 +1102,6 @@ impl MenuCanvas {
                 cr.stroke().ok();
                 y += GRID;
             }
-        }
-        // A 4:3 menu: the sides are only seen on 16:9 discs.
-        if menu.shape == MenuShape::Standard {
-            let f = menu.shape.frame();
-            cr.set_source_rgba(0.0, 0.0, 0.0, 0.45);
-            cr.rectangle(0.0, 0.0, f.x, DESIGN_HEIGHT);
-            cr.rectangle(f.x + f.w, 0.0, DESIGN_WIDTH - f.x - f.w, DESIGN_HEIGHT);
-            cr.fill().ok();
-            cr.set_source_rgba(1.0, 1.0, 1.0, 0.35);
-            cr.set_line_width(1.5 / v.scale);
-            for x in [f.x, f.x + f.w] {
-                cr.move_to(x, 0.0);
-                cr.line_to(x, DESIGN_HEIGHT);
-            }
-            cr.stroke().ok();
         }
         if self.inner.show_safe_area.get() {
             cr.set_source_rgba(1.0, 1.0, 1.0, 0.25);
@@ -1312,7 +1303,7 @@ impl MenuCanvas {
         if self.inner.area.has_focus() && self.inner.area.is_focus_visible_for_ring() {
             accent(cr, 0.5);
             cr.set_line_width(2.0);
-            cr.rectangle(v.ox - 3.0, v.oy - 3.0, DESIGN_WIDTH * v.scale + 6.0, DESIGN_HEIGHT * v.scale + 6.0);
+            cr.rectangle(v.ox + v.page.x * v.scale - 3.0, v.oy + v.page.y * v.scale - 3.0, v.page.w * v.scale + 6.0, v.page.h * v.scale + 6.0);
             cr.stroke().ok();
         }
     }
@@ -1327,7 +1318,7 @@ impl MenuCanvas {
         let (_, ext) = layout.pixel_extents();
         let (tw, th) = (ext.width() as f64 + 32.0, ext.height() as f64 + 16.0);
         // Below the page when there is room, else over its bottom edge.
-        let page_bottom = v.oy + DESIGN_HEIGHT * v.scale;
+        let page_bottom = v.oy + (v.page.y + v.page.h) * v.scale;
         let by = if page_bottom + th + 10.0 <= h { page_bottom + (h - page_bottom - th) / 2.0 } else { page_bottom - th - 16.0 };
         let (bx, by) = ((w - tw) / 2.0, by.max(8.0));
         render::rounded_rect(cr, Rect::new(bx, by, tw, th), th / 2.0);
