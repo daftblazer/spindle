@@ -409,7 +409,7 @@ impl Inspector {
                     m.background.video_start = t;
                 }
             });
-            let music = p.menu_music_length(m).is_some();
+            let music = p.menu_music(m).is_some();
             start.set_subtitle(&format!(
                 "{} · {}",
                 format_time(m.background.video_start),
@@ -439,16 +439,73 @@ impl Inspector {
         let (labels, sel) = optional_choice(&gettext("Silent"), &audio, m.audio);
         let music_row = rows::combo(doc, &gettext("Music"), &labels, sel, Change::Structure, move |p, i| {
             if let Some(m) = p.menu_mut(id) {
-                m.audio = pick(&audio, i);
+                let new = pick(&audio, i);
+                if new != m.audio {
+                    m.music_section = None;
+                }
+                m.audio = new;
             }
         });
-        music_row.set_subtitle(&match p.menu_music_length(m) {
+        // The whole file, when the menu has music.
+        let whole = p.menu_music(m).and_then(|_| p.asset(m.audio?)).map(|a| a.info.duration);
+        music_row.set_subtitle(&match whole {
+            Some(_) if m.music_section.is_some() => gettext("Loops the section below"),
             Some(d) if d > MAX_MENU_LOOP => gettext("Plays its first {} minutes, then starts over").replace("{}", &((MAX_MENU_LOOP / 60.0) as u32).to_string()),
             Some(d) => format!("{} · {}", format_time(d), gettext("plays to its end, then starts over")),
             None => gettext("Plays to its end, then starts over"),
         });
+        if whole.is_some() {
+            music_row.add_suffix(&super::music_preview::button(doc, id));
+        }
         music_row.add_suffix(&pick_button(&gettext("Choose Music File…"), "win.menu-music"));
         g.add(&music_row);
+        if let Some(whole) = whole {
+            let row = rows::switch(doc, &gettext("Loop a Section"), m.music_section.is_some(), Change::Structure, move |p, v| {
+                if let Some(m) = p.menu_mut(id) {
+                    m.music_section = v.then(|| MusicSection { start: 0.0, length: whole.min(30.0) });
+                }
+            });
+            row.set_subtitle(&gettext("Use only part of the file, such as a scene from an episode"));
+            g.add(&row);
+        }
+        if let (Some(whole), Some((start, length))) = (whole, p.menu_music(m).filter(|_| m.music_section.is_some())) {
+            let row = rows::spin(doc, &gettext("Starts At"), start, 0.0, (whole - 1.0).max(0.0), 1.0, 1, Change::Content, move |p, v| {
+                if let Some(s) = p.menu_mut(id).and_then(|m| m.music_section.as_mut()) {
+                    s.start = v;
+                }
+            });
+            row.set_subtitle(&format_time(start));
+            row.connect_value_notify(|r| r.set_subtitle(&format_time(r.value())));
+            // Find the scene by eye in a video.
+            if let Some(a) = m.audio.and_then(|a| p.asset(a)).filter(|a| a.kind == AssetKind::Video) {
+                let button = gtk::Button::builder()
+                    .icon_name("document-edit-symbolic")
+                    .tooltip_text(gettext("Choose From the Video…"))
+                    .valign(gtk::Align::Center)
+                    .css_classes(["flat"])
+                    .build();
+                let (doc, path, fps, spin) = (doc.clone(), a.path.clone(), a.info.fps, row.clone());
+                button.connect_clicked(move |b| {
+                    let doc = doc.clone();
+                    super::frame_picker::present(b, &gettext("Music Starts At"), path.clone(), whole, fps, spin.value(), &[], move |t| {
+                        doc.edit(Change::Structure, |p| {
+                            if let Some(s) = p.menu_mut(id).and_then(|m| m.music_section.as_mut()) {
+                                s.start = t;
+                            }
+                        });
+                    });
+                });
+                row.add_suffix(&button);
+            }
+            g.add(&row);
+            let row = rows::spin(doc, &gettext("Length"), length, 1.0, whole.min(MAX_MENU_LOOP), 1.0, 1, Change::Content, move |p, v| {
+                if let Some(s) = p.menu_mut(id).and_then(|m| m.music_section.as_mut()) {
+                    s.length = v;
+                }
+            });
+            row.set_subtitle(&gettext("Seconds"));
+            g.add(&row);
+        }
         background.add(&g);
 
         self.timing_group(timing, id);

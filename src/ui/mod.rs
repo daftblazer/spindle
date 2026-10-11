@@ -10,6 +10,7 @@ pub mod compat_dialog;
 pub mod frame_picker;
 pub mod inspector;
 pub mod media_bin;
+pub mod music_preview;
 pub mod player;
 pub mod pre_encode;
 pub mod preview_dialog;

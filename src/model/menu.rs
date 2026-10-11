@@ -442,6 +442,14 @@ impl Default for Background {
     }
 }
 
+/// The part of a longer file (an episode, a whole song) used as a menu's
+/// music, in seconds.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct MusicSection {
+    pub start: f64,
+    pub length: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Menu {
     pub id: Id,
@@ -449,6 +457,9 @@ pub struct Menu {
     pub background: Background,
     /// Audio asset looped with the menu.
     pub audio: Option<Id>,
+    /// Loop only this part of the audio rather than all of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub music_section: Option<MusicSection>,
     /// Loop length of a motion background, in seconds. Music plays for its
     /// own length instead (see `Project::menu_loop`).
     pub duration: f64,
@@ -525,6 +536,7 @@ impl Menu {
             background: Background::default(),
             audio: None,
             duration: 30.0,
+            music_section: None,
             items: Vec::new(),
             default_button: None,
             popup: false,

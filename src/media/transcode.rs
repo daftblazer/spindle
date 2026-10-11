@@ -457,11 +457,12 @@ pub fn passthrough_args(src: &Source, set: &EncodeSettings, audio: &[AudioInput]
 ///   color/image, texts, images, thumbnails).
 /// * `motion` – optional video looped underneath `still` (which then must
 ///   be transparent where the video should show).
-/// * `audio` – optional audio looped for the menu duration.
+/// * `audio` – optional audio played from a start time for the menu
+///   duration.
 pub fn menu_args(
     still: &Path,
     motion: Option<(&Path, &MediaInfo, f64)>,
-    audio: Option<(&Path, &MediaInfo)>,
+    audio: Option<(&Path, &MediaInfo, f64)>,
     duration: f64,
     set: &EncodeSettings,
     output: &Path,
@@ -490,7 +491,10 @@ pub fn menu_args(
         next_input += 1;
         video_filter = format!("[0:v]{}[v]", picture::frame_filters(set.video));
     }
-    if let Some((p, _)) = audio {
+    if let Some((p, _, start)) = audio {
+        if start > 0.0 {
+            a.extend([s("-ss"), format!("{start:.3}")]);
+        }
         a.extend([s("-stream_loop"), s("-1"), s("-i"), path(p)]);
     }
     a.extend([s("-filter_complex"), video_filter, s("-map"), s("[v]")]);
@@ -500,7 +504,7 @@ pub fn menu_args(
     a.extend([s("-t"), format!("{duration:.3}")]);
     let bitrate = if motion.is_some() { set.video_bitrate } else { set.video_bitrate.min(15_000) };
     a.extend(video_args(set, bitrate, None));
-    if let Some((_, info)) = audio {
+    if let Some((_, info, _)) = audio {
         a.extend(encode_audio(set, 0, output_channels(info.audio_channels)));
     }
     // Leave room before the first frame for the IG stream to be decoded.

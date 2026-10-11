@@ -1302,7 +1302,7 @@ impl<'a> Builder<'a> {
         let args = transcode::menu_args(
             &still,
             motion.map(|a| (a.path.as_path(), &a.info, m.background.video_start)),
-            audio.map(|a| (a.path.as_path(), &a.info)),
+            audio.map(|a| (a.path.as_path(), &a.info, p.menu_music(m).map_or(0.0, |(start, _)| start))),
             duration,
             &self.menu_settings,
             &tmp,

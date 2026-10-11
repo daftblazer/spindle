@@ -631,6 +631,7 @@ impl SpindleWindow {
                 doc.edit(Change::Structure, |p| {
                     if let Some(m) = p.menu_mut(menu) {
                         m.audio = Some(asset);
+                        m.music_section = None;
                     }
                 });
             });

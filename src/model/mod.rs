@@ -603,16 +603,28 @@ impl Project {
         self.menus.iter_mut().find(|m| m.id == id)
     }
 
-    /// Length of a menu's music, in seconds, if it has any.
-    pub fn menu_music_length(&self, m: &Menu) -> Option<f64> {
+    /// The part of its music file a menu plays, as (start, length) in
+    /// seconds: its section, or the whole file.
+    pub fn menu_music(&self, m: &Menu) -> Option<(f64, f64)> {
         let a = m.audio.and_then(|a| self.asset(a))?;
-        (a.info.has_audio() && a.info.duration > 0.0).then_some(a.info.duration)
+        let whole = a.info.duration;
+        if !a.info.has_audio() || whole <= 0.0 {
+            return None;
+        }
+        let (start, length) = match m.music_section {
+            Some(s) => {
+                let start = s.start.clamp(0.0, (whole - 1.0).max(0.0));
+                (start, s.length.min(whole - start))
+            }
+            None => (0.0, whole),
+        };
+        Some((start, length.clamp(1.0, MAX_MENU_LOOP)))
     }
 
     /// How long a menu's loop lasts, in seconds: as long as its music, or
     /// its Loop Length when it only has a motion video.
     pub fn menu_loop(&self, m: &Menu) -> f64 {
-        self.menu_music_length(m).map_or(m.duration, |d| d.min(MAX_MENU_LOOP)).max(1.0)
+        self.menu_music(m).map_or(m.duration.max(1.0), |(_, length)| length)
     }
 
     /// Add a title for a video asset (or return the existing one).
@@ -884,6 +896,11 @@ mod tests {
         assert_eq!(p.menu_loop(&menu), 23.7);
         p.assets[0].info.duration = 3600.0;
         assert_eq!(p.menu_loop(&menu), MAX_MENU_LOOP);
+        // A section of it, kept inside the file.
+        p.menus[0].music_section = Some(MusicSection { start: 90.0, length: 20.0 });
+        assert_eq!(p.menu_music(&p.menus[0]), Some((90.0, 20.0)));
+        p.menus[0].music_section = Some(MusicSection { start: 3590.0, length: 20.0 });
+        assert_eq!(p.menu_music(&p.menus[0]), Some((3590.0, 10.0)));
     }
 
     #[test]
