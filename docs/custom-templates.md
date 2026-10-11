@@ -132,13 +132,14 @@ of the canvas (x from 240 to 1680), which fills the screen of a 4:3 SD disc;
 its safe area is 5% in from those edges. For a show on both kinds of disc,
 make two templates ("Night Sky" and "Night Sky (4:3)").
 
-Either can be applied to any disc: a 16:9 template on a 4:3 disc is
-letterboxed, and a 4:3 template on a 16:9 disc sits in the middle of the
-screen. The template gallery says when a template was made for the other
+A template is meant for discs of its shape. Applied to the other kind, the
+menus still take the disc's shape: a 16:9 design loses its sides on a 4:3
+disc, and a 4:3 design sits in the middle of a 16:9 screen. The template gallery says when a template was made for the other
 shape.
 
-In Spindle, a menu's **Shape** (in its properties) is 16:9 or 4:3; the
-canvas shades the sides of 4:3 menus. Saving 4:3 menus makes a 4:3 template.
+In Spindle, all of a disc's menus have the shape of its **Menu Format**
+(Disc Settings): 4:3 in a 4:3 format, 16:9 otherwise. The editor shows 4:3
+menus as a 4:3 page, and saving them makes a 4:3 template.
 
 Older templates could hold a 4:3 design beside the 16:9 one, in
 `"standard"`. Spindle reads such a file as two templates, the 4:3 one with

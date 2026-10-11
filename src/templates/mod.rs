@@ -999,6 +999,8 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
         t.return_menu = out.return_to.iter().find(|(id, _)| *id == t.id).map(|(_, m)| *m);
     }
     p.first_play = FirstPlay::FirstMenu;
+    // Menus have the shape of the disc's, whichever the design was made for.
+    p.sync_menu_shapes();
     p.template = Some(TemplateInfo {
         style: opts.record(),
         theme: opts.theme,
@@ -1305,17 +1307,29 @@ mod tests {
         let t_square = custom::from_project(&square, "Both (4:3)", "", "").unwrap();
         assert_eq!(t_square.shape, MenuShape::Standard);
 
-        // Each makes menus of its own shape, whatever the disc.
+        // Menus take the shape of the disc's format, whichever the template.
         let with = |c: &custom::CustomTemplate| Options { custom: Some(std::sync::Arc::new(c.clone())), ..opts(Style::Classic, 0) };
-        for format in [VideoFormat::I480_2997_4x3, VideoFormat::P1080_23976] {
+        for (format, shape) in [(VideoFormat::I480_2997_4x3, MenuShape::Standard), (VideoFormat::P1080_23976, MenuShape::Wide)] {
             for t in [&t_wide, &t_square] {
                 let mut p = project(20);
                 p.disc.languages = languages(&["English", "Deutsch"]);
                 p.disc.video = format;
                 apply(&mut p, &with(t));
-                assert!(p.menus.iter().all(|m| m.shape == t.shape), "{format:?}");
+                assert!(p.menus.iter().all(|m| m.shape == shape), "{format:?}");
             }
         }
+        // Menus added later do, too.
+        let mut p = project(4);
+        p.disc.video = VideoFormat::I480_2997_4x3;
+        apply(&mut p, &opts(Style::Showcase, 0));
+        p.menus.push(Menu::new("Extras"));
+        p.sync_menu_shapes();
+        assert!(p.menus.iter().all(|m| m.shape == MenuShape::Standard));
+        // Pop-ups are drawn over the titles: HD menus on this 4:3 disc are
+        // 16:9, its pop-ups 4:3.
+        p.disc.menu_video = Some(VideoFormat::P1080_23976);
+        p.sync_menu_shapes();
+        assert!(p.menus.iter().all(|m| (m.shape == MenuShape::Standard) == m.popup));
 
         // A file from when one template held both designs is two templates.
         let json = |t: &custom::CustomTemplate| serde_json::to_value(t).unwrap();

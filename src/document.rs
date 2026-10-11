@@ -180,6 +180,8 @@ impl Document {
     /// Apply `f` without recording an undo point (continuation of a drag).
     pub fn edit_silent<R>(&self, change: Change, f: impl FnOnce(&mut Project) -> R) -> R {
         let r = f(&mut self.project.borrow_mut());
+        // Menus follow the shape Disc Settings gives them.
+        self.project.borrow_mut().sync_menu_shapes();
         self.dirty.set(true);
         self.fix_selection();
         self.notify(change);

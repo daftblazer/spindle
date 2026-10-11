@@ -543,10 +543,7 @@ impl SpindleWindow {
             let doc = w.doc();
             let n = doc.project().menus.len() + 1;
             let id = doc.edit(Change::Structure, |p| {
-                let mut m = Menu::new(&format!("{} {n}", gettext("Menu")));
-                if p.disc.menu_format().is_4x3() {
-                    m.shape = MenuShape::Standard;
-                }
+                let m = Menu::new(&format!("{} {n}", gettext("Menu")));
                 let id = m.id;
                 p.menus.push(m);
                 id

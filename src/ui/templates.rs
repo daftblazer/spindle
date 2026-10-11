@@ -187,8 +187,8 @@ impl State {
         // A template made for the other shape of screen still works.
         let square = p.disc.menu_format().is_4x3();
         match self.selected_custom().filter(|_| self.custom_mode.get()).map(|t| t.shape) {
-            Some(MenuShape::Standard) if !square => summary = format!("{summary} · {}", gettext("Made for 4:3 discs: on this 16:9 disc its menus sit in the middle of the screen")),
-            Some(MenuShape::Wide) if square => summary = format!("{summary} · {}", gettext("Made for 16:9 discs: on this 4:3 disc its menus are letterboxed")),
+            Some(MenuShape::Standard) if !square => summary = format!("{summary} · {}", gettext("Made for 4:3 discs: on this 16:9 disc it sits in the middle of the screen")),
+            Some(MenuShape::Wide) if square => summary = format!("{summary} · {}", gettext("Made for 16:9 discs: on this 4:3 disc its sides are cut off")),
             _ => {}
         }
         self.summary.set_label(&summary);

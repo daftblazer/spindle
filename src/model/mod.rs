@@ -489,7 +489,19 @@ impl Project {
     }
 
     /// Bring projects saved by older versions up to date.
+    /// Every menu has the shape of its video format (Disc Settings): 4:3
+    /// menus in a 4:3 format, 16:9 ones otherwise. Pop-up menus are in the
+    /// titles' format.
+    pub fn sync_menu_shapes(&mut self) {
+        for i in 0..self.menus.len() {
+            let square = self.disc.format_of(&self.menus[i]).is_4x3();
+            self.menus[i].shape = if square { MenuShape::Standard } else { MenuShape::Wide };
+        }
+    }
+
     fn migrate(&mut self) {
+        // Menus used to have a shape each.
+        self.sync_menu_shapes();
         let infos: std::collections::HashMap<Id, MediaInfo> = self.assets.iter().map(|a| (a.id, a.info.clone())).collect();
         for t in &mut self.titles {
             let lang = std::mem::take(&mut t.audio_lang);

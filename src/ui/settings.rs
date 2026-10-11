@@ -58,7 +58,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     });
     let explain = |f: VideoFormat| {
         if f.is_4x3() {
-            gettext("SD (DVD resolution) for 4:3 TVs: wide video is letterboxed, and 16:9 menus are too")
+            gettext("SD (DVD resolution) for 4:3 TVs: wide video is letterboxed, and menus are 4:3")
         } else if f.is_sd() {
             gettext("SD (DVD resolution), widescreen")
         } else if f.interlaced() {
@@ -77,7 +77,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     let menu_row = rows::combo(doc, &gettext("Menu Format"), &menu_formats, sel, Change::Content, |p, i| {
         p.disc.menu_video = i.checked_sub(1).and_then(|i| VideoFormat::ALL.get(i)).copied();
     });
-    menu_row.set_subtitle(&gettext("Menus can stay in HD on a disc of SD titles, which leaves room for many more"));
+    menu_row.set_subtitle(&gettext("Menus can stay in HD on a disc of SD titles, which leaves room for many more. In a 4:3 format, menus are 4:3"));
     menu_row.set_subtitle_lines(2);
     g.add(&menu_row);
     let br = rows::spin(doc, &gettext("Average Bitrate"), d.video_bitrate as f64 / 1000.0, 1.5, 35.0, 0.5, 1, Change::Content, |p, v| {
