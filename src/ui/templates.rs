@@ -187,8 +187,8 @@ impl State {
         // A template made for the other shape of screen still works.
         let square = p.disc.menu_format().is_4x3();
         match self.selected_custom().filter(|_| self.custom_mode.get()).map(|t| t.shape) {
-            Some(MenuShape::Standard) if !square => summary = format!("{summary} · {}", gettext("Made for 4:3 discs: on this 16:9 disc it sits in the middle of the screen")),
-            Some(MenuShape::Wide) if square => summary = format!("{summary} · {}", gettext("Made for 16:9 discs: on this 4:3 disc its sides are cut off")),
+            Some(MenuShape::Standard) if !square => summary = format!("{summary} · {}", gettext("Designed for 4:3 discs. On this 16:9 disc, it is centered on the screen")),
+            Some(MenuShape::Wide) if square => summary = format!("{summary} · {}", gettext("Designed for 16:9 discs. On this 4:3 disc, its sides are cropped")),
             _ => {}
         }
         self.summary.set_label(&summary);
@@ -267,7 +267,7 @@ pub fn present(
 
     let has_content = doc.project().menus.iter().any(|m| !m.items.is_empty());
     let banner = adw::Banner::builder()
-        .title(gettext("Applying a template replaces your current menus. You can undo it."))
+        .title(gettext("Applying a template replaces the current menus. This can be undone."))
         .revealed(has_content)
         .build();
     toolbar.add_top_bar(&banner);
@@ -337,13 +337,13 @@ pub fn present(
     let group = adw::PreferencesGroup::builder().title(gettext("Title")).build();
     let title_row = adw::EntryRow::builder().title(gettext("Name on the Main Menu")).text(doc.project().disc.name.clone()).build();
     group.add(&title_row);
-    let season_row = adw::EntryRow::builder().title(gettext("Season (optional, e.g. “Season 2”)")).build();
+    let season_row = adw::EntryRow::builder().title(gettext("Season (optional, such as “Season 2”)")).build();
     group.add(&season_row);
-    let disc_row = adw::EntryRow::builder().title(gettext("Disc (optional, e.g. “Disc 1”)")).build();
+    let disc_row = adw::EntryRow::builder().title(gettext("Disc (optional, such as “Disc 1”)")).build();
     group.add(&disc_row);
     let logo_row = adw::ComboRow::builder()
         .title(gettext("Title Image"))
-        .subtitle(gettext("A logo, e.g. a transparent PNG, shown instead of the name"))
+        .subtitle(gettext("A logo, such as a transparent PNG, shown in place of the name"))
         .build();
     let logo_choices: Rc<RefCell<Vec<crate::model::Id>>> = Rc::new(RefCell::new(Vec::new()));
     let fill_logos = {
@@ -370,7 +370,7 @@ pub fn present(
     group.add(&logo_row);
     let popups_row = adw::SwitchRow::builder()
         .title(gettext("Pop-up Menus"))
-        .subtitle(gettext("Chapters, audio and subtitles over the video, with the remote's Pop-up key"))
+        .subtitle(gettext("Chapter, audio and subtitle menus shown over the video with the Pop-up key on the remote"))
         .active(true)
         .build();
     group.add(&popups_row);
@@ -573,7 +573,7 @@ pub fn present(
             let Some((path, t)) = s.customs.borrow().get(s.custom_index.get()).cloned() else { return };
             let ask = adw::AlertDialog::builder()
                 .heading(gettext("Remove “{}”?").replace("{}", &t.name))
-                .body(gettext("The template is removed from Spindle. Projects made with it keep their menus."))
+                .body(gettext("The template will be removed from Spindle. Projects created with it keep their menus."))
                 .build();
             ask.add_responses(&[("cancel", &gettext("_Cancel")), ("remove", &gettext("_Remove"))]);
             ask.set_response_appearance("remove", adw::ResponseAppearance::Destructive);

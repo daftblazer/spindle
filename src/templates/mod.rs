@@ -270,13 +270,13 @@ impl Style {
             Style::ClassicList => gettext("The classic main menu with a list of episode names and running times"),
             Style::Showcase => gettext("Full-screen artwork fading into a large title, with big episode cards"),
             Style::ShowcaseList => gettext("The showcase main menu, with a list of episode names and running times over the artwork"),
-            Style::Minimal => gettext("Elegant centred type on a plain background and a two-column episode list"),
+            Style::Minimal => gettext("Elegant centered type on a plain background and a two-column episode list"),
             Style::Streaming => gettext("Artwork in the corner, the title and buttons on the left, and episode rows with stills"),
             Style::Split => gettext("A colored side panel with a season badge beside a mosaic of episode stills"),
             Style::Broadcast => gettext("Bold condensed type, a header bar and a TV-guide style episode listing"),
             Style::MovieClassic => gettext("Full-screen artwork with Play Movie, scene selection and extras"),
             Style::MovieShowcase => gettext("Artwork fading into a large title, with scene cards"),
-            Style::MovieMinimal => gettext("Centred type on a plain background, with a chapter list"),
+            Style::MovieMinimal => gettext("Centered type on a plain background, with a chapter list"),
             Style::Collection => gettext("A simple list of every title with Play All"),
         }
     }

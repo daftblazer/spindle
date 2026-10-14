@@ -53,9 +53,9 @@ pub(super) fn summary(error: &str, stage: &str) -> String {
     let first = error.lines().find(|l| !l.trim().is_empty()).unwrap_or(error).trim();
     if first.starts_with("ffmpeg failed") {
         // The real reason is in ffmpeg's log (see Details).
-        gettext("The encoder stopped with an error while: {}. See Details.").replace("{}", stage)
+        gettext("The encoder reported an error during this step: {}. See Details for more information.").replace("{}", stage)
     } else if error.lines().count() > 3 {
-        format!("{first}\n{}", gettext("See Details for more."))
+        format!("{first}\n{}", gettext("See Details for more information."))
     } else {
         error.trim().to_string()
     }
@@ -92,16 +92,16 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         move || {
             folder_row.set_visible(!burning.get());
             if burning.get() {
-                g.set_description(Some(&gettext("Builds the disc, burns it to a BD-R or BD-RE, and checks what was written.")));
+                g.set_description(Some(&gettext("Builds the disc, burns it to a BD-R or BD-RE, and verifies the result.")));
                 return;
             }
             let image = build::is_image(&output.borrow());
             folder_row.set_title(&if image { gettext("File") } else { gettext("Folder") });
             folder_row.set_subtitle(&output.borrow().to_string_lossy());
             g.set_description(Some(&if image {
-                gettext("A single file to burn to a BD-R with any disc burning app, or to open in VLC or Kodi.")
+                gettext("A single file that can be burned with any disc burning application or played in VLC or Kodi.")
             } else {
-                gettext("A BDMV folder that plays in VLC or Kodi; burning it needs a tool that writes UDF 2.50.")
+                gettext("A BDMV folder that plays in VLC or Kodi. Burning it requires a tool that writes UDF 2.50.")
             }));
         }
     };
@@ -128,7 +128,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     let fit = gtk::MenuButton::builder()
         .label(gettext("Fit to Disc"))
         .valign(gtk::Align::Center)
-        .tooltip_text(gettext("Choose the video bitrate that fills a disc"))
+        .tooltip_text(gettext("Set the video bitrate to fill a disc"))
         .popover(&gtk::Popover::builder().child(&fit_box).build())
         .build();
     size_row.add_suffix(&fit);
@@ -142,8 +142,8 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     if cache_size > 0 {
         let cg = adw::PreferencesGroup::new();
         let row = adw::ActionRow::builder()
-            .title(gettext("Earlier Encodes"))
-            .subtitle(gettext("{} GB kept, so rebuilding after changes skips encoding videos again").replace("{}", &format!("{:.1}", cache_size as f64 / 1e9)))
+            .title(gettext("Encode Cache"))
+            .subtitle(gettext("{} GB stored, so unchanged videos are not re-encoded when the disc is rebuilt").replace("{}", &format!("{:.1}", cache_size as f64 / 1e9)))
             .subtitle_lines(2)
             .build();
         let clear = gtk::Button::builder().label(gettext("Clear")).valign(gtk::Align::Center).build();
@@ -188,7 +188,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                 let any = build::pre_encodes(&p).iter().any(Option::is_some);
                 ahead_row.set_visible(any);
                 if any {
-                    let text = gettext("{} at CRF {q}, used as they are instead of the average bitrate");
+                    let text = gettext("{} at CRF {q}, used unchanged in place of the average bitrate");
                     ahead_row.set_subtitle(&text.replace("{}", &super::pre_encode::status(&p)).replace("{q}", &p.disc.crf.to_string()));
                 }
             }
@@ -201,12 +201,12 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                     .collect();
                 (validate::check(&p), validate::estimated_bytes(&p), fits)
             };
-            let disc = validate::disc_for(bytes).map_or_else(|| gettext("too big for any disc"), |(d, _)| d.to_string());
+            let disc = validate::disc_for(bytes).map_or_else(|| gettext("too large for any disc"), |(d, _)| d.to_string());
             size_row.set_subtitle(&format!("{:.1} GB · {disc}", bytes / 1e9));
             let (secs, measured) = build::estimate_seconds(&doc.project());
             let mut time = if secs < 60.0 { gettext("Under a minute") } else { gettext("About {}").replace("{}", &super::build_progress::duration_text(secs)) };
             if !measured && secs >= 60.0 {
-                time.push_str(&format!(" · {}", gettext("a rough guess until Spindle has timed a build on this computer")));
+                time.push_str(&format!(" · {}", gettext("a rough estimate until a build has been timed on this computer")));
             }
             time_row.set_subtitle(&time);
 
@@ -479,7 +479,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                                 result.set_title(&gettext("Disc Ready"));
                                 result.set_description(Some(&format!(
                                     "{}\n<small>{}</small>",
-                                    if build::is_image(&path) { gettext("Your disc image has been written.") } else { gettext("Your Blu-ray folder has been written.") },
+                                    if build::is_image(&path) { gettext("The disc image has been created.") } else { gettext("The Blu-ray folder has been created.") },
                                     glib::markup_escape_text(&path.to_string_lossy())
                                 )));
                                 open_btn.set_visible(true);

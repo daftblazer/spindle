@@ -22,7 +22,7 @@ fn music(doc: &Document, menu: Id) -> Option<(PathBuf, f64, f64)> {
 
 fn show(button: &gtk::Button, playing: bool) {
     button.set_icon_name(if playing { "media-playback-stop-symbolic" } else { "media-playback-start-symbolic" });
-    button.set_tooltip_text(Some(&if playing { gettext("Stop") } else { gettext("Listen to the Loop") }));
+    button.set_tooltip_text(Some(&if playing { gettext("Stop") } else { gettext("Preview the Loop") }));
 }
 
 pub fn button(doc: &Rc<Document>, menu: Id) -> gtk::Button {

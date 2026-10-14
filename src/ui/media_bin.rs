@@ -68,7 +68,7 @@ impl MediaBin {
         text.append(&gtk::Label::builder().label(gettext("No Media Yet")).xalign(0.0).css_classes(["title-4"]).build());
         text.append(
             &gtk::Label::builder()
-                .label(gettext("Drop video, image or audio files here, or import them"))
+                .label(gettext("Drop video, image or audio files here, or choose Import"))
                 .xalign(0.0)
                 .wrap(true)
                 .css_classes(["dim-label"])

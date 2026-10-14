@@ -35,7 +35,7 @@ impl TitleView {
         // Shown when the system cannot play the file (missing GStreamer codecs).
         let poster = gtk::Picture::builder().content_fit(gtk::ContentFit::Contain).vexpand(true).build();
         let note = gtk::Label::builder()
-            .label(gettext("Preview unavailable: no GStreamer decoder for this video. Chapters can still be generated from the inspector."))
+            .label(gettext("Preview unavailable. No GStreamer decoder is installed for this video. Chapters can still be generated from the inspector."))
             .wrap(true)
             .justify(gtk::Justification::Center)
             .css_classes(["dim-label"])
@@ -79,7 +79,7 @@ impl TitleView {
         let preview = tool(
             "media-playback-start-symbolic",
             gettext("_Preview…"),
-            gettext("Encode a short clip like the disc and play it (Ctrl+P)"),
+            gettext("Encode a short clip with the disc's settings and play it (Ctrl+P)"),
         );
         preview.set_action_name(Some("win.preview-title"));
         preview.remove_css_class("flat");

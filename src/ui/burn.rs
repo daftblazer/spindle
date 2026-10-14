@@ -46,7 +46,7 @@ impl BurnOptions {
         status_row.add_prefix(&status_icon);
         let verify_row = adw::SwitchRow::builder()
             .title(gettext("Verify After Burning"))
-            .subtitle(gettext("Read the disc back and compare it with the image"))
+            .subtitle(gettext("Reads the disc back and compares it with the image"))
             .active(true)
             .build();
         let eject_row = adw::SwitchRow::builder().title(gettext("Eject When Done")).active(true).build();
@@ -145,7 +145,7 @@ impl BurnOptions {
 
     fn show(&self) {
         let (text, icon, class) = match (self.drive(), &*self.state.borrow()) {
-            (None, _) => (gettext("No disc burner found"), "dialog-warning-symbolic", "warning"),
+            (None, _) => (gettext("No Blu-ray burner found"), "dialog-warning-symbolic", "warning"),
             (Some(_), None) => (gettext("Checking…"), "media-optical-symbolic", ""),
             (Some(_), Some(state)) => match describe(state) {
                 (text, true) => (text, "object-select-symbolic", "success"),
@@ -170,7 +170,7 @@ impl BurnOptions {
         match &*self.state.borrow() {
             None => Some(gettext("Checking the disc…")),
             Some(DiscState::Ready(d)) if describe_disc(d).1 => (bytes > d.free as f64 && !d.rewritable).then(|| {
-                gettext("The disc has {free} GB free; this disc needs {need} GB")
+                gettext("The disc has {free} GB free, but this project requires {need} GB")
                     .replace("{free}", &format!("{:.1}", d.free as f64 / 1e9))
                     .replace("{need}", &format!("{:.1}", bytes / 1e9))
             }),
@@ -188,7 +188,7 @@ impl BurnOptions {
 fn describe(state: &DiscState) -> (String, bool) {
     match state {
         DiscState::NoDisc => (gettext("Insert a blank BD-R or a BD-RE"), false),
-        DiscState::Busy => (gettext("The disc is in use (mounted or open in another app). Eject it, or close the app using it."), false),
+        DiscState::Busy => (gettext("The disc is in use by another application. Eject it or close that application."), false),
         DiscState::Ready(d) => describe_disc(d),
     }
 }
@@ -196,15 +196,15 @@ fn describe(state: &DiscState) -> (String, bool) {
 fn describe_disc(d: &Disc) -> (String, bool) {
     let gb = format!("{:.1}", d.free as f64 / 1e9);
     if !d.is_bluray() {
-        return (gettext("This is a {kind}; Blu-ray discs need a BD-R or BD-RE").replace("{kind}", &d.kind), false);
+        return (gettext("This is a {kind}. A BD-R or BD-RE is required").replace("{kind}", &d.kind), false);
     }
     if d.blank {
         return (gettext("Blank {kind} · {gb} GB free").replace("{kind}", &d.kind).replace("{gb}", &gb), true);
     }
     if d.rewritable {
-        return (gettext("{kind} with data on it · it will be erased").replace("{kind}", &d.kind), true);
+        return (gettext("{kind} containing data · it will be erased").replace("{kind}", &d.kind), true);
     }
-    (gettext("This {kind} has already been written; insert a blank disc").replace("{kind}", &d.kind), false)
+    (gettext("This {kind} has already been written. Insert a blank disc").replace("{kind}", &d.kind), false)
 }
 
 /// Burn `image` to `target` (then verify and eject), reporting progress
@@ -264,7 +264,7 @@ pub fn confirm_erase(parent: &impl IsA<gtk::Widget>, target: &Target, go: impl F
     }
     let dialog = adw::AlertDialog::builder()
         .heading(gettext("Erase the Disc?"))
-        .body(gettext("Everything on the rewritable disc will be erased before burning."))
+        .body(gettext("All data on the rewritable disc will be erased before burning."))
         .build();
     dialog.add_responses(&[("cancel", &gettext("_Cancel")), ("erase", &gettext("_Erase and Burn"))]);
     dialog.set_response_appearance("erase", adw::ResponseAppearance::Destructive);
@@ -376,14 +376,14 @@ pub fn show_result(result: &adw::StatusPage, res: Result<(), String>) {
         Ok(()) => {
             result.set_icon_name(Some("object-select-symbolic"));
             result.set_title(&gettext("Disc Burned"));
-            result.set_description(Some(&gettext("The disc has been written.")));
+            result.set_description(Some(&gettext("The disc has been burned successfully.")));
         }
         Err(e) => {
             let cancelled = e.contains("cancelled");
             result.set_icon_name(Some(if cancelled { "process-stop-symbolic" } else { "dialog-error-symbolic" }));
             result.set_title(&if cancelled { gettext("Burning Stopped") } else { gettext("Burning Failed") });
             result.set_description(Some(&glib::markup_escape_text(if cancelled {
-                "A partly written BD-R can't be used again; a BD-RE can be erased and burned again."
+                "A partly written BD-R cannot be reused. A BD-RE can be erased and burned again."
             } else {
                 &e
             })));

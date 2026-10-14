@@ -297,8 +297,8 @@ pub fn load(path: &Path) -> anyhow::Result<Vec<CustomTemplate>> {
 
 /// The templates in the contents of file `name`.
 pub(super) fn parse(data: &[u8], name: &str) -> anyhow::Result<Vec<CustomTemplate>> {
-    let t: CustomTemplate = serde_json::from_slice(data).with_context(|| format!("{name} isn't a Spindle template"))?;
-    anyhow::ensure!(t.format == FORMAT, "{name} isn't a Spindle template");
+    let t: CustomTemplate = serde_json::from_slice(data).with_context(|| format!("{name} is not a Spindle template"))?;
+    anyhow::ensure!(t.format == FORMAT, "{name} is not a Spindle template");
     anyhow::ensure!(t.version <= 1, "{name} needs a newer version of Spindle");
     Ok(t.split())
 }

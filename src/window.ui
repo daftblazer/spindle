@@ -265,7 +265,7 @@
                                         <child>
                                           <object class="GtkButton">
                                             <property name="action-name">win.add-button-grid</property>
-                                            <property name="tooltip-text" translatable="yes">Add a button for every title</property>
+                                            <property name="tooltip-text" translatable="yes">Add a Button for Every Title</property>
                                             <style>
                                               <class name="flat"/>
                                             </style>
@@ -303,7 +303,7 @@
                                         <child>
                                           <object class="GtkToggleButton" id="highlight_button">
                                             <property name="action-name">win.remote-preview</property>
-                                            <property name="tooltip-text" translatable="yes">Try the Menu With a Remote (F5)</property>
+                                            <property name="tooltip-text" translatable="yes">Preview With Remote (F5)</property>
                                             <property name="child">
                                               <object class="AdwButtonContent">
                                                 <property name="icon-name">media-playback-start-symbolic</property>

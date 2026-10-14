@@ -42,19 +42,19 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     let g = adw::PreferencesGroup::builder()
         .title(gettext("Video"))
         .description(gettext(
-            "Encodes the titles now, each to the same picture quality rather than the same size. Building the disc then uses them as they are.",
+            "Encodes the titles now at a constant quality rather than to a target size. The disc build then uses these encodes unchanged.",
         ))
         .build();
     let d = doc.project().disc.clone();
     let crf = super::rows::spin(doc, &gettext("CRF"), d.crf as f64, 12.0, 28.0, 1.0, 0, Change::Content, |p, v| p.disc.crf = v as u8);
-    crf.set_subtitle(&gettext("Constant quality: lower looks better and takes more room. 18 is hard to tell from the original, 23 is much smaller"));
+    crf.set_subtitle(&gettext("Constant Rate Factor. Lower values give higher quality and larger files: 18 is visually close to the original, while 23 is considerably smaller"));
     crf.set_subtitle_lines(3);
     g.add(&crf);
     let labels = [gettext("Fast"), gettext("Balanced"), gettext("Best")];
     let explain = |q: Quality| match q {
-        Quality::Fast => gettext("Quick to encode, but larger files for the same quality"),
-        Quality::Balanced => gettext("A reasonable time and size"),
-        Quality::Best => gettext("The smallest files for the quality; takes about twice as long"),
+        Quality::Fast => gettext("Fastest encode, with larger files for the same quality"),
+        Quality::Balanced => gettext("A balance of encoding time and file size"),
+        Quality::Best => gettext("The smallest files for the same quality. Takes about twice as long"),
     };
     let sel = Quality::ALL.iter().position(|q| *q == d.quality).unwrap_or(1);
     let speed = super::rows::combo(doc, &gettext("Speed"), &labels, sel, Change::Content, |p, i| {
@@ -100,7 +100,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                 gettext("About {}").replace("{}", &super::build_progress::duration_text(secs))
             };
             if !measured && secs >= 60.0 {
-                time.push_str(&format!(" · {}", gettext("a rough guess until Spindle has timed an encode on this computer")));
+                time.push_str(&format!(" · {}", gettext("a rough estimate until an encode has been timed on this computer")));
             }
             time_row.set_subtitle(&time);
             encode_btn.set_sensitive(secs > 0.0);
@@ -204,8 +204,8 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                         let p = doc.project();
                         let bytes = validate::estimated_bytes(&p);
                         let fits = match validate::disc_for(bytes) {
-                            Some((disc, _)) => gettext("With its menus the disc is about {size} GB, which fits a {disc}.").replace("{disc}", disc),
-                            None => gettext("With its menus the disc is about {size} GB, too big for any disc: encode at a higher CRF."),
+                            Some((disc, _)) => gettext("Including menus, the disc is about {size} GB, which fits on a {disc}.").replace("{disc}", disc),
+                            None => gettext("Including menus, the disc is about {size} GB, which is too large for any disc. Encode at a higher CRF."),
                         };
                         result.set_icon_name(Some("object-select-symbolic"));
                         result.set_title(&gettext("Titles Encoded"));
@@ -215,7 +215,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                         let cancelled = e.contains("cancelled");
                         result.set_icon_name(Some(if cancelled { "process-stop-symbolic" } else { "dialog-error-symbolic" }));
                         result.set_title(&if cancelled { gettext("Encoding Cancelled") } else { gettext("Encoding Failed") });
-                        let text = if cancelled { gettext("Titles that finished are kept.") } else { super::build_dialog::summary(&e, &stage) };
+                        let text = if cancelled { gettext("Completed encodes have been kept.") } else { super::build_dialog::summary(&e, &stage) };
                         result.set_description(Some(&glib::markup_escape_text(&text)));
                         if !cancelled {
                             details_view.buffer().set_text(&format!(

@@ -43,7 +43,7 @@ pub fn check(doc: &Rc<Document>, title: Id, parent: &impl IsA<gtk::Widget>) {
             Ok(Err(e)) => {
                 let err = adw::StatusPage::builder()
                     .icon_name("dialog-error-symbolic")
-                    .title(gettext("Couldn't Check the Video"))
+                    .title(gettext("Could Not Check the Video"))
                     .description(glib::markup_escape_text(&e).as_str())
                     .build();
                 err.add_css_class("compact");
@@ -71,11 +71,11 @@ pub fn check(doc: &Rc<Document>, title: Id, parent: &impl IsA<gtk::Widget>) {
 fn results_page(doc: &Rc<Document>, title: Id, report: &Report, dialog: &adw::Dialog) -> gtk::Widget {
     let page = adw::PreferencesPage::new();
     let (icon, heading, body) = if !report.compatible() {
-        ("dialog-error-symbolic", gettext("Needs Re-encoding"), gettext("This video can't go on a Blu-ray as it is. Spindle will convert it when building the disc."))
+        ("dialog-error-symbolic", gettext("Needs Re-encoding"), gettext("This video is not Blu-ray compatible in its current form. Spindle will re-encode it when the disc is built."))
     } else if report.has_warnings() {
-        ("dialog-warning-symbolic", gettext("Can Be Kept"), gettext("The video can go on the disc without re-encoding, but isn't fully within the Blu-ray specification. Most players handle this."))
+        ("dialog-warning-symbolic", gettext("Can Be Kept"), gettext("The video can be used without re-encoding, but does not fully conform to the Blu-ray specification. Most players handle this without problems."))
     } else {
-        ("object-select-symbolic", gettext("Can Be Kept"), gettext("The video meets the Blu-ray specification and can go on the disc without re-encoding — faster, and with no loss of quality."))
+        ("object-select-symbolic", gettext("Can Be Kept"), gettext("The video conforms to the Blu-ray specification and can be used without re-encoding, which is faster and preserves the original quality."))
     };
     let header = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(12).margin_bottom(6).build();
     let class = if !report.compatible() {

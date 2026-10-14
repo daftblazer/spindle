@@ -30,7 +30,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     let g = adw::PreferencesGroup::builder()
         .title(gettext("Episode Pages"))
         .description(gettext(
-            "Makes the episode pages again for the titles as they are now. Your other menus stay as they are, and buttons that led to the old pages lead to the new ones.",
+            "Rebuilds the episode pages from the current titles. Other menus are left unchanged, and buttons that linked to the old pages are updated to link to the new ones.",
         ))
         .build();
     // The built-in styles, then the saved templates.
@@ -77,7 +77,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
 
     let rg = adw::PreferencesGroup::builder()
         .title(gettext("Menus to Replace"))
-        .description(gettext("The episode pages found are turned on. Everything else is kept."))
+        .description(gettext("Detected episode pages are selected. All other menus are kept."))
         .build();
     let chosen: Rc<RefCell<Vec<Id>>> = Rc::new(RefCell::new(detected.clone()));
     let go = gtk::Button::builder()

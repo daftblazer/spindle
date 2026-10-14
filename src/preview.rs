@@ -44,7 +44,7 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
     let keep = if t.keep_video {
         let report = crate::media::compat::analyze(&asset.path)?;
         let Some(format) = report.format.filter(|_| report.compatible()) else {
-            bail!("the original video can't be kept ({})", report.summary());
+            bail!("The original video cannot be kept ({})", report.summary());
         };
         let key = crate::media::compat::keyframe_before(&asset.path, start + info.start_time)?;
         start = (key - info.start_time).max(0.0);

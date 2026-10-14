@@ -222,7 +222,7 @@ pub fn check(p: &Project) -> Vec<Issue> {
 
     // --- things the build can't do
     if p.titles.is_empty() {
-        error(gettext("Add at least one title (drag a video into the project)."), None);
+        error(gettext("The disc has no titles. Import a video and add it as a title."), None);
     }
     for t in &p.titles {
         match p.asset(t.asset) {
@@ -232,7 +232,7 @@ pub fn check(p: &Project) -> Vec<Issue> {
                 Some(Target::Title(t.id)),
             ),
             Some(_) if t.keep_video && t.video_check.as_ref().is_some_and(|r| !r.compatible()) => error(
-                gettext("“{}” is set to keep its original video, but the video isn't Blu-ray compatible.").replace("{}", &t.name),
+                gettext("“{}” is set to keep its original video, but the video is not Blu-ray compatible.").replace("{}", &t.name),
                 Some(Target::Title(t.id)),
             ),
             _ => {}
@@ -298,7 +298,7 @@ pub fn check(p: &Project) -> Vec<Issue> {
     let bytes = estimated_bytes(p);
     if disc_for(bytes).is_none() {
         error(
-            gettext("The disc is about {} GB, more than fits on a BD-100. Lower the video bitrate or remove titles.")
+            gettext("The disc is about {} GB, which exceeds the capacity of a BD-100. Lower the video bitrate or remove titles.")
                 .replace("{}", &format!("{:.1}", bytes / 1e9)),
             Some(Target::Settings),
         );
@@ -312,10 +312,10 @@ pub fn check(p: &Project) -> Vec<Issue> {
             error(gettext("Menu “{}” has more than 255 buttons.").replace("{}", &m.name), Some(Target::Menu(m.id)));
         }
         if n == 0 && menus.contains(&m.id) {
-            warn(gettext("Menu “{}” has no buttons, so viewers can't leave it.").replace("{}", &m.name), Some(Target::Menu(m.id)));
+            warn(gettext("Menu “{}” has no buttons, so viewers cannot leave it.").replace("{}", &m.name), Some(Target::Menu(m.id)));
         }
         if !menus.contains(&m.id) {
-            let msg = if m.popup { gettext("Pop-up menu “{}” isn't used by any title.") } else { gettext("No button leads to menu “{}”.") };
+            let msg = if m.popup { gettext("Pop-up menu “{}” is not used by any title.") } else { gettext("No button leads to menu “{}”.") };
             warn(msg.replace("{}", &m.name), Some(Target::Menu(m.id)));
         }
         let buttons: Vec<_> = m.buttons().collect();
@@ -324,16 +324,16 @@ pub fn check(p: &Project) -> Vec<Issue> {
             let target = Some(Target::Item { menu: m.id, item: item.id });
             let name = if b.label.trim().is_empty() { gettext("Unnamed") } else { b.label.clone() };
             match &b.action {
-                Action::None => warn(gettext("Button “{}” on “{}” does nothing.").replacen("{}", &name, 1).replacen("{}", &m.name, 1), target),
+                Action::None => warn(gettext("Button “{}” on “{}” has no action.").replacen("{}", &name, 1).replacen("{}", &m.name, 1), target),
                 Action::ShowMenu(id) if p.menu(*id).is_none() => {
                     error(gettext("Button “{}” on “{}” links to a deleted menu.").replacen("{}", &name, 1).replacen("{}", &m.name, 1), target)
                 }
                 Action::ShowMenu(id) if !m.popup && p.menu(*id).is_some_and(|x| x.popup) => error(
-                    gettext("Button “{}” on “{}” opens a pop-up menu, which only appears during titles.").replacen("{}", &name, 1).replacen("{}", &m.name, 1),
+                    gettext("Button “{}” on “{}” opens a pop-up menu, which is only available while a title is playing.").replacen("{}", &name, 1).replacen("{}", &m.name, 1),
                     target,
                 ),
                 Action::PlayChapter(_) if !m.popup => error(
-                    gettext("Button “{}” on “{}” goes to a chapter, which only works in pop-up menus.").replacen("{}", &name, 1).replacen("{}", &m.name, 1),
+                    gettext("Button “{}” on “{}” goes to a chapter, which is only supported in pop-up menus.").replacen("{}", &name, 1).replacen("{}", &m.name, 1),
                     target,
                 ),
                 Action::SetLanguage { preset, .. } if p.language(*preset).is_none() => {
@@ -345,7 +345,7 @@ pub fn check(p: &Project) -> Vec<Issue> {
                         target,
                     ),
                     Some(t) if *chapter as usize > t.chapters.len() => warn(
-                        gettext("Button “{}” on “{}” plays a chapter that no longer exists; it will start at the beginning.")
+                        gettext("Button “{}” on “{}” plays a chapter that no longer exists, so the title will start from the beginning.")
                             .replacen("{}", &name, 1)
                             .replacen("{}", &m.name, 1),
                         target,
@@ -369,7 +369,7 @@ pub fn check(p: &Project) -> Vec<Issue> {
                 let overlap = r.x < o.x + o.w && o.x < r.x + r.w && r.y < o.y + o.h && o.y < r.y + r.h;
                 if overlap {
                     warn(
-                        gettext("Buttons “{}” and “{}” on “{}” overlap; highlights will look wrong.")
+                        gettext("Buttons “{}” and “{}” on “{}” overlap, so their highlights will not display correctly.")
                             .replacen("{}", &name, 1)
                             .replacen("{}", &other.button().map(|b| b.label.clone()).unwrap_or_default(), 1)
                             .replacen("{}", &m.name, 1),
@@ -384,12 +384,12 @@ pub fn check(p: &Project) -> Vec<Issue> {
     for t in &p.titles {
         let target = Some(Target::Title(t.id));
         if !titles.contains(&t.id) {
-            warn(gettext("Title “{}” can't be reached from any menu.").replace("{}", &t.name), target);
+            warn(gettext("Title “{}” cannot be reached from any menu.").replace("{}", &t.name), target);
         }
         for a in t.disc_audio() {
             if !is_language_code(&a.lang) {
                 warn(
-                    gettext("Audio track “{}” of “{}” has language “{}”; use a three-letter code such as eng.")
+                    gettext("Audio track “{}” of “{}” has the language code “{}”. Use a three-letter code such as eng.")
                         .replacen("{}", &a.name, 1)
                         .replacen("{}", &t.name, 1)
                         .replacen("{}", &a.lang, 1),
@@ -399,7 +399,7 @@ pub fn check(p: &Project) -> Vec<Issue> {
         }
         if t.audio.iter().filter(|a| a.enabled).count() > MAX_AUDIO_TRACKS {
             warn(
-                gettext("“{}” has more than {} audio tracks; only the first {} go on the disc.")
+                gettext("“{}” has more than {} audio tracks. Only the first {} will be included on the disc.")
                     .replacen("{}", &t.name, 1)
                     .replace("{}", &MAX_AUDIO_TRACKS.to_string()),
                 target,
@@ -408,7 +408,7 @@ pub fn check(p: &Project) -> Vec<Issue> {
         for l in &p.disc.languages {
             if t.resolve_language(l).audio.is_none() && t.disc_audio().next().is_some() {
                 warn(
-                    gettext("“{}” has no {} audio for the language choice “{}”; its audio stays as it is.")
+                    gettext("“{}” has no {} audio for the language choice “{}”, so its audio will not change.")
                         .replacen("{}", &t.name, 1)
                         .replacen("{}", &language_name(&l.audio), 1)
                         .replacen("{}", &l.name, 1),
@@ -418,7 +418,7 @@ pub fn check(p: &Project) -> Vec<Issue> {
         }
         if t.keep_video && t.subtitles.iter().any(|s| s.enabled && s.burn_in) {
             warn(
-                gettext("“{}” keeps its original video, so its subtitles can't be burned in; they go on the disc as a subtitle track instead.").replace("{}", &t.name),
+                gettext("“{}” keeps its original video, so its subtitles cannot be burned in. They will be included as a subtitle track instead.").replace("{}", &t.name),
                 target,
             );
         }
@@ -427,7 +427,7 @@ pub fn check(p: &Project) -> Vec<Issue> {
         }
         if !t.keep_video && p.asset(t.asset).is_some_and(|a| a.info.is_hdr()) {
             warn(
-                gettext("“{}” is HDR video. Blu-ray is standard range, so it will be tone mapped: highlights and colours will look less intense.").replace("{}", &t.name),
+                gettext("“{}” is HDR video. Blu-ray is standard dynamic range, so the video will be tone mapped and its highlights and colors will appear less intense.").replace("{}", &t.name),
                 target,
             );
         }
@@ -438,14 +438,14 @@ pub fn check(p: &Project) -> Vec<Issue> {
     if encoder.is_hardware() {
         if crate::media::hwenc::known_available().is_some_and(|a| !a.contains(&encoder)) {
             error(
-                gettext("The {} video encoder doesn't work on this computer. Choose Software in Disc Settings.").replace("{}", &encoder.label()),
+                gettext("The {} video encoder is not available on this computer. Choose Software in Disc Settings.").replace("{}", &encoder.label()),
                 Some(Target::Settings),
             );
         } else if p.disc.video.interlaced() {
-            warn(gettext("The 1080i and SD formats can't be encoded in hardware; this disc will use Software encoding."), Some(Target::Settings));
+            warn(gettext("The 1080i and SD formats cannot be hardware encoded, so this disc will use Software encoding."), Some(Target::Settings));
         } else {
             warn(
-                gettext("Hardware video encoding is on. It's faster, but the picture is noticeably worse than Software: use it for test discs only."),
+                gettext("Hardware video encoding is enabled. It is faster, but picture quality is noticeably lower than with Software encoding. Use it for test discs only."),
                 Some(Target::Settings),
             );
         }
@@ -455,7 +455,7 @@ pub fn check(p: &Project) -> Vec<Issue> {
     if let Some((disc, _)) = disc_for(bytes) {
         if disc == "BD-100" {
             warn(
-                gettext("The disc is about {} GB and needs a BD-100 (BD-XL), which many burners and players don't support.")
+                gettext("The disc is about {} GB and requires a BD-100 (BDXL), which many burners and players do not support.")
                     .replace("{}", &format!("{:.1}", bytes / 1e9)),
                 Some(Target::Settings),
             );
@@ -490,7 +490,7 @@ mod tests {
         let (p, _) = project();
         let issues = check(&p);
         assert!(issues.iter().all(|i| i.severity == Severity::Warning));
-        assert!(issues.iter().any(|i| i.message.contains("can't be reached")));
+        assert!(issues.iter().any(|i| i.message.contains("cannot be reached")));
         assert!(issues.iter().any(|i| i.message.contains("no buttons")));
     }
 

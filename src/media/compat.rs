@@ -184,7 +184,7 @@ pub fn analyze(path: &Path) -> Result<Report> {
     match codec.as_str() {
         "h264" => add("Codec", Level::Pass, "H.264 / AVC".into()),
         "hevc" => add("Codec", Level::Fail, "HEVC is only allowed on Ultra HD Blu-ray".into()),
-        other => add("Codec", Level::Fail, format!("{other} can't be kept; Blu-ray video must be H.264 here")),
+        other => add("Codec", Level::Fail, format!("{other} cannot be kept. Blu-ray video must be H.264")),
     }
 
     // Profile, level, pixel format
@@ -194,7 +194,7 @@ pub fn analyze(path: &Path) -> Result<Report> {
         add(
             "Profile",
             if ok { Level::Pass } else { Level::Fail },
-            if ok { profile.clone() } else { format!("{profile} isn't allowed (needs Main or High)") },
+            if ok { profile.clone() } else { format!("{profile} is not allowed (Main or High is required)") },
         );
         let level = video.level.unwrap_or(0);
         let lvl = format!("{}.{}", level / 10, level % 10);
@@ -209,7 +209,7 @@ pub fn analyze(path: &Path) -> Result<Report> {
     add(
         "Color Format",
         if pix_ok { Level::Pass } else { Level::Fail },
-        if pix_ok { "8-bit 4:2:0".into() } else { format!("{pix} (needs 8-bit 4:2:0)") },
+        if pix_ok { "8-bit 4:2:0".into() } else { format!("{pix} (8-bit 4:2:0 is required)") },
     );
 
     // Resolution, frame rate, scan
@@ -226,7 +226,7 @@ pub fn analyze(path: &Path) -> Result<Report> {
             "Resolution",
             Level::Fail,
             format!(
-                "{w}×{h}{scan} at {} fps isn't a Blu-ray format (1080p 23.976/24, 1080i 25/29.97, 720p 50/59.94)",
+                "{w}×{h}{scan} at {} fps is not a Blu-ray format (1080p 23.976/24, 1080i 25/29.97, 720p 50/59.94)",
                 describe_rate(fps)
             ),
         ),
@@ -253,12 +253,12 @@ pub fn analyze(path: &Path) -> Result<Report> {
             Some(g) => add(
                 "Keyframes",
                 Level::Warn,
-                format!("Up to {g:.1} s apart (Blu-ray expects 1 s); chapters and seeking may be less precise on some players"),
+                format!("Up to {g:.1} s apart (Blu-ray expects 1 s). Chapters and seeking may be less precise on some players"),
             ),
             None => add(
                 "Keyframes",
                 Level::Warn,
-                "Too far apart to measure; chapters and seeking may be imprecise on some players".into(),
+                "Too far apart to measure. Chapters and seeking may be imprecise on some players".into(),
             ),
         }
     }
@@ -273,11 +273,11 @@ pub fn analyze(path: &Path) -> Result<Report> {
     });
     match audio {
         None => {}
-        Some(_) if copy_audio => add("Audio", Level::Pass, "AC-3, kept as is".into()),
+        Some(_) if copy_audio => add("Audio", Level::Pass, "AC-3, copied without re-encoding".into()),
         Some(a) => add(
             "Audio",
             Level::Pass,
-            format!("{} will be converted (fast)", a.codec_name.clone().unwrap_or_default().to_uppercase()),
+            format!("{} will be converted, which is fast", a.codec_name.clone().unwrap_or_default().to_uppercase()),
         ),
     }
 

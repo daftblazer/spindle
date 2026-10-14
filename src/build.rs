@@ -417,9 +417,9 @@ impl<'a> Builder<'a> {
         let encoder = self.settings.effective_encoder();
         if encoder.is_hardware() {
             if !crate::media::hwenc::available().contains(&encoder) {
-                bail!("The {} video encoder doesn't work on this computer. Choose Software in Disc Settings.", encoder.label());
+                bail!("The {} video encoder is not available on this computer. Choose Software in Disc Settings.", encoder.label());
             }
-            self.log(format!("Using {} video encoding: for test discs only, the quality is lower than Software", encoder.label()));
+            self.log(format!("Using {} video encoding: intended for test discs only, as quality is lower than with Software encoding", encoder.label()));
         }
         let p = self.project;
 
@@ -1046,10 +1046,10 @@ impl<'a> Builder<'a> {
         let log = self.work.join(format!("pass-{}", clip_name(n)));
         let mut work = 0.0;
         if two_pass {
-            self.stage(format!("Analysing title “{}” (pass 1 of 2)", t.name));
+            self.stage(format!("Analyzing title “{}” (pass 1 of 2)", t.name));
             let src = transcode::Source { path: &asset.path, info: &asset.info, picture: &t.video, burn: plan.burn.as_ref() };
             let first = transcode::title_args(&src, &plan.set, &plan.chapters, &inputs, None, &transcode::Pass::First(log), &self.work.join("null.ts"));
-            self.encode(key, first, duration, 0.0, "Analysing · pass 1 of 2")?;
+            self.encode(key, first, duration, 0.0, "Analyzing · pass 1 of 2")?;
             work += duration;
         }
         let detail = if plan.set.effective_encoder().is_hardware() {
@@ -1096,7 +1096,7 @@ impl<'a> Builder<'a> {
                 let report = compat::analyze(&asset.path)?;
                 let Some(format) = report.format.filter(|_| report.compatible()) else {
                     bail!(
-                        "“{}” can't keep its original video ({}). Turn off “Keep Original Video” to re-encode it.",
+                        "The original video of “{}” cannot be kept ({}). Turn off “Keep Original Video” to re-encode it.",
                         t.name,
                         report.summary()
                     );

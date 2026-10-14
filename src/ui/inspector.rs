@@ -39,7 +39,7 @@ fn apply_to_all_row(doc: &Rc<Document>, id: Id, tooltip: &str, apply: fn(&mut Pr
         doc.edit(Change::Structure, |p| n = apply(p, id));
         let Some(overlay) = overlay else { return };
         let toast = if n == 0 {
-            adw::Toast::new(&gettext("The other titles already match"))
+            adw::Toast::new(&gettext("All other titles already match"))
         } else {
             let t = adw::Toast::new(&ngettext("Applied to {} title", "Applied to {} titles", n as u32).replace("{}", &n.to_string()));
             t.set_button_label(Some(&gettext("_Undo")));
@@ -291,7 +291,7 @@ impl Inspector {
 
     fn multi_page(&self, page: &adw::PreferencesPage, n: usize) {
         let g = group(&gettext("Arrange"));
-        g.set_description(Some(&gettext("Aligns the selected items to each other")));
+        g.set_description(Some(&gettext("Aligns the selected items relative to each other")));
         g.add(&align_bar(n > 2));
         page.add(&g);
         let g = adw::PreferencesGroup::new();
@@ -327,14 +327,14 @@ impl Inspector {
                 m.default_button = pick(&buttons, i);
             }
         });
-        row.set_tooltip_text(Some(&gettext("Automatic remembers the last selected button")));
+        row.set_tooltip_text(Some(&gettext("Automatic restores the last selected button")));
         g.add(&row);
         page.add(&g);
 
         if m.popup {
             let g = group(&gettext("Pop-up"));
             g.set_description(Some(&gettext(
-                "Shown over the playing title with the remote's Pop-up key. Only the menu's items appear; the video stays visible behind them.",
+                "Displayed over the playing title when the viewer presses the Pop-up key on the remote. Only the menu's items are drawn, and the video remains visible behind them.",
             )));
             let all = rows::switch(doc, &gettext("Use for All Titles"), p.disc.popup_menu == Some(id), Change::Structure, move |p, v| {
                 if v {
@@ -343,7 +343,7 @@ impl Inspector {
                     p.disc.popup_menu = None;
                 }
             });
-            all.set_subtitle(&gettext("Titles can choose a different pop-up menu in their settings"));
+            all.set_subtitle(&gettext("Individual titles can use a different pop-up menu"));
             g.add(&all);
             self.fade_rows(&g, id, m.fade_in, m.fade_out);
             page.add(&g);
@@ -377,7 +377,7 @@ impl Inspector {
                 m.background.image = pick(&images, i);
             }
         });
-        image_row.set_subtitle(&gettext("Fills the screen behind everything"));
+        image_row.set_subtitle(&gettext("Fills the screen behind all items"));
         image_row.add_suffix(&pick_button(&gettext("Choose Image File…"), "win.menu-background-image"));
         g.add(&image_row);
         let videos = assets_of(&p, &[AssetKind::Video]);
@@ -399,7 +399,7 @@ impl Inspector {
             start.set_subtitle(&format!(
                 "{} · {}",
                 format_time(m.background.video_start),
-                if music { gettext("the loop lasts as long as the music") } else { gettext("the loop lasts the menu's Loop Length") }
+                if music { gettext("loops for the length of the music") } else { gettext("loops for the menu's Loop Length") }
             ));
             g.add(&start);
             // With music, the menu lasts as long as the music does.
@@ -435,10 +435,10 @@ impl Inspector {
         // The whole file, when the menu has music.
         let whole = p.menu_music(m).and_then(|_| p.asset(m.audio?)).map(|a| a.info.duration);
         music_row.set_subtitle(&match whole {
-            Some(_) if m.music_section.is_some() => gettext("Loops the section below"),
-            Some(d) if d > MAX_MENU_LOOP => gettext("Plays its first {} minutes, then starts over").replace("{}", &((MAX_MENU_LOOP / 60.0) as u32).to_string()),
-            Some(d) => format!("{} · {}", format_time(d), gettext("plays to its end, then starts over")),
-            None => gettext("Plays to its end, then starts over"),
+            Some(_) if m.music_section.is_some() => gettext("Loops the selected section"),
+            Some(d) if d > MAX_MENU_LOOP => gettext("Plays the first {} minutes, then repeats").replace("{}", &((MAX_MENU_LOOP / 60.0) as u32).to_string()),
+            Some(d) => format!("{} · {}", format_time(d), gettext("plays to the end, then repeats")),
+            None => gettext("Plays to the end, then repeats"),
         });
         if whole.is_some() {
             music_row.add_suffix(&super::music_preview::button(doc, id));
@@ -451,7 +451,7 @@ impl Inspector {
                     m.music_section = v.then(|| MusicSection { start: 0.0, length: whole.min(30.0) });
                 }
             });
-            row.set_subtitle(&gettext("Use only part of the file, such as a scene from an episode"));
+            row.set_subtitle(&gettext("Use part of the file, such as a scene from an episode"));
             g.add(&row);
         }
         if let (Some(whole), Some((start, length))) = (whole, p.menu_music(m).filter(|_| m.music_section.is_some())) {
@@ -505,14 +505,14 @@ impl Inspector {
                 m.fade_in = v;
             }
         });
-        row.set_subtitle(&gettext("Seconds for the buttons to appear"));
+        row.set_subtitle(&gettext("Time in seconds for the buttons to appear"));
         g.add(&row);
         let row = rows::spin(doc, &gettext("Fade Out"), fade_out, 0.0, 3.0, 0.1, 1, Change::Content, move |p, v| {
             if let Some(m) = p.menu_mut(id) {
                 m.fade_out = v;
             }
         });
-        row.set_subtitle(&gettext("When switching to another page of a pop-up"));
+        row.set_subtitle(&gettext("Applies when switching to another page of a pop-up menu"));
         g.add(&row);
     }
 
@@ -538,7 +538,7 @@ impl Inspector {
                     m.intro_every_time = v;
                 }
             });
-            every.set_subtitle(&gettext("Otherwise only the first time the menu is shown"));
+            every.set_subtitle(&gettext("When off, the intro plays only the first time the menu is shown"));
             g.add(&every);
         }
         let timeout = rows::switch(doc, &gettext("Timeout"), m.timeout.is_some(), Change::Structure, move |p, v| {
@@ -547,7 +547,7 @@ impl Inspector {
                 m.timeout = v.then_some(MenuTimeout { seconds: 60, action: first });
             }
         });
-        timeout.set_subtitle(&gettext("Do something by itself after a while on this menu"));
+        timeout.set_subtitle(&gettext("Perform an action automatically after a period of inactivity"));
         g.add(&timeout);
         if let Some(t) = m.timeout {
             g.add(&rows::spin(doc, &gettext("Seconds"), t.seconds as f64, 5.0, 3600.0, 5.0, 0, Change::Content, move |p, v| {
@@ -750,7 +750,7 @@ impl Inspector {
                             b.action = Action::PlayChapter((v as u32).saturating_sub(1));
                         }
                     });
-                    row.set_subtitle(&gettext("Of the playing title; hidden in titles with fewer chapters"));
+                    row.set_subtitle(&gettext("In the title that is playing. The button is hidden in titles with fewer chapters"));
                     g.add(&row);
                 }
                 if let Action::SetLanguage { menu: then, .. } = b.action {
@@ -789,12 +789,12 @@ impl Inspector {
                         b.highlight = STYLES[i.min(STYLES.len() - 1)];
                     }
                 }));
-                let ht = rows::switch(doc, &gettext("Own Highlighted Text Color"), b.highlight_text.is_some(), Change::Structure, move |p, v| {
+                let ht = rows::switch(doc, &gettext("Custom Highlighted Text Color"), b.highlight_text.is_some(), Change::Structure, move |p, v| {
                     if let Some(b) = button_mut(p, menu, item) {
                         b.highlight_text = v.then_some(Rgba::WHITE);
                     }
                 });
-                ht.set_subtitle(&gettext("Otherwise the label takes the highlight color (or keeps its color when filled)"));
+                ht.set_subtitle(&gettext("When off, the label uses the highlight color, or keeps its own color with the Filled style"));
                 g.add(&ht);
                 if let Some(c) = b.highlight_text {
                     g.add(&rows::color(doc, &gettext("Highlighted Text Color"), c, Change::Content, move |p, c| {
@@ -831,9 +831,9 @@ impl Inspector {
                 for (label, whole_disc) in [(gettext("Apply to Menu"), false), (gettext("Apply to All Menus"), true)] {
                     let btn = gtk::Button::builder().label(label.as_str()).css_classes(["pill", "small"]).build();
                     btn.set_tooltip_text(Some(&if whole_disc {
-                        gettext("Give every button on the disc this font, colors and highlight")
+                        gettext("Applies this button's font, colors and highlight to every button on the disc")
                     } else {
-                        gettext("Give every button on this menu this font, colors and highlight")
+                        gettext("Applies this button's font, colors and highlight to every button on this menu")
                     }));
                     let d = doc.clone();
                     btn.connect_clicked(move |_| {
@@ -848,7 +848,7 @@ impl Inspector {
                 page.add(&g);
 
                 let g = group(&gettext("Pictures"));
-                g.set_description(Some(&gettext("Artwork for the button in each state, e.g. exported from an image editor. Import pictures into Media first.")));
+                g.set_description(Some(&gettext("Custom artwork for each button state, such as images exported from an image editor. Import the images into Media first.")));
                 let pictures = assets_of(&p, &[AssetKind::Image]);
                 type Slot = fn(&mut StateImages) -> &mut Option<Id>;
                 let slots: [(String, Option<Id>, Slot); 3] = [
@@ -892,7 +892,7 @@ impl Inspector {
                 page.add(&g);
 
                 let g = group(&gettext("Remote Navigation"));
-                g.set_description(Some(&gettext("Which button is selected when pressing the arrow keys. On the canvas, Alt+drag from this button to another to set one.")));
+                g.set_description(Some(&gettext("The button selected when the viewer presses each arrow key. To set one on the canvas, hold Alt and drag from this button to another.")));
                 let others: Vec<(Id, String)> = m
                     .buttons()
                     .filter(|o| o.id != item)
@@ -931,7 +931,7 @@ impl Inspector {
                     .start_icon_name("image-x-generic-symbolic")
                     .action_name("win.replace-with-image")
                     .build();
-                replace.set_tooltip_text(Some(&gettext("Use a picture, such as a transparent PNG logo, instead of this text")));
+                replace.set_tooltip_text(Some(&gettext("Replace this text with an image, such as a transparent PNG logo")));
                 g.add(&replace);
                 self.text_style_rows(&g, &t.style, menu, item, true);
                 page.add(&g);
@@ -1061,14 +1061,14 @@ impl Inspector {
                 i.hidden = v;
             }
         });
-        hidden.set_subtitle(&gettext("Left out of the menu, but kept for later"));
+        hidden.set_subtitle(&gettext("Excluded from the menu but kept in the project"));
         g.add(&hidden);
         let locked = rows::switch(doc, &gettext("Locked"), it.locked, Change::Structure, move |p, v| {
             if let Some(i) = p.menu_mut(menu).and_then(|m| m.item_mut(item)) {
                 i.locked = v;
             }
         });
-        locked.set_subtitle(&gettext("Can't be clicked or moved on the canvas"));
+        locked.set_subtitle(&gettext("Cannot be selected or moved on the canvas"));
         g.add(&locked);
         let order = gtk::Box::builder().spacing(6).halign(gtk::Align::Center).margin_top(6).build();
         for (icon, tip, action) in [
@@ -1100,9 +1100,9 @@ impl Inspector {
         });
         keep.set_sensitive(compatible || t.keep_video);
         let status = match &t.video_check {
-            None => gettext("Check compatibility first. Otherwise the video is re-encoded using Disc Settings."),
+            None => gettext("Check compatibility to enable this option. When off, the video is re-encoded using Disc Settings."),
             Some(r) if r.compatible() && t.keep_video => {
-                format!("{} · {}", r.summary(), gettext("no re-encoding, Disc Settings video options don't apply"))
+                format!("{} · {}", r.summary(), gettext("not re-encoded, so the video options in Disc Settings do not apply"))
             }
             Some(r) => r.summary(),
         };
@@ -1141,11 +1141,11 @@ impl Inspector {
         let sel = Deinterlace::ALL.iter().position(|d| *d == opts.deinterlace).unwrap_or(0);
         let row = rows::combo(doc, &gettext("Deinterlace"), &labels, sel, Change::Content, edit(|v, i| v.deinterlace = Deinterlace::ALL[i.min(3)]));
         row.set_subtitle(&match opts.deinterlace {
-            Deinterlace::InverseTelecine => gettext("Inverse telecine: restores film frames in 29.97 video (NTSC DVDs)"),
-            _ if plan.interlaced.is_some() => gettext("Kept interlaced, as the disc format allows"),
+            Deinterlace::InverseTelecine => gettext("Inverse telecine. Restores the original film frames from 29.97 fps video, such as NTSC DVDs"),
+            _ if plan.interlaced.is_some() => gettext("Kept interlaced, as the disc format supports it"),
             _ if plan.deinterlaced => gettext("The video is deinterlaced"),
-            Deinterlace::Auto if info.interlaced().is_none() => gettext("The file doesn't say whether it's interlaced; treated as progressive"),
-            _ => gettext("Nothing to do: the video is progressive"),
+            Deinterlace::Auto if info.interlaced().is_none() => gettext("The file does not indicate whether it is interlaced, so it is treated as progressive"),
+            _ => gettext("Not required. The video is progressive"),
         });
         row.set_subtitle_lines(2);
         g.add(&row);
@@ -1160,8 +1160,8 @@ impl Inspector {
         let row = rows::combo(doc, &gettext("Fit"), &labels, sel, Change::Content, edit(|v, i| v.fit = Fit::ALL[i.min(2)]));
         row.set_subtitle_lines(2);
         row.set_subtitle(&match opts.fit {
-            Fit::Whole => gettext("The whole picture, with black bars if it isn't 16:9"),
-            Fit::Fill => gettext("Fills the screen, cutting off edges that don't fit"),
+            Fit::Whole => gettext("Shows the whole picture, with black bars where it does not fill the screen"),
+            Fit::Fill => gettext("Fills the screen and crops the edges that do not fit"),
             Fit::Stretch => gettext("Fills the screen by stretching the picture"),
         });
         g.add(&row);
@@ -1193,7 +1193,7 @@ impl Inspector {
             let (doc, info) = (doc.clone(), info.clone());
             detect.connect_activated(move |row| {
                 row.set_sensitive(false);
-                row.set_title(&gettext("Looking for Black Bars…"));
+                row.set_title(&gettext("Detecting Black Bars…"));
                 let (tx, rx) = async_channel::bounded(1);
                 let (path, info) = (path.clone(), info.clone());
                 std::thread::spawn(move || {
@@ -1225,7 +1225,7 @@ impl Inspector {
         if plan.tone_mapped {
             let hdr = adw::ActionRow::builder()
                 .title(gettext("HDR Video"))
-                .subtitle(gettext("Blu-ray is standard range (SDR): the picture is tone mapped, so bright highlights and colours look less intense than the HDR original."))
+                .subtitle(gettext("Blu-ray is standard dynamic range (SDR). The picture is tone mapped, so highlights and colors appear less intense than in the HDR original."))
                 .subtitle_lines(4)
                 .build();
             hdr.add_prefix(&gtk::Image::builder().icon_name("dialog-warning-symbolic").css_classes(["warning"]).build());
@@ -1239,7 +1239,7 @@ impl Inspector {
         let p = doc.project();
         let Some(t) = p.title(id) else { return };
         let g = group(&gettext("Audio"));
-        g.set_description(Some(&gettext("The first track plays by default; viewers switch with the remote. Audio Blu-ray players decode (AC-3, DTS, DTS-HD, TrueHD) is copied without re-encoding.")));
+        g.set_description(Some(&gettext("The first track plays by default, and viewers can switch tracks with the remote. Formats that Blu-ray players support (AC-3, DTS, DTS-HD, TrueHD) are copied without re-encoding.")));
 
         // What each track becomes on the disc.
         let set = crate::media::transcode::EncodeSettings::for_disc(&p.disc);
@@ -1278,7 +1278,7 @@ impl Inspector {
                     n => format!("{n} ch"),
                 };
                 if input.copy.is_some() {
-                    gettext("On the disc as it is: {}").replace("{}", &format!("{codec} {layout}"))
+                    gettext("Copied without re-encoding: {}").replace("{}", &format!("{codec} {layout}"))
                 } else {
                     gettext("Encoded as {}").replace("{}", &format!("{codec} {layout}"))
                 }
@@ -1326,7 +1326,7 @@ impl Inspector {
                     a.lang = normalize_lang(&v);
                 }
             });
-            lang.set_tooltip_text(Some(&gettext("ISO 639 code such as eng, fra or jpn")));
+            lang.set_tooltip_text(Some(&gettext("ISO 639 code, such as eng, fra or jpn")));
             if let Some(result) = &result {
                 let info = adw::ActionRow::builder().title(gettext("On the Disc")).subtitle(result).build();
                 info.add_css_class("property");
@@ -1346,9 +1346,9 @@ impl Inspector {
                 }
             });
             channels.set_subtitle(&match track.layout {
-                ChannelLayout::Original => gettext("7.1 is mixed down to 5.1 when encoding"),
-                ChannelLayout::Surround if stream.as_ref().is_some_and(|s| s.channels < 6) => gettext("Spreads the sound over the surround speakers"),
-                _ => gettext("Mixed to this layout"),
+                ChannelLayout::Original => gettext("7.1 is downmixed to 5.1 when encoding"),
+                ChannelLayout::Surround if stream.as_ref().is_some_and(|s| s.channels < 6) => gettext("Upmixes the sound to the surround speakers"),
+                _ => gettext("Mixed to this channel layout"),
             });
             row.add_row(&channels);
             if stream.as_ref().and_then(|s| s.bluray_codec()).is_some() {
@@ -1357,7 +1357,7 @@ impl Inspector {
                         a.reencode = !v;
                     }
                 });
-                keep.set_subtitle(&gettext("Blu-ray players decode this format, so it can go on the disc as it is"));
+                keep.set_subtitle(&gettext("Blu-ray players support this format, so it can be copied without re-encoding"));
                 keep.set_subtitle_lines(2);
                 row.add_row(&keep);
             }
@@ -1369,7 +1369,7 @@ impl Inspector {
                         }
                     }
                 });
-                delay.set_subtitle(&gettext("Seconds; negative starts the audio file earlier"));
+                delay.set_subtitle(&gettext("In seconds. A negative value starts the audio earlier"));
                 row.add_row(&delay);
                 let remove = adw::ButtonRow::builder().title(gettext("Remove Audio Track")).css_classes(["destructive-action"]).build();
                 let d = doc.clone();
@@ -1405,7 +1405,7 @@ impl Inspector {
             return;
         }
         let g = group(&gettext("Language Setup"));
-        g.set_description(Some(&gettext("What each language choice from Disc Settings plays in this title")));
+        g.set_description(Some(&gettext("The audio and subtitles that each language choice in Disc Settings selects for this title")));
         let audio: Vec<(Id, String)> = t.disc_audio().map(|a| (a.id, format!("{} ({})", a.name, language_name(&a.lang)))).collect();
         let subs: Vec<(Id, String)> = t.disc_subtitles().map(|s| (s.id, format!("{} ({})", s.name, language_name(&s.lang)))).collect();
         let name_of = |list: &[(Id, String)], id: Option<Id>, none: String| id.and_then(|id| list.iter().find(|(x, _)| *x == id)).map_or(none, |(_, n)| n.clone());
@@ -1473,7 +1473,7 @@ impl Inspector {
         let p = doc.project();
         let Some(t) = p.title(id) else { return };
         let g = group(&gettext("Subtitles"));
-        g.set_description(Some(&gettext("Converted to Blu-ray subtitles. Text subtitles use the style in Disc Settings; ASS keeps its own styling. A text track can instead be burned into the picture.")));
+        g.set_description(Some(&gettext("Converted to Blu-ray subtitles. Text subtitles use the style set in Disc Settings, while ASS subtitles keep their own styling. A text track can instead be burned into the picture.")));
 
         fn track_mut(p: &mut Project, title: Id, track: Id) -> Option<&mut SubtitleTrack> {
             p.title_mut(title)?.subtitles.iter_mut().find(|s| s.id == track)
@@ -1489,7 +1489,7 @@ impl Inspector {
             let mut subtitle = format!("{} · {} · {}", language_name(&track.lang), codec_label(&track.codec), origin);
             let burned = t.burned_subtitle().is_some_and(|b| b.id == tid);
             if !supported {
-                subtitle = format!("{} · {}", codec_label(&track.codec), gettext("not supported yet"));
+                subtitle = format!("{} · {}", codec_label(&track.codec), gettext("not yet supported"));
             } else if burned {
                 subtitle.push_str(&format!(" · {}", gettext("burned in")));
             } else if track.forced {
@@ -1524,7 +1524,7 @@ impl Inspector {
                     s.lang = normalize_lang(&v);
                 }
             });
-            lang.set_tooltip_text(Some(&gettext("ISO 639 code such as eng, fra or jpn")));
+            lang.set_tooltip_text(Some(&gettext("ISO 639 code, such as eng, fra or jpn")));
             row.add_row(&lang);
             row.add_row(&rows::entry(doc, &gettext("Name"), &track.name, Change::Content, move |p, v| {
                 if let Some(s) = track_mut(p, id, tid) {
@@ -1536,7 +1536,7 @@ impl Inspector {
                     s.forced = v;
                 }
             });
-            forced.set_subtitle(&gettext("Shown even when subtitles are off (foreign dialogue, signs)"));
+            forced.set_subtitle(&gettext("Shown even when subtitles are off, for foreign dialogue and signs"));
             forced.set_visible(!burned);
             row.add_row(&forced);
             if track.can_burn_in() {
@@ -1552,9 +1552,9 @@ impl Inspector {
                     }
                 });
                 burn.set_subtitle(&if t.keep_video {
-                    gettext("Needs the video re-encoded: turn off Keep Original Video")
+                    gettext("Requires re-encoding. Turn off Keep Original Video")
                 } else {
-                    gettext("Always shown and can't be turned off; every ASS style and effect looks exactly as made")
+                    gettext("Always visible and cannot be turned off. ASS styles and effects are rendered exactly as authored")
                 });
                 burn.set_subtitle_lines(3);
                 row.add_row(&burn);
@@ -1588,7 +1588,7 @@ impl Inspector {
             row.set_subtitle(&if p.disc.languages.is_empty() {
                 gettext("Viewers can switch with the remote")
             } else {
-                gettext("Only when the disc's language setting doesn't choose")
+                gettext("Used only when the disc's language choice does not set subtitles")
             });
             g.add(&row);
         } else if t.subtitles.is_empty() {
@@ -1694,7 +1694,7 @@ impl Inspector {
                     };
                 }
             });
-            row.set_subtitle(&gettext("Opens with the remote's Pop-up key"));
+            row.set_subtitle(&gettext("Opened by the Pop-up key on the remote"));
             g.add(&row);
             page.add(&g);
         }
@@ -1729,7 +1729,7 @@ impl Inspector {
         show_menu(&action);
         action.connect_selected_notify(show_menu);
         if p.titles.len() > 1 {
-            g.add(&apply_to_all_row(doc, id, &gettext("Every title does the same when it finishes"), Project::apply_end_action_to_all));
+            g.add(&apply_to_all_row(doc, id, &gettext("Use this When Finished action for every title"), Project::apply_end_action_to_all));
         }
         page.add(&g);
 

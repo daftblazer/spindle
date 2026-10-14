@@ -197,7 +197,7 @@ impl Sidebar {
             .label(gettext("Start"))
             .css_classes(["start-badge", "caption-heading"])
             .valign(gtk::Align::Center)
-            .tooltip_text(gettext("Plays when the disc is inserted"))
+            .tooltip_text(gettext("Starts when the disc is inserted"))
             .visible(false)
             .build();
         b.append(&badge);
@@ -267,7 +267,7 @@ impl Sidebar {
         }
         if p.popup_menus().next().is_none() {
             let hint = gtk::Label::builder()
-                .label(gettext("Shown over titles with the remote's Pop-up key"))
+                .label(gettext("Displayed over titles with the Pop-up key on the remote"))
                 .wrap(true)
                 .justify(gtk::Justification::Center)
                 .css_classes(["dim-label", "caption"])
@@ -372,7 +372,7 @@ impl Sidebar {
             }
             if Some(r.node) == all_titles {
                 r.badge.set_label(&gettext("All Titles"));
-                r.badge.set_tooltip_text(Some(&gettext("The pop-up menu of titles that don't choose their own")));
+                r.badge.set_tooltip_text(Some(&gettext("The pop-up menu for titles that do not set their own")));
             }
             r.badge.set_visible(Some(r.node) == start || Some(r.node) == all_titles);
         }

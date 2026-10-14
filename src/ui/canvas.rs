@@ -1080,7 +1080,7 @@ impl MenuCanvas {
         if preview {
             cr.restore().ok(); // clip
             cr.restore().ok();
-            self.draw_hint(cr, w, h, &v, &gettext("Remote preview — use the arrow keys and Enter, Esc to leave"));
+            self.draw_hint(cr, w, h, &v, &gettext("Remote preview — use the arrow keys and Enter, or press Esc to exit"));
             return;
         }
 
@@ -1288,7 +1288,7 @@ impl MenuCanvas {
         if zoom > 1.0 {
             let layout = pangocairo::functions::create_layout(cr);
             layout.set_font_description(Some(&gtk::pango::FontDescription::from_string("Cantarell Bold 10")));
-            layout.set_text(&gettext("{} % · Ctrl+0 to fit").replace("{}", &format!("{:.0}", zoom * 100.0)));
+            layout.set_text(&gettext("{}% · Ctrl+0 to fit").replace("{}", &format!("{:.0}", zoom * 100.0)));
             let (_, ext) = layout.pixel_extents();
             let (tw, th) = (ext.width() as f64 + 20.0, ext.height() as f64 + 10.0);
             render::rounded_rect(cr, Rect::new(12.0, h - th - 12.0, tw, th), th / 2.0);

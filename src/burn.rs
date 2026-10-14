@@ -178,7 +178,7 @@ pub fn unmount(drive: &Path) -> Result<()> {
         30_000,
         gio::Cancellable::NONE,
     )
-    .map_err(|e| anyhow::anyhow!("The disc is open ({}) and couldn't be unmounted: {}. Eject it in Files, put it back in, and try again.", points.join(", "), e.message()))?;
+    .map_err(|e| anyhow::anyhow!("The disc is open ({}) and could not be unmounted: {}. Eject it in Files, reinsert it, and try again.", points.join(", "), e.message()))?;
     Ok(())
 }
 
@@ -232,7 +232,7 @@ pub fn burn(image: &Path, drive: &Path, cancel: &AtomicBool, mut progress: impl 
         if msg.contains("busy device") {
             bail!("The drive is in use by another program (a file manager, or another burn). Close it and try again.\n\n{msg}");
         }
-        bail!("burning failed: {msg}");
+        bail!("Burning failed: {msg}");
     }
     progress(1.0);
     Ok(())

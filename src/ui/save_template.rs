@@ -20,7 +20,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>, toast: impl F
 
     let g = adw::PreferencesGroup::builder()
         .description(gettext(
-            "Saves the main menu and the layout of the episode pages. Applied to another show, the title, season, episode names, running times and stills are filled in, and there are as many pages as its episodes need. The Setup and pop-up menus are saved as they look; a project without them gets ones in the template's colours.\n\nA template is for one shape of screen: 16:9, or 4:3 when the menus are 4:3 (a 4:3 Menu Format in Disc Settings).",
+            "Saves the main menu and the layout of the episode pages. When the template is applied to another show, the title, season, episode names, running times and stills are filled in automatically, with as many pages as the episodes require. Setup and pop-up menus are saved as designed. A project without them receives menus in the template's colors.\n\nA template covers one screen shape: 16:9, or 4:3 when the Menu Format in Disc Settings is 4:3.",
         ))
         .build();
     // 4:3 menus make a 4:3 template, named apart from a 16:9 one.
@@ -59,7 +59,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>, toast: impl F
             match custom::from_project(&doc.project(), &n, description.text().trim(), author.text().trim()) {
                 Ok(t) => Some(t),
                 Err(e) => {
-                    problem_row.set_title(&glib::markup_escape_text(&format!("{}: {e}", gettext("Can't make a template"))));
+                    problem_row.set_title(&glib::markup_escape_text(&format!("{}: {e}", gettext("The template could not be created"))));
                     problem.set_visible(true);
                     None
                 }

@@ -44,7 +44,7 @@ pub fn present(doc: &Rc<Document>, title: Id, start: f64, parent: &impl IsA<gtk:
         .title(glib::markup_escape_text(&t.name).as_str())
         .description(format!(
             "{} · {} {}",
-            gettext("Encoded exactly like the disc"),
+            gettext("Encoded with the disc's settings"),
             p.disc.video.label(),
             gettext("at {} Mbit/s").replace("{}", &format!("{:.0}", p.disc.video_bitrate as f64 / 1000.0))
         ))
@@ -110,7 +110,7 @@ pub fn present(doc: &Rc<Document>, title: Id, start: f64, parent: &impl IsA<gtk:
     let rbox = gtk::Box::builder().spacing(12).halign(gtk::Align::Center).build();
     let play = gtk::Button::builder().label(gettext("_Play Again")).use_underline(true).css_classes(["pill", "suggested-action"]).build();
     let folder = gtk::Button::builder().label(gettext("Show in _Folder")).use_underline(true).css_classes(["pill"]).build();
-    let again = gtk::Button::builder().label(gettext("_Another")).use_underline(true).css_classes(["pill"]).build();
+    let again = gtk::Button::builder().label(gettext("_New Preview")).use_underline(true).css_classes(["pill"]).build();
     rbox.append(&play);
     rbox.append(&folder);
     rbox.append(&again);

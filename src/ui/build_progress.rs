@@ -351,7 +351,7 @@ impl ProgressView {
         let text = match running.as_slice() {
             [] => self.stage.borrow().clone(),
             [t] => format!("{} · {}", t.name, t.detail),
-            many if many.iter().all(|t| t.group == TaskGroup::Titles) => gettext("Encoding {} titles at once").replace("{}", &many.len().to_string()),
+            many if many.iter().all(|t| t.group == TaskGroup::Titles) => gettext("Encoding {} titles simultaneously").replace("{}", &many.len().to_string()),
             many => many.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "),
         };
         self.headline.set_label(&text);

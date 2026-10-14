@@ -575,7 +575,7 @@ impl SpindleWindow {
                 let doc = win.doc();
                 let track = doc.project().asset(asset).and_then(external_audio_track);
                 let Some(track) = track else {
-                    win.toast(&gettext("That file has no sound"));
+                    win.toast(&gettext("The file contains no audio"));
                     return;
                 };
                 doc.edit(Change::Structure, |p| {
@@ -625,7 +625,7 @@ impl SpindleWindow {
             w.pick_audio(move |asset| {
                 let doc = win.doc();
                 if doc.project().asset(asset).is_some_and(|a| !a.info.has_audio()) {
-                    win.toast(&gettext("That file has no sound"));
+                    win.toast(&gettext("The file contains no audio"));
                     return;
                 }
                 doc.edit(Change::Structure, |p| {
@@ -960,7 +960,7 @@ impl SpindleWindow {
         let doc = self.doc();
         let Some(menu) = doc.current_menu() else { return };
         if doc.project().titles.is_empty() {
-            self.toast(&gettext("Import some videos first"));
+            self.toast(&gettext("Import videos first"));
             return;
         }
         doc.edit(Change::Structure, |p| {
@@ -1069,7 +1069,7 @@ impl SpindleWindow {
         let dialog = adw::AlertDialog::builder()
             .heading(gettext("Recover Unsaved Changes?"))
             .body(
-                gettext("Spindle didn't close normally while {name} had unsaved changes. A copy was saved {when}.")
+                gettext("Spindle closed unexpectedly while {name} had unsaved changes. A recovery copy was saved {when}.")
                     .replace("{name}", &name)
                     .replace("{when}", &when),
             )
@@ -1113,7 +1113,7 @@ impl SpindleWindow {
         }
         let dialog = adw::AlertDialog::builder()
             .heading(gettext("Save Changes?"))
-            .body(gettext("The disc project has unsaved changes. Changes which are not saved will be permanently lost."))
+            .body(gettext("The project has unsaved changes. Changes that are not saved will be permanently lost."))
             .close_response("cancel")
             .default_response("save")
             .build();
@@ -1164,7 +1164,7 @@ impl SpindleWindow {
                 }
                 self.doc().replace(p, Some(path.to_path_buf()));
             }
-            Err(e) => self.toast(&format!("{}: {e}", gettext("Could not open project"))),
+            Err(e) => self.toast(&format!("{}: {e}", gettext("Could not open the project"))),
         }
     }
 
@@ -1173,7 +1173,7 @@ impl SpindleWindow {
         let missing = self.doc().project().missing_media().len() as u32;
         let banner = &self.imp().missing_banner;
         if missing > 0 {
-            banner.set_title(&ngettext("{} media file can't be found", "{} media files can't be found", missing).replace("{}", &missing.to_string()));
+            banner.set_title(&ngettext("{} media file could not be found", "{} media files could not be found", missing).replace("{}", &missing.to_string()));
         }
         banner.set_revealed(missing > 0);
     }
@@ -1237,7 +1237,7 @@ impl SpindleWindow {
                         true
                     }
                     Err(e) => {
-                        win.toast(&format!("{}: {e}", gettext("Could not save")));
+                        win.toast(&format!("{}: {e}", gettext("Could not save the project")));
                         false
                     }
                 }

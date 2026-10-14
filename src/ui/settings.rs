@@ -44,13 +44,13 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         let row = rows::combo(doc, &gettext("Top Menu Key"), &labels, sel, Change::Content, move |p, i| {
             p.disc.top_menu = i.checked_sub(1).and_then(|i| menus.get(i)).map(|(id, _)| *id);
         });
-        row.set_subtitle(&gettext("Menu opened by the remote's Top Menu button"));
+        row.set_subtitle(&gettext("Opened by the Top Menu button on the remote"));
         g.add(&row);
     }
     disc_page.add(&g);
 
     let g = rows::group(&gettext("Video"));
-    g.set_description(Some(&gettext("Titles are converted to this Blu-ray video format, and menus too unless they have their own")));
+    g.set_description(Some(&gettext("Titles are encoded in this Blu-ray video format. Menus use the same format unless a Menu Format is set.")));
     let formats: Vec<String> = VideoFormat::ALL.iter().map(|f| f.label().to_string()).collect();
     let sel = VideoFormat::ALL.iter().position(|f| *f == d.video).unwrap_or(0);
     let format_row = rows::combo(doc, &gettext("Title Format"), &formats, sel, Change::Content, |p, i| {
@@ -58,11 +58,11 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     });
     let explain = |f: VideoFormat| {
         if f.is_4x3() {
-            gettext("SD (DVD resolution) for 4:3 TVs: wide video is letterboxed, and menus are 4:3")
+            gettext("Standard definition for 4:3 displays. Widescreen video is letterboxed and menus are 4:3")
         } else if f.is_sd() {
-            gettext("SD (DVD resolution), widescreen")
+            gettext("Standard definition, widescreen")
         } else if f.interlaced() {
-            gettext("Interlaced video stays interlaced; film and progressive video are carried as fields")
+            gettext("Interlaced sources remain interlaced. Film and progressive sources are stored as fields")
         } else {
             String::new()
         }
@@ -77,13 +77,13 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     let menu_row = rows::combo(doc, &gettext("Menu Format"), &menu_formats, sel, Change::Content, |p, i| {
         p.disc.menu_video = i.checked_sub(1).and_then(|i| VideoFormat::ALL.get(i)).copied();
     });
-    menu_row.set_subtitle(&gettext("Menus can stay in HD on a disc of SD titles, which leaves room for many more. In a 4:3 format, menus are 4:3"));
+    menu_row.set_subtitle(&gettext("Menus can be HD on a disc of SD titles. A 4:3 format produces 4:3 menus"));
     menu_row.set_subtitle_lines(2);
     g.add(&menu_row);
     let br = rows::spin(doc, &gettext("Average Bitrate"), d.video_bitrate as f64 / 1000.0, 1.5, 35.0, 0.5, 1, Change::Content, |p, v| {
         p.disc.video_bitrate = (v * 1000.0) as u32;
     });
-    br.set_subtitle(&gettext("Mbit/s — about 18 fits two hours on a BD-25"));
+    br.set_subtitle(&gettext("Mbit/s · 18 fits about two hours on a BD-25"));
     g.add(&br);
     quality_row(doc, &g, d.quality);
     tune_row(doc, &g, d.tune);
@@ -92,7 +92,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
 
     let g = rows::group(&gettext("Audio"));
     g.set_description(Some(&gettext(
-        "Audio is encoded to this format. DTS, DTS-HD, Dolby TrueHD and Dolby Digital Plus sources are copied as they are, since Blu-ray players decode them.",
+        "Audio is encoded to this format. DTS, DTS-HD, Dolby TrueHD and Dolby Digital Plus tracks are copied without re-encoding, as Blu-ray players support them.",
     )));
     let codecs = [gettext("Dolby Digital (AC-3)"), gettext("LPCM 16-bit (uncompressed)"), gettext("LPCM 24-bit (uncompressed)")];
     let sel = AudioCodec::ENCODE.iter().position(|c| *c == d.audio).unwrap_or(0);
@@ -105,12 +105,12 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     let bitrate_row = rows::combo(doc, &gettext("AC-3 Bitrate"), &labels, sel, Change::Content, |p, i| {
         p.disc.audio_bitrate = AUDIO_BITRATES[i.min(AUDIO_BITRATES.len() - 1)];
     });
-    bitrate_row.set_subtitle(&gettext("448 or 640 for 5.1 surround"));
+    bitrate_row.set_subtitle(&gettext("448 or 640 kbit/s is recommended for 5.1 surround"));
     bitrate_row.set_visible(d.audio == AudioCodec::Ac3);
     codec_row.connect_selected_notify(glib::clone!(#[weak] bitrate_row, move |r| bitrate_row.set_visible(r.selected() == 0)));
     g.add(&bitrate_row);
-    let loud = rows::switch(doc, &gettext("Even Out Loudness"), d.normalize_loudness, Change::Content, |p, v| p.disc.normalize_loudness = v);
-    loud.set_subtitle(&gettext("Measures every track and sets it to −23 LUFS (EBU R128), so titles play at the same volume. Tracks are then re-encoded rather than copied."));
+    let loud = rows::switch(doc, &gettext("Normalize Loudness"), d.normalize_loudness, Change::Content, |p, v| p.disc.normalize_loudness = v);
+    loud.set_subtitle(&gettext("Normalizes every track to −23 LUFS (EBU R128) so that titles play at a consistent volume. Tracks are re-encoded instead of copied."));
     loud.set_subtitle_lines(3);
     g.add(&loud);
     audio_page.add(&g);
@@ -154,9 +154,9 @@ fn quality_row(doc: &Rc<Document>, g: &adw::PreferencesGroup, current: crate::me
     use crate::media::transcode::Quality;
     let labels = [gettext("Fast"), gettext("Balanced"), gettext("Best")];
     let explain = |q: Quality| match q {
-        Quality::Fast => gettext("Quick to encode, for drafts"),
-        Quality::Balanced => gettext("A good picture in a reasonable time"),
-        Quality::Best => gettext("Two passes: the best picture for the bitrate and sizes that match the estimate; takes about three times as long"),
+        Quality::Fast => gettext("Fastest encode, suitable for drafts"),
+        Quality::Balanced => gettext("Good picture quality in a moderate encoding time"),
+        Quality::Best => gettext("Two-pass encode with the best picture for the bitrate and accurate file sizes. Takes about three times as long"),
     };
     let sel = Quality::ALL.iter().position(|q| *q == current).unwrap_or(1);
     let row = rows::combo(doc, &gettext("Quality"), &labels, sel, Change::Content, |p, i| {
@@ -173,13 +173,13 @@ pub(super) fn tune_row(doc: &Rc<Document>, g: &adw::PreferencesGroup, current: c
     use crate::media::transcode::Tune;
     let labels = [gettext("General"), gettext("Film"), gettext("Animation"), gettext("Film Grain")];
     let explain = |t: Tune| match t {
-        Tune::None => gettext("Suits any video"),
-        Tune::Film => gettext("Live action: keeps fine detail and texture"),
-        Tune::Animation => gettext("Cartoons and anime: clean lines and smooth flat colours"),
-        Tune::Grain => gettext("Keeps the grain of old or grainy film, which needs a high bitrate"),
+        Tune::None => gettext("Suitable for any video"),
+        Tune::Film => gettext("Live action. Preserves fine detail and texture"),
+        Tune::Animation => gettext("Cartoons and anime. Preserves clean lines and flat colors"),
+        Tune::Grain => gettext("Preserves film grain. Requires a high bitrate"),
     };
     let sel = Tune::ALL.iter().position(|t| *t == current).unwrap_or(0);
-    let row = rows::combo(doc, &gettext("Tuned For"), &labels, sel, Change::Content, |p, i| {
+    let row = rows::combo(doc, &gettext("Content Type"), &labels, sel, Change::Content, |p, i| {
         p.disc.tune = Tune::ALL[i.min(Tune::ALL.len() - 1)];
     });
     row.set_subtitle(&explain(current));
@@ -196,14 +196,14 @@ fn encoder_rows(doc: &Rc<Document>, g: &adw::PreferencesGroup, current: crate::m
     let row = rows::combo(doc, &gettext("Encoder"), &labels, sel, Change::Content, |p, i| {
         p.disc.encoder = VideoEncoder::ALL[i.min(VideoEncoder::ALL.len() - 1)];
     });
-    row.set_subtitle(&gettext("Checking which hardware encoders work…"));
+    row.set_subtitle(&gettext("Detecting hardware encoders…"));
     g.add(&row);
 
     let warning = adw::ActionRow::builder()
         .title(gettext("For Testing Only"))
         .subtitle(gettext(
-            "Hardware encoding is much faster, but the picture is noticeably softer and blockier than Software at Blu-ray bitrates. \
-             Use it to check menus and navigation quickly, and build the disc you keep with Software (x264).",
+            "Hardware encoding is much faster, but at Blu-ray bitrates the picture is noticeably softer and blockier than with Software encoding. \
+             Use it to check menus and navigation quickly, and build the final disc with Software (x264).",
         ))
         .subtitle_lines(6)
         .visible(current.is_hardware())
@@ -223,9 +223,9 @@ fn encoder_rows(doc: &Rc<Document>, g: &adw::PreferencesGroup, current: crate::m
         let Some(row) = row.upgrade() else { return };
         let hardware: Vec<String> = found.iter().filter(|e| e.is_hardware()).map(|e| e.label()).collect();
         row.set_subtitle(&if hardware.is_empty() {
-            gettext("No hardware encoder works on this computer")
+            gettext("No hardware encoder is available on this computer")
         } else {
-            gettext("Works here: {}").replace("{}", &hardware.join(", "))
+            gettext("Supported: {}").replace("{}", &hardware.join(", "))
         });
     });
 }
@@ -235,7 +235,7 @@ fn languages_group(doc: &Rc<Document>, page: &adw::PreferencesPage) {
     use crate::model::{language_name, LanguagePreset, SubtitleMode};
     let g = rows::group(&gettext("Languages"));
     g.set_description(Some(&gettext(
-        "Choices for a Setup menu. Each sets the audio and subtitles of every title; the default applies until the viewer picks another.",
+        "Language choices for a Setup menu. Each choice sets the audio and subtitles for every title. The default applies until the viewer selects another.",
     )));
     page.add(&g);
     let rows_in: Rc<std::cell::RefCell<Vec<gtk::Widget>>> = Rc::default();
@@ -310,7 +310,7 @@ fn languages_group(doc: &Rc<Document>, page: &adw::PreferencesPage) {
                         l.name = v;
                     }
                 });
-                name.set_tooltip_text(Some(&gettext("The label of this choice's button")));
+                name.set_tooltip_text(Some(&gettext("Label for this choice's button")));
                 row.add_row(&name);
                 let c = codes.clone();
                 row.add_row(&rows::combo(&doc, &gettext("Audio"), &names, codes.iter().position(|x| *x == preset.audio).unwrap_or(0), Change::Structure, move |p, i| {
@@ -349,7 +349,7 @@ fn languages_group(doc: &Rc<Document>, page: &adw::PreferencesPage) {
                 if !suggested.is_empty() {
                     let names: Vec<String> = suggested.iter().map(|l| l.name.clone()).collect();
                     let b = adw::ButtonRow::builder()
-                        .title(gettext("Add from Tracks: {}").replace("{}", &names.join(", ")))
+                        .title(gettext("Add From Tracks: {}").replace("{}", &names.join(", ")))
                         .start_icon_name("list-add-symbolic")
                         .build();
                     let d = doc.clone();
@@ -394,7 +394,7 @@ fn subtitle_group(doc: &Rc<Document>, page: &adw::PreferencesPage) {
     use crate::model::SubtitleStyle;
     let st = doc.project().disc.subtitle_style.clone();
     let preview_group = rows::group(&gettext("Subtitle Style"));
-    preview_group.set_description(Some(&gettext("For SRT, WebVTT and other plain text subtitles")));
+    preview_group.set_description(Some(&gettext("Applies to SRT, WebVTT and other plain-text subtitles")));
     let picture = gtk::Picture::builder()
         .content_fit(gtk::ContentFit::Cover)
         .can_shrink(true)
@@ -424,7 +424,7 @@ fn subtitle_group(doc: &Rc<Document>, page: &adw::PreferencesPage) {
     g.add(&rows::spin(doc, &gettext("Shadow"), st.shadow, 0.0, 10.0, 0.5, 1, Change::Content, |p, v| edit(p).shadow = v));
     g.add(&rows::spin(doc, &gettext("Distance From Bottom"), st.margin, 0.0, 400.0, 5.0, 0, Change::Content, |p, v| edit(p).margin = v));
     let restyle = rows::switch(doc, &gettext("Also Restyle ASS Subtitles"), st.restyle_ass, Change::Content, |p, v| edit(p).restyle_ass = v);
-    restyle.set_subtitle(&gettext("Normally ASS/SSA subtitles keep their own fonts, colors and positions"));
+    restyle.set_subtitle(&gettext("By default, ASS/SSA subtitles keep their own fonts, colors and positions"));
     g.add(&restyle);
     page.add(&g);
 

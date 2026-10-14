@@ -61,7 +61,7 @@ pub fn measure(file: &Path, index: usize, cancel: &AtomicBool) -> Result<Measure
     ]
     .into();
     let log = super::ffmpeg::run_log(&args, cancel).context("could not measure the loudness")?;
-    let m = parse(&log).context("ffmpeg didn't report the loudness")?;
+    let m = parse(&log).context("ffmpeg did not report the loudness")?;
     let mut all = load();
     all.insert(key(file, index), m);
     if let Ok(data) = serde_json::to_vec(&all) {
