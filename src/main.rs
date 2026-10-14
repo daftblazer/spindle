@@ -261,7 +261,7 @@ fn main() -> glib::ExitCode {
         };
         let run = || -> anyhow::Result<()> {
             if args.get(4).map(String::as_str) != Some("--verify-only") {
-                burn::burn(image, drive, &cancel, |f| report("burning", f))?;
+                burn::burn(image, drive, None, &cancel, |f| report("burning", f))?;
             }
             last.set(-1);
             burn::verify(image, drive, &cancel, |f| report("verifying", f))

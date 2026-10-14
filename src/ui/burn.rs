@@ -19,6 +19,8 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct Target {
     pub drive: PathBuf,
+    /// Writing speed as a multiple of 1× Blu-ray speed; the fastest when None.
+    pub speed: Option<f64>,
     pub verify: bool,
     pub eject: bool,
     /// A rewritable disc with data on it will be erased.
@@ -30,6 +32,9 @@ pub struct BurnOptions {
     drive_row: adw::ComboRow,
     status_row: adw::ActionRow,
     status_icon: gtk::Image,
+    speed_row: adw::ComboRow,
+    /// The speeds in `speed_row`, after Fastest.
+    speeds: RefCell<Vec<f64>>,
     verify_row: adw::SwitchRow,
     eject_row: adw::SwitchRow,
     drives: RefCell<Vec<Drive>>,
@@ -44,19 +49,27 @@ impl BurnOptions {
         let status_icon = gtk::Image::from_icon_name("media-optical-symbolic");
         let status_row = adw::ActionRow::builder().title(gettext("Disc")).subtitle(gettext("Checking…")).subtitle_lines(3).build();
         status_row.add_prefix(&status_icon);
+        let speed_row = adw::ComboRow::builder()
+            .title(gettext("Speed"))
+            .subtitle(gettext("The speeds this drive supports for the disc. A slower speed can produce a more reliable disc"))
+            .subtitle_lines(3)
+            .model(&gtk::StringList::new(&[&gettext("Fastest")]))
+            .build();
         let verify_row = adw::SwitchRow::builder()
             .title(gettext("Verify After Burning"))
             .subtitle(gettext("Reads the disc back and compares it with the image"))
             .active(true)
             .build();
         let eject_row = adw::SwitchRow::builder().title(gettext("Eject When Done")).active(true).build();
-        for r in [drive_row.upcast_ref::<gtk::Widget>(), status_row.upcast_ref(), verify_row.upcast_ref(), eject_row.upcast_ref()] {
+        for r in [drive_row.upcast_ref::<gtk::Widget>(), status_row.upcast_ref(), speed_row.upcast_ref(), verify_row.upcast_ref(), eject_row.upcast_ref()] {
             group.add(r);
         }
         let this = Rc::new(BurnOptions {
             drive_row,
             status_row,
             status_icon,
+            speed_row,
+            speeds: RefCell::new(Vec::new()),
             verify_row,
             eject_row,
             drives: RefCell::new(Vec::new()),
@@ -95,7 +108,7 @@ impl BurnOptions {
     }
 
     pub fn set_visible(self: &Rc<Self>, visible: bool) {
-        for r in [self.drive_row.upcast_ref::<gtk::Widget>(), self.status_row.upcast_ref(), self.verify_row.upcast_ref(), self.eject_row.upcast_ref()] {
+        for r in [self.drive_row.upcast_ref::<gtk::Widget>(), self.status_row.upcast_ref(), self.speed_row.upcast_ref(), self.verify_row.upcast_ref(), self.eject_row.upcast_ref()] {
             r.set_visible(visible);
         }
         if visible {
@@ -114,6 +127,33 @@ impl BurnOptions {
         self.drive_row.set_model(Some(&gtk::StringList::new(&strs)));
         self.drive_row.set_sensitive(!found.is_empty());
         *self.drives.borrow_mut() = found;
+    }
+
+    /// Offer the speeds the drive reports for the disc in it, keeping the
+    /// chosen one when the disc still allows it.
+    fn fill_speeds(&self) {
+        let found = match &*self.state.borrow() {
+            Some(DiscState::Ready(d)) => d.speeds.clone(),
+            _ => Vec::new(),
+        };
+        if *self.speeds.borrow() == found {
+            return;
+        }
+        let chosen = self.speed();
+        let mut labels = vec![match found.first() {
+            Some(top) => gettext("Fastest ({}×)").replace("{}", &top.to_string()),
+            None => gettext("Fastest"),
+        }];
+        labels.extend(found.iter().map(|s| format!("{s}×")));
+        let strs: Vec<&str> = labels.iter().map(|s| s.as_str()).collect();
+        self.speed_row.set_model(Some(&gtk::StringList::new(&strs)));
+        let at = chosen.and_then(|c| found.iter().position(|s| *s == c)).map_or(0, |i| i + 1);
+        *self.speeds.borrow_mut() = found;
+        self.speed_row.set_selected(at as u32);
+    }
+
+    fn speed(&self) -> Option<f64> {
+        (self.speed_row.selected() as usize).checked_sub(1).and_then(|i| self.speeds.borrow().get(i).copied())
     }
 
     fn drive(&self) -> Option<PathBuf> {
@@ -152,6 +192,7 @@ impl BurnOptions {
                 (text, false) => (text, "dialog-warning-symbolic", "warning"),
             },
         };
+        self.fill_speeds();
         self.status_row.set_subtitle(&text);
         self.status_icon.set_icon_name(Some(icon));
         let classes: Vec<&str> = if class.is_empty() { vec![] } else { vec![class] };
@@ -180,7 +221,7 @@ impl BurnOptions {
 
     pub fn target(&self) -> Option<Target> {
         let erases = matches!(&*self.state.borrow(), Some(DiscState::Ready(d)) if d.rewritable && !d.blank);
-        Some(Target { drive: self.drive()?, verify: self.verify_row.is_active(), eject: self.eject_row.is_active(), erases })
+        Some(Target { drive: self.drive()?, speed: self.speed(), verify: self.verify_row.is_active(), eject: self.eject_row.is_active(), erases })
     }
 }
 
@@ -227,11 +268,12 @@ pub fn run(image: &Path, target: &Target, cancel: &AtomicBool, emit: &dyn Fn(Bui
     };
     let span = if target.verify { (1.0 - start) * 0.6 } else { 1.0 - start };
     emit(BuildEvent::Stage(if target.erases { gettext("Erasing and burning the disc") } else { gettext("Burning the disc") }));
-    emit(BuildEvent::Log(format!("Burning {} to {}", image.display(), target.drive.display())));
+    let speed = target.speed.map_or_else(|| "the fastest speed".to_string(), |s| format!("{s}×"));
+    emit(BuildEvent::Log(format!("Burning {} to {} at {speed}", image.display(), target.drive.display())));
     let size = std::fs::metadata(image).map_or(0, |m| m.len()) as f64;
     let writing = |f: f64| format!("{:.1} of {:.1} GB", f * size / 1e9, size / 1e9);
     task("burn", TaskState::Running, gettext("Starting"), 0.0);
-    burn::burn(image, &target.drive, cancel, |f| {
+    burn::burn(image, &target.drive, target.speed, cancel, |f| {
         emit(BuildEvent::Progress(start + f * span));
         task("burn", TaskState::Running, writing(f), f);
     })

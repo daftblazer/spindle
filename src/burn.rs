@@ -50,6 +50,9 @@ pub struct Disc {
     pub rewritable: bool,
     /// Bytes that can still be written.
     pub free: u64,
+    /// Speeds the drive can write this disc at, fastest first, as
+    /// multiples of the disc type's 1× speed.
+    pub speeds: Vec<f64>,
 }
 
 impl Disc {
@@ -97,20 +100,30 @@ fn parse_toc(out: &str) -> DiscState {
         .and_then(|s| s.split(',').find(|p| p.contains("free")).and_then(|p| parse_size(p.trim().trim_end_matches("free"))))
         .unwrap_or(0);
     let kind = kind.split_whitespace().next().unwrap_or("").trim_end_matches(',').to_string();
+    // "Write speed  :  17984k ,  4.0xB" (the L and H lines repeat the limits).
+    let mut speeds: Vec<f64> = out
+        .lines()
+        .filter_map(|l| l.strip_prefix("Write speed")?.trim_start().strip_prefix(':'))
+        .filter_map(|v| v.split(',').nth(1)?.trim().split('x').next()?.parse().ok())
+        .filter(|s: &f64| *s > 0.0)
+        .collect();
+    speeds.sort_by(|a, b| b.total_cmp(a));
+    speeds.dedup();
     DiscState::Ready(Disc {
         rewritable: kind.ends_with("RW") || kind.ends_with("RE") || kind == "DVD-RAM",
         blank: status.contains("is blank"),
         free,
         kind,
+        speeds,
     })
 }
 
 /// What is in `drive`, without disturbing a disc that is in use.
 pub fn check(drive: &Path) -> DiscState {
     let out = Command::new(xorriso_bin())
-        .args(["-drive_access", "shared:readonly", "-indev"])
+        .args(["-drive_access", "shared:readonly", "-outdev"])
         .arg(drive)
-        .arg("-toc")
+        .args(["-toc", "-list_speeds"])
         .stdin(Stdio::null())
         .output();
     match out {
@@ -182,12 +195,17 @@ pub fn unmount(drive: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn burn(image: &Path, drive: &Path, cancel: &AtomicBool, mut progress: impl FnMut(f64)) -> Result<()> {
+pub fn burn(image: &Path, drive: &Path, speed: Option<f64>, cancel: &AtomicBool, mut progress: impl FnMut(f64)) -> Result<()> {
     // A plain file stands in for a drive (for testing).
     let dev = if is_device(drive) { drive.display().to_string() } else { format!("stdio:{}", drive.display()) };
     unmount(drive)?;
-    let mut child = Command::new(xorriso_bin())
-        .args(["-as", "cdrecord", "-v", "-dao", "blank=as_needed"])
+    let mut command = Command::new(xorriso_bin());
+    command.args(["-as", "cdrecord", "-v", "-dao", "blank=as_needed"]);
+    // Without a speed the drive writes as fast as it and the disc allow.
+    if let Some(speed) = speed {
+        command.arg(format!("speed={speed}"));
+    }
+    let mut child = command
         .arg(format!("dev={dev}"))
         .arg(image)
         .stdin(Stdio::null())
@@ -395,6 +413,8 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+        let listed = format!("{blank}Read speed   :  53952k , 12.0xB\nWrite speed  :  17984k ,  4.0xB\nWrite speed  :  53952k , 12.0xB\nWrite speed L:  17984k ,  4.0xB\nWrite speed H:  53952k , 12.0xB\n");
+        assert!(matches!(parse_toc(&listed), DiscState::Ready(Disc { speeds, .. }) if speeds == [12.0, 4.0]));
         let dvd = "Media current: DVD+R\nMedia status : is written , is closed\nMedia summary: 1 session, 2193664 data blocks, 4284m data,     0 free\n";
         assert!(matches!(parse_toc(dvd), DiscState::Ready(Disc { blank: false, rewritable: false, free: 0, .. })));
         let re = "Media current: BD-RE\nMedia status : is written , is appendable\nMedia summary: 1 session, 100 data blocks, 1m data, 22.9g free\n";
