@@ -5,7 +5,7 @@
 //! existing image.
 
 use crate::build::{BuildEvent, TaskGroup, TaskState};
-use crate::burn::{self, Disc, DiscState, Drive};
+use crate::burn::{self, Disc, DiscState, Drive, ReadScan};
 use adw::prelude::*;
 use gettextrs::gettext;
 use gtk::{gio, glib};
@@ -283,13 +283,14 @@ pub fn run(image: &Path, target: &Target, cancel: &AtomicBool, emit: &dyn Fn(Bui
         emit(BuildEvent::Stage(gettext("Verifying the disc")));
         let from = start + span;
         task("verify", TaskState::Running, gettext("Reading the disc back"), 0.0);
-        burn::verify(image, &target.drive, cancel, |f| {
+        let scan = burn::verify(image, &target.drive, cancel, |f| {
             emit(BuildEvent::Progress(from + f * (1.0 - from)));
             task("verify", TaskState::Running, gettext("Reading the disc back"), f);
         })
         .inspect_err(|_| fail("verify"))?;
         task("verify", TaskState::Done, gettext("The disc matches the image"), 1.0);
-        emit(BuildEvent::Log("The disc matches the image".into()));
+        emit(BuildEvent::Log(format!("The disc matches the image. {}", read_summary(&scan))));
+        emit(BuildEvent::Scan(scan));
     }
     if target.eject {
         burn::eject(&target.drive);
@@ -358,7 +359,11 @@ pub fn present_image(parent: &impl IsA<gtk::Widget>, image: PathBuf) {
     let result = adw::StatusPage::new();
     result.add_css_class("compact");
     let close_btn = gtk::Button::builder().label(gettext("_Close")).use_underline(true).halign(gtk::Align::Center).css_classes(["pill"]).build();
-    result.set_child(Some(&close_btn));
+    let graph = adw::Bin::new();
+    let rcol = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(18).build();
+    rcol.append(&graph);
+    rcol.append(&close_btn);
+    result.set_child(Some(&rcol));
     stack.add_named(&result, Some("result"));
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -371,7 +376,7 @@ pub fn present_image(parent: &impl IsA<gtk::Widget>, image: PathBuf) {
     let d = dialog.clone();
     burn_btn.connect_clicked(move |_| {
         let Some(target) = options.target() else { return };
-        let (stack, result, cancel, image) = (stack.clone(), result.clone(), cancel.clone(), image.clone());
+        let (stack, result, graph, cancel, image) = (stack.clone(), result.clone(), graph.clone(), cancel.clone(), image.clone());
         confirm_erase(&d, &target.clone(), move || {
             let name = image.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let view = super::build_progress::ProgressView::new(&gettext("Burning “{}”").replace("{}", &name));
@@ -395,12 +400,16 @@ pub fn present_image(parent: &impl IsA<gtk::Widget>, image: PathBuf) {
                 let res = run(&image, &target, &cancel, &emit, 0.0).map(|_| image.clone()).map_err(|e| format!("{e:#}"));
                 emit(BuildEvent::Finished(res));
             });
-            let (stack, result) = (stack.clone(), result.clone());
+            let (stack, result, graph) = (stack.clone(), result.clone(), graph.clone());
             glib::spawn_future_local(async move {
+                let mut scan = None;
                 while let Ok(ev) = rx.recv().await {
+                    if let BuildEvent::Scan(s) = &ev {
+                        scan = Some(s.clone());
+                    }
                     if let BuildEvent::Finished(res) = ev {
                         view.finish();
-                        show_result(&result, res.map(|_| ()));
+                        show_result(&result, &graph, res.map(|_| ()), scan.as_ref());
                         stack.set_visible_child_name("result");
                         break;
                     }
@@ -412,13 +421,76 @@ pub fn present_image(parent: &impl IsA<gtk::Widget>, image: PathBuf) {
     dialog.present(Some(parent));
 }
 
-/// Fill the result page after burning.
-pub fn show_result(result: &adw::StatusPage, res: Result<(), String>) {
+/// How the disc read back, in a sentence.
+fn read_summary(scan: &ReadScan) -> String {
+    let x = |speed: f64| format!("{:.1}", speed / ReadScan::BD_1X);
+    let Some((min, max)) = scan.range() else { return String::new() };
+    let places = scan.slow_places();
+    if places.is_empty() {
+        return gettext("It read back smoothly at {min}–{max}×, with no slowdowns.").replace("{min}", &x(min)).replace("{max}", &x(max));
+    }
+    let mut at: Vec<String> = places.iter().take(4).map(|b| format!("{:.1}", *b as f64 / 1e9)).collect();
+    if places.len() > 4 {
+        at.push("…".into());
+    }
+    gettext("The drive slowed down while reading at {at} GB. The data is correct, but these areas may be marginal.").replace("{at}", &at.join(", "))
+}
+
+/// A graph of the read speed over the disc, with slow stretches marked.
+fn read_graph(scan: &ReadScan) -> gtk::Widget {
+    let area = gtk::DrawingArea::builder().content_width(360).content_height(96).build();
+    let (speeds, slow) = (scan.speeds.clone(), scan.slow());
+    area.set_draw_func(move |area, cr, w, h| {
+        let (w, h) = (w as f64, h as f64);
+        let top = speeds.iter().copied().fold(1.0, f64::max) * 1.1;
+        let x = |i: usize| if speeds.len() > 1 { i as f64 / (speeds.len() - 1) as f64 * w } else { 0.0 };
+        let y = |s: f64| h - s / top * (h - 2.0) - 1.0;
+        let c = area.color();
+        // Slow stretches, behind the line.
+        cr.set_source_rgba(0.88, 0.11, 0.14, 0.35);
+        let bar = (w / speeds.len().max(1) as f64).max(3.0);
+        for i in &slow {
+            cr.rectangle(x(*i) - bar / 2.0, 0.0, bar, h);
+        }
+        let _ = cr.fill();
+        for (i, s) in speeds.iter().enumerate() {
+            cr.line_to(x(i), y(*s));
+        }
+        cr.set_source_rgba(c.red() as f64, c.green() as f64, c.blue() as f64, 0.8);
+        cr.set_line_width(1.5);
+        let _ = cr.stroke_preserve();
+        cr.line_to(w, h);
+        cr.line_to(0.0, h);
+        cr.close_path();
+        cr.set_source_rgba(c.red() as f64, c.green() as f64, c.blue() as f64, 0.12);
+        let _ = cr.fill();
+    });
+    let frame = gtk::Frame::builder().child(&area).halign(gtk::Align::Center).build();
+    let size = scan.step as f64 * scan.speeds.len().saturating_sub(1) as f64 / 1e9;
+    let ends = gtk::CenterBox::new();
+    let caption = |text: String| gtk::Label::builder().label(text).css_classes(["caption", "dim-label"]).build();
+    ends.set_start_widget(Some(&caption(gettext("Start of disc"))));
+    ends.set_center_widget(Some(&caption(gettext("Read Speed"))));
+    ends.set_end_widget(Some(&caption(format!("{size:.1} GB"))));
+    let col = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).halign(gtk::Align::Center).build();
+    col.append(&frame);
+    col.append(&ends);
+    col.upcast()
+}
+
+/// Fill the result page after burning; `graph` takes the read speed graph
+/// when the disc was verified.
+pub fn show_result(result: &adw::StatusPage, graph: &adw::Bin, res: Result<(), String>, scan: Option<&ReadScan>) {
+    graph.set_child(scan.filter(|_| res.is_ok()).map(read_graph).as_ref());
     match res {
         Ok(()) => {
             result.set_icon_name(Some("object-select-symbolic"));
             result.set_title(&gettext("Disc Burned"));
-            result.set_description(Some(&gettext("The disc has been burned successfully.")));
+            let mut text = gettext("The disc has been burned successfully.");
+            if let Some(scan) = scan {
+                text = format!("{text}\n{}", read_summary(scan));
+            }
+            result.set_description(Some(&glib::markup_escape_text(&text)));
         }
         Err(e) => {
             let cancelled = e.contains("cancelled");

@@ -304,6 +304,9 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         .child(&gtk::ScrolledWindow::builder().min_content_height(160).child(&details_view).build())
         .visible(false)
         .build();
+    // After burning with Verify: how the disc read back.
+    let graph = adw::Bin::new();
+    rcol.append(&graph);
     rcol.append(&details);
     let rbox = gtk::Box::builder().spacing(12).halign(gtk::Align::Center).build();
     let open_btn = gtk::Button::builder().label(gettext("_Open Folder")).use_underline(true).css_classes(["pill", "suggested-action"]).build();
@@ -379,7 +382,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         let start = {
             let (doc, output, cancel, stack, progress, result, open_btn) =
                 (doc.clone(), output.clone(), cancel.clone(), stack.clone(), progress.clone(), result.clone(), open_btn.clone());
-            let (details, details_view, copy_btn) = (details.clone(), details_view.clone(), copy_btn.clone());
+            let (details, details_view, copy_btn, graph) = (details.clone(), details_view.clone(), copy_btn.clone(), graph.clone());
             let target = target.clone();
             move || {
         let target = target.clone();
@@ -437,10 +440,11 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
             .map_err(|e| format!("{e:#}"));
             emit(BuildEvent::Finished(res));
         });
-        let (result, stack, open_btn) = (result.clone(), stack.clone(), open_btn.clone());
+        let (result, stack, open_btn, graph) = (result.clone(), stack.clone(), open_btn.clone(), graph.clone());
         let (details, details_view, copy_btn) = (details.clone(), details_view.clone(), copy_btn.clone());
         glib::spawn_future_local(async move {
             let mut stage = String::new();
+            let mut scan = None;
             // Full error and log for the Details section.
             let explain = |e: &str, stage: &str| {
                 let log_text = view.log_text();
@@ -456,6 +460,9 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                     if let BuildEvent::Stage(s) = &ev {
                         stage = s.clone();
                     }
+                    if let BuildEvent::Scan(s) = &ev {
+                        scan = Some(s.clone());
+                    }
                     view.handle(&ev);
                     continue;
                 }
@@ -467,7 +474,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                                 explain(e, &stage);
                             }
                         }
-                        super::burn::show_result(&result, res.map(|_| ()).map_err(|e| summary(&e, &stage)));
+                        super::burn::show_result(&result, &graph, res.map(|_| ()).map_err(|e| summary(&e, &stage)), scan.as_ref());
                         open_btn.set_visible(false);
                         stack.set_visible_child_name("result");
                         break;

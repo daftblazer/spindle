@@ -366,11 +366,56 @@ mod sg {
     }
 }
 
+/// How fast a disc read back, stretch by stretch. A well-burned disc reads
+/// at a steadily rising speed; where the drive had trouble it slows down
+/// or tries again, which shows as a dip.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ReadScan {
+    /// Bytes in each stretch (the last may be shorter).
+    pub step: u64,
+    /// Bytes a second each stretch was read at, from the start of the disc.
+    pub speeds: Vec<f64>,
+}
+
+impl ReadScan {
+    /// 1× Blu-ray speed, in bytes a second.
+    pub const BD_1X: f64 = 4_495_500.0;
+
+    /// Stretches read much slower than the ones around them.
+    pub fn slow(&self) -> Vec<usize> {
+        const AROUND: usize = 8;
+        // The drive is still spinning up over the first stretches.
+        (2..self.speeds.len())
+            .filter(|&i| {
+                let mut near = self.speeds[i.saturating_sub(AROUND)..(i + AROUND + 1).min(self.speeds.len())].to_vec();
+                near.sort_by(f64::total_cmp);
+                self.speeds[i] < near[near.len() / 2] * 0.6
+            })
+            .collect()
+    }
+
+    /// Where the slow stretches begin, in bytes, with neighbours as one.
+    pub fn slow_places(&self) -> Vec<u64> {
+        let slow = self.slow();
+        slow.iter().enumerate().filter(|(n, i)| *n == 0 || slow[n - 1] + 1 != **i).map(|(_, i)| *i as u64 * self.step).collect()
+    }
+
+    /// The slowest and fastest stretch, in bytes a second.
+    pub fn range(&self) -> Option<(f64, f64)> {
+        let settled = self.speeds.get(2..).filter(|s| !s.is_empty()).unwrap_or(&self.speeds);
+        let min = settled.iter().copied().min_by(f64::total_cmp)?;
+        Some((min, settled.iter().copied().max_by(f64::total_cmp)?))
+    }
+}
+
 /// Read the disc (or a stand-in image file) back and compare it with
-/// `image`.
-pub fn verify(image: &Path, drive: &Path, cancel: &AtomicBool, mut progress: impl FnMut(f64)) -> Result<()> {
+/// `image`, timing the reads.
+pub fn verify(image: &Path, drive: &Path, cancel: &AtomicBool, mut progress: impl FnMut(f64)) -> Result<ReadScan> {
     const CHUNK: usize = 32 * 2048;
     let len = std::fs::metadata(image)?.len();
+    // About 250 stretches over the disc, none shorter than 4 MB.
+    let mut scan = ReadScan { step: (len / 250).max(4 << 20).next_multiple_of(CHUNK as u64), speeds: Vec::new() };
+    let (mut taken, mut read) = (std::time::Duration::ZERO, 0u64);
     let mut img = std::fs::File::open(image).with_context(|| format!("reading {}", image.display()))?;
     let reader = if is_device(drive) { Some(sg::Reader::open(drive).with_context(|| format!("opening {}", drive.display()))?) } else { None };
     let mut file = if reader.is_none() { Some(std::fs::File::open(drive)?) } else { None };
@@ -381,10 +426,17 @@ pub fn verify(image: &Path, drive: &Path, cancel: &AtomicBool, mut progress: imp
         // Whole blocks from the disc; the image is a whole number of blocks.
         let n_blocks = n.div_ceil(2048);
         img.read_exact(&mut a[..n])?;
+        let started = std::time::Instant::now();
         match (&reader, &mut file) {
             (Some(r), _) => r.read((pos / 2048) as u32, &mut b[..n_blocks * 2048])?,
             (None, Some(f)) => f.read_exact(&mut b[..n])?,
             _ => unreachable!(),
+        }
+        taken += started.elapsed();
+        read += n as u64;
+        if read >= scan.step || pos + n as u64 >= len {
+            scan.speeds.push(read as f64 / taken.as_secs_f64().max(1e-6));
+            (taken, read) = (std::time::Duration::ZERO, 0);
         }
         if a[..n] != b[..n] {
             bail!("the disc differs from the image at block {}", pos / 2048 + a[..n].iter().zip(&b[..n]).position(|(x, y)| x != y).unwrap_or(0) as u64 / 2048);
@@ -395,7 +447,7 @@ pub fn verify(image: &Path, drive: &Path, cancel: &AtomicBool, mut progress: imp
             bail!("cancelled");
         }
     }
-    Ok(())
+    Ok(scan)
 }
 
 #[cfg(test)]
@@ -421,6 +473,20 @@ mod tests {
         assert!(matches!(parse_toc(re), DiscState::Ready(Disc { rewritable: true, .. })));
         assert_eq!(parse_toc("libburn : SORRY : Cannot open busy device '/dev/sr0'"), DiscState::Busy);
         assert_eq!(parse_toc("xorriso : NOTE : no media"), DiscState::NoDisc);
+    }
+
+    #[test]
+    fn finds_where_a_disc_read_slowly() {
+        // A drive speeding up towards the outside of the disc.
+        let mut scan = ReadScan { step: 100, speeds: (0..100).map(|i| 5.0 + i as f64 * 0.07).collect() };
+        scan.speeds[0] = 1.0;
+        assert!(scan.slow().is_empty(), "spinning up and speeding up aren't trouble");
+        scan.speeds[40] = 2.0;
+        scan.speeds[41] = 1.0;
+        scan.speeds[70] = 3.0;
+        assert_eq!(scan.slow(), [40, 41, 70]);
+        assert_eq!(scan.slow_places(), [4000, 7000]);
+        assert_eq!(scan.range(), Some((1.0, 5.0 + 99.0 * 0.07)));
     }
 
     #[test]

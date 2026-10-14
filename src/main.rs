@@ -264,7 +264,15 @@ fn main() -> glib::ExitCode {
                 burn::burn(image, drive, None, &cancel, |f| report("burning", f))?;
             }
             last.set(-1);
-            burn::verify(image, drive, &cancel, |f| report("verifying", f))
+            let scan = burn::verify(image, drive, &cancel, |f| report("verifying", f))?;
+            let slow: Vec<String> = scan.slow_places().iter().map(|b| format!("{:.2} GB", *b as f64 / 1e9)).collect();
+            if let Some((min, max)) = scan.range() {
+                eprintln!("read at {:.1}–{:.1}×", min / burn::ReadScan::BD_1X, max / burn::ReadScan::BD_1X);
+            }
+            if !slow.is_empty() {
+                eprintln!("the drive slowed down at {}", slow.join(", "));
+            }
+            Ok(())
         };
         return match run() {
             Ok(()) => {

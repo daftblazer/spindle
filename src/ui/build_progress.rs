@@ -340,7 +340,7 @@ impl ProgressView {
                 }
                 t.show();
             }
-            BuildEvent::Finished(_) => {}
+            BuildEvent::Scan(_) | BuildEvent::Finished(_) => {}
         }
         self.show_headline();
     }

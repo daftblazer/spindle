@@ -56,6 +56,8 @@ pub enum BuildEvent {
     /// `group`, then in the order they were added.
     AddTask { key: String, name: String, group: TaskGroup },
     Task { key: String, state: TaskState, detail: String, fraction: f64 },
+    /// How the burned disc read back, after verifying it.
+    Scan(crate::burn::ReadScan),
     Finished(Result<PathBuf, String>),
 }
 
