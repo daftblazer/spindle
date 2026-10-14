@@ -181,6 +181,27 @@ impl TaskRow {
     }
 }
 
+/// Keeps the computer from going to sleep for as long as it exists. The
+/// screen can still turn off.
+struct Awake {
+    app: gtk::Application,
+    cookie: u32,
+}
+
+impl Awake {
+    fn new(reason: &str) -> Option<Self> {
+        let app = gtk::gio::Application::default()?.downcast::<gtk::Application>().ok()?;
+        let cookie = app.inhibit(app.active_window().as_ref(), gtk::ApplicationInhibitFlags::SUSPEND, Some(reason));
+        (cookie != 0).then_some(Awake { app, cookie })
+    }
+}
+
+impl Drop for Awake {
+    fn drop(&mut self) {
+        self.app.uninhibit(self.cookie);
+    }
+}
+
 pub struct ProgressView {
     root: gtk::Box,
     headline: gtk::Label,
@@ -195,6 +216,8 @@ pub struct ProgressView {
     stage: RefCell<String>,
     fraction: RefCell<(f64, Rate)>,
     started: RefCell<Option<Instant>>,
+    /// Held while the work is under way.
+    awake: RefCell<Option<Awake>>,
 }
 
 impl ProgressView {
@@ -268,6 +291,7 @@ impl ProgressView {
             stage: RefCell::default(),
             fraction: RefCell::new((0.0, Rate::default())),
             started: RefCell::default(),
+            awake: RefCell::new(Awake::new(title)),
         });
         // Times move on even without news from the build.
         let weak = Rc::downgrade(&view);
@@ -377,6 +401,7 @@ impl ProgressView {
         self.cancel.set_sensitive(false);
         self.refresh();
         *self.started.borrow_mut() = None;
+        self.awake.take();
     }
 }
 
