@@ -58,7 +58,8 @@ pub enum Quality {
 impl Quality {
     pub const ALL: [Quality; 3] = [Quality::Fast, Quality::Balanced, Quality::Best];
 
-    fn preset(self) -> &'static str {
+    /// The x264 preset.
+    pub fn preset(self) -> &'static str {
         match self {
             Quality::Fast => "veryfast",
             Quality::Balanced => "medium",

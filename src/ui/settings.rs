@@ -152,10 +152,14 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
 fn quality_row(doc: &Rc<Document>, g: &adw::PreferencesGroup, current: crate::media::transcode::Quality) {
     use crate::media::transcode::Quality;
     let labels = [gettext("Fast"), gettext("Balanced"), gettext("Best")];
-    let explain = |q: Quality| match q {
-        Quality::Fast => gettext("Fastest encode, suitable for drafts"),
-        Quality::Balanced => gettext("Good picture quality in a moderate encoding time"),
-        Quality::Best => gettext("Two-pass encode with the best picture for the bitrate and accurate file sizes. Takes about three times as long"),
+    // Each says which x264 preset it uses, for those who know encoders.
+    let explain = |q: Quality| {
+        match q {
+            Quality::Fast => gettext("x264 {preset} preset. The fastest encode, suitable for drafts"),
+            Quality::Balanced => gettext("x264 {preset} preset. Good picture quality in a moderate encoding time"),
+            Quality::Best => gettext("x264 {preset} preset in two passes. The best picture for the bitrate and accurate file sizes. Takes about three times as long"),
+        }
+        .replace("{preset}", q.preset())
     };
     let sel = Quality::ALL.iter().position(|q| *q == current).unwrap_or(1);
     let row = rows::combo(doc, &gettext("Quality"), &labels, sel, Change::Content, |p, i| {
