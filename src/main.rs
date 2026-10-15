@@ -52,9 +52,8 @@ pub fn app_settings() -> Option<gio::Settings> {
     Some(gio::Settings::new(id))
 }
 
-/// `spindle --build PROJECT OUTDIR` builds a disc without the GUI;
-/// `spindle --encode-titles PROJECT` (no `out`) encodes its titles ahead.
-fn build_cli(project: &str, out: Option<&str>) -> glib::ExitCode {
+/// `spindle --build PROJECT OUTDIR` builds a disc without the GUI.
+fn build_cli(project: &str, out: &str) -> glib::ExitCode {
     let project = match model::Project::load(std::path::Path::new(project)) {
         Ok(p) => p,
         Err(e) => {
@@ -75,10 +74,7 @@ fn build_cli(project: &str, out: Option<&str>) -> glib::ExitCode {
         }
         _ => {}
     };
-    let res = match out {
-        Some(out) => build::build(&project, std::path::Path::new(out), &cancel, &emit).map(|p| format!("Disc written to {}", p.display())),
-        None => build::pre_encode(&project, &cancel, &emit).map(|_| "Titles encoded".to_string()),
-    };
+    let res = build::build(&project, std::path::Path::new(out), &cancel, &emit).map(|p| format!("Disc written to {}", p.display()));
     match res {
         Ok(done) => {
             eprintln!("{done}");
@@ -210,10 +206,7 @@ fn main() -> glib::ExitCode {
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() == 4 && args[1] == "--build" {
-        return build_cli(&args[2], Some(&args[3]));
-    }
-    if args.len() == 3 && args[1] == "--encode-titles" {
-        return build_cli(&args[2], None);
+        return build_cli(&args[2], &args[3]);
     }
     if (4..=5).contains(&args.len()) && args[1] == "--make-image" {
         let (dir, iso) = (std::path::Path::new(&args[2]), std::path::Path::new(&args[3]));

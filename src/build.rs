@@ -128,8 +128,6 @@ pub fn parallel_jobs(set: &EncodeSettings) -> usize {
 enum Job {
     Title(usize),
     Intro(usize),
-    /// Encode a title ahead of a build.
-    Encode(usize),
 }
 
 fn title_key(i: usize) -> String {
@@ -160,7 +158,7 @@ struct TitlePlan<'p> {
 /// Titles are encoded in two passes (Best quality with x264 at an average
 /// bitrate).
 fn two_pass(set: &EncodeSettings) -> bool {
-    set.crf.is_none() && set.quality == transcode::Quality::Best && !set.effective_encoder().is_hardware()
+    set.quality == transcode::Quality::Best && !set.effective_encoder().is_hardware()
 }
 
 impl TitlePlan<'_> {
@@ -191,10 +189,6 @@ pub struct Builder<'a> {
     /// Settings of the disc menus and their intros, which can be in
     /// another video format than the titles.
     menu_settings: EncodeSettings,
-    /// Settings of titles encoded ahead of a build.
-    pre: EncodeSettings,
-    /// Encoding titles ahead rather than building a disc.
-    only_encode: bool,
     tracker: Tracker<'a>,
     /// Cache entries being encoded; titles with the same encode wait for
     /// the first and reuse it.
@@ -340,24 +334,8 @@ impl<'a> Builder<'a> {
             emit,
             settings,
             menu_settings: EncodeSettings { video: menu_video, video_bitrate: menu_bitrate, ..settings },
-            pre: EncodeSettings::for_pre_encode(&project.disc),
-            only_encode: false,
             tracker: Tracker { emit, tasks: Mutex::new(Vec::new()) },
             encoding: Default::default(),
-        }
-    }
-
-    /// A builder that only encodes the titles, ahead of a build.
-    fn for_encoding(project: &'a Project, cancel: &'a AtomicBool, emit: &'a (dyn Fn(BuildEvent) + Sync)) -> Self {
-        Builder { only_encode: true, menus: Vec::new(), ..Builder::new(project, &crate::media::cache_dir().join("pre-encode"), cancel, emit) }
-    }
-
-    /// The settings titles are encoded with.
-    fn encode_settings(&self) -> &EncodeSettings {
-        if self.only_encode {
-            &self.pre
-        } else {
-            &self.settings
         }
     }
 
@@ -466,25 +444,6 @@ impl<'a> Builder<'a> {
         Ok(self.out.clone())
     }
 
-    /// Encode the titles into the cache, ahead of a build.
-    fn run_encodes(self) -> Result<()> {
-        let mut jobs = Vec::new();
-        for (i, t) in self.project.titles.iter().enumerate() {
-            let plan = self.title_plan(t, self.title_clip(i))?;
-            if plan.encode.is_some() {
-                self.tracker.add(&title_key(i), &t.name, TaskGroup::Titles, plan.work());
-                jobs.push(Job::Encode(i));
-            }
-        }
-        if jobs.is_empty() {
-            bail!("There is nothing to encode: add titles, or turn off “Keep Original Video”.");
-        }
-        self.run_watched(&jobs)?;
-        encode_cache::trim();
-        (self.emit)(BuildEvent::Progress(1.0));
-        Ok(())
-    }
-
     /// Run the steps, passing a cancel from the user on to each.
     #[allow(clippy::type_complexity)]
     fn run_watched(&self, jobs: &[Job]) -> Result<(Vec<(u32, Playlist)>, Vec<(u32, ClipInfo)>)> {
@@ -510,29 +469,6 @@ impl<'a> Builder<'a> {
             }
         }
         result
-    }
-
-    /// Encode title `i` ahead of a build; returns the seconds encoded.
-    fn encode_only(&self, t: &Title, i: usize) -> Result<f64> {
-        let (key, n) = (title_key(i), self.title_clip(i));
-        if self.project.disc.normalize_loudness {
-            self.tracker.update(&key, TaskState::Running, 0.0, "Measuring loudness");
-            measure_loudness(self.project, t, &self.settings, &self.stop)?;
-        }
-        let plan = self.title_plan(t, n)?;
-        let Some((args, cached)) = &plan.encode else { return Ok(0.0) };
-        let mut encoded = 0.0;
-        if self.claim(cached)? {
-            let res = self.encode_title(t, &key, &plan, args, cached, n);
-            self.release(cached);
-            res?;
-            encoded = plan.duration;
-        } else {
-            encode_cache::touch(cached);
-        }
-        let size = std::fs::metadata(cached).map_or(0, |m| m.len());
-        self.tracker.update(&key, TaskState::Done, 0.0, &format!("{:.2} GB", size as f64 / 1e9));
-        Ok(encoded)
     }
 
     /// Menus, then the titles and intros (several at once when the
@@ -573,14 +509,13 @@ impl<'a> Builder<'a> {
                     }
                     let Some(job) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) else { break };
                     let (key, res) = match *job {
-                        Job::Title(i) => (title_key(i), self.build_title(&self.project.titles[i], i).map(|(b, s)| (Some(b), s))),
-                        Job::Intro(i) => (intro_key(i), self.build_intro(i).map(|(b, s)| (Some(b), s))),
-                        Job::Encode(i) => (title_key(i), self.encode_only(&self.project.titles[i], i).map(|s| (None, s))),
+                        Job::Title(i) => (title_key(i), self.build_title(&self.project.titles[i], i)),
+                        Job::Intro(i) => (intro_key(i), self.build_intro(i)),
                     };
                     match res {
                         Ok((r, secs)) => {
                             *encoded.lock().unwrap() += secs;
-                            results.lock().unwrap().extend(r);
+                            results.lock().unwrap().push(r);
                         }
                         Err(e) => {
                             // The first failure stops the others.
@@ -598,7 +533,7 @@ impl<'a> Builder<'a> {
             return Err(e);
         }
         self.check_cancel()?;
-        encode_cache::record_speed(&speed_key(self.encode_settings()), encoded.into_inner().unwrap(), started.elapsed().as_secs_f64());
+        encode_cache::record_speed(&speed_key(&self.settings), encoded.into_inner().unwrap(), started.elapsed().as_secs_f64());
         for (n, pl, cis) in results.into_inner().unwrap() {
             playlists.push((n, pl));
             clips.extend(cis);
@@ -984,7 +919,7 @@ impl<'a> Builder<'a> {
         chapters.dedup();
         let audio = title_audio(p, t, &self.settings, 0.0)?;
         let burn = t.burned_subtitle().map(|s| subtitles::burn_in(s, &asset.path, &asset.info, &p.disc.subtitle_style)).transpose()?;
-        let mut set = self.settings;
+        let set = self.settings;
         let encode = if t.keep_video {
             None
         } else {
@@ -1006,14 +941,7 @@ impl<'a> Builder<'a> {
                 key.extend(burn.as_ref().map(|b| encode_cache::file_id(&b.source)));
                 (args, encode_cache::entry(&key))
             };
-            // A title encoded ahead of the build is used as it is.
-            let pre = plan(&self.pre);
-            if self.only_encode || (p.disc.use_pre_encodes && pre.1.exists()) {
-                set = self.pre;
-                Some(pre)
-            } else {
-                Some(plan(&self.settings))
-            }
+            Some(plan(&self.settings))
         };
         Ok(TitlePlan { asset, chapters, duration: asset.info.duration.max(1.0), audio, burn, encode, set })
     }
@@ -1344,8 +1272,7 @@ impl<'a> Builder<'a> {
 
 /// Key of the encoding speeds remembered for `set`.
 fn speed_key(set: &EncodeSettings) -> String {
-    let rate = if set.crf.is_some() { "/quality" } else { "" };
-    format!("{:?}/{:?}/{}{rate}", set.effective_encoder(), set.quality, set.video.size().1)
+    format!("{:?}/{:?}/{}", set.effective_encoder(), set.quality, set.video.size().1)
 }
 
 /// A guess at the encoding speed (seconds of video per second) before
@@ -1364,7 +1291,6 @@ fn default_speed(set: &EncodeSettings) -> f64 {
         let per_core = match set.quality {
             transcode::Quality::Fast => 6.0,
             transcode::Quality::Balanced => 1.8,
-            transcode::Quality::Best if set.crf.is_some() => 0.9,
             // Slower preset, plus the first pass.
             transcode::Quality::Best => 0.9 / 1.3,
         };
@@ -1396,34 +1322,6 @@ pub fn estimate_seconds(project: &Project) -> (f64, bool) {
     let measured = encode_cache::speed(&speed_key(&b.settings));
     let speed = measured.unwrap_or_else(|| default_speed(&b.settings));
     (encode / speed + other, measured.is_some())
-}
-
-/// Encode the titles of `project` ahead of building it, at constant
-/// quality, into the cache of encodes: builds then use them as they are.
-pub fn pre_encode(project: &Project, cancel: &AtomicBool, emit: &(dyn Fn(BuildEvent) + Sync)) -> Result<()> {
-    Builder::for_encoding(project, cancel, emit).run_encodes()
-}
-
-/// For each title, its encode made ahead with the current settings, if
-/// there is one.
-pub fn pre_encodes(project: &Project) -> Vec<Option<PathBuf>> {
-    let cancel = AtomicBool::new(false);
-    let emit = |_: BuildEvent| {};
-    let b = Builder::for_encoding(project, &cancel, &emit);
-    let found = |(i, t)| b.title_plan(t, b.title_clip(i)).ok()?.encode.map(|(_, cached)| cached).filter(|c| c.exists());
-    project.titles.iter().enumerate().map(found).collect()
-}
-
-/// How long encoding the titles ahead should take, in seconds, and
-/// whether that is based on encodes measured on this computer.
-pub fn pre_encode_seconds(project: &Project) -> (f64, bool) {
-    let cancel = AtomicBool::new(false);
-    let emit = |_: BuildEvent| {};
-    let b = Builder::for_encoding(project, &cancel, &emit);
-    let plans = project.titles.iter().enumerate().filter_map(|(i, t)| b.title_plan(t, b.title_clip(i)).ok());
-    let encode: f64 = plans.filter(|p| p.encode.as_ref().is_some_and(|(_, cached)| !cached.exists())).map(|p| p.duration).sum();
-    let measured = encode_cache::speed(&speed_key(&b.pre));
-    (encode / measured.unwrap_or_else(|| default_speed(&b.pre)), measured.is_some())
 }
 
 /// Whether `out` names a disc image rather than a folder.

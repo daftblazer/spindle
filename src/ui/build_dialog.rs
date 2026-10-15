@@ -118,11 +118,6 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
             describe();
         });
     }
-    let ahead_row = super::rows::switch(doc, &gettext("Use Encoded Titles"), doc.project().disc.use_pre_encodes, Change::Content, |p, v| {
-        p.disc.use_pre_encodes = v;
-    });
-    ahead_row.set_subtitle_lines(2);
-    g.add(&ahead_row);
     let size_row = adw::ActionRow::builder().title(gettext("Estimated Size")).build();
     let fit_box = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).build();
     let fit = gtk::MenuButton::builder()
@@ -180,18 +175,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         let (dialog, parent) = (dialog.downgrade(), parent.as_ref().clone());
         let (size_row, time_row, fit_box, fit, build_btn, issues_group) =
             (size_row.clone(), time_row.clone(), fit_box.clone(), fit.clone(), build_btn.clone(), issues_group.clone());
-        let ahead_row = ahead_row.clone();
         Rc::new(move || {
-            {
-                // Titles encoded ahead (Encode Titles), which the build can use.
-                let p = doc.project();
-                let any = build::pre_encodes(&p).iter().any(Option::is_some);
-                ahead_row.set_visible(any);
-                if any {
-                    let text = gettext("{} at CRF {q}, used unchanged in place of the average bitrate");
-                    ahead_row.set_subtitle(&text.replace("{}", &super::pre_encode::status(&p)).replace("{q}", &p.disc.crf.to_string()));
-                }
-            }
             let (issues, bytes, fits) = {
                 let p = doc.project();
                 let fits: Vec<(&'static str, u32)> = validate::DISCS
