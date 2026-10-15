@@ -131,6 +131,19 @@ pub fn matrix(disc: VideoFormat) -> &'static str {
     }
 }
 
+/// The colour matrix the source was made with. Files often don't say, and
+/// ffmpeg then assumes BT.601 (SD) even for HD video, which shifts its
+/// colours when it is converted to BT.709: reds and purples come out
+/// darker. Untagged video is taken to be BT.709 when it is HD sized
+/// (1280 wide or 720 high, so cropped widescreen HD counts too).
+fn source_matrix(info: &MediaInfo) -> &'static str {
+    match info.color_space.as_deref() {
+        Some(_) => "auto",
+        None if info.width >= 1280 || info.height >= 720 => "bt709",
+        None => "bt601",
+    }
+}
+
 /// Size and position of the picture in the disc frame, and the scaled
 /// size before cropping to the frame (for `Fit::Fill`).
 fn geometry(aspect: f64, fit: Fit, disc: VideoFormat) -> ((u32, u32), Area) {
@@ -247,9 +260,10 @@ pub fn plan_with(info: &MediaInfo, opts: &VideoOptions, disc: VideoFormat, burn:
     if interlaced.is_none() || !untouched {
         let flags = if interlaced.is_some() { ":interl=1" } else { "" };
         f.push(format!(
-            "scale={}:{}:flags=lanczos{flags}:out_color_matrix={}:out_range=tv",
+            "scale={}:{}:flags=lanczos{flags}:in_color_matrix={}:out_color_matrix={}:out_range=tv",
             scaled.0,
             scaled.1,
+            source_matrix(info),
             matrix(disc)
         ));
         if opts.fit == Fit::Fill {
@@ -367,6 +381,20 @@ mod tests {
         // Forced 16:9 fills the frame.
         let wide = VideoOptions { aspect: AspectRatio::Wide, ..Default::default() };
         assert_eq!(plan(&dvd, &wide, VideoFormat::P1080_23976).area.w, 1920);
+    }
+
+    #[test]
+    fn untagged_hd_is_bt709() {
+        // Without this, ffmpeg would take untagged HD for BT.601 and shift
+        // its colours on the way to BT.709.
+        let p = plan(&info(1920, 1080, (24000, 1001)), &VideoOptions::default(), VideoFormat::P1080_23976);
+        assert!(p.filters.contains("in_color_matrix=bt709:out_color_matrix=bt709"), "{}", p.filters);
+        let p = plan(&info(1280, 536, (24000, 1001)), &VideoOptions::default(), VideoFormat::P1080_23976);
+        assert!(p.filters.contains("in_color_matrix=bt709"), "{}", p.filters);
+        let p = plan(&info(720, 480, (24000, 1001)), &VideoOptions::default(), VideoFormat::P1080_23976);
+        assert!(p.filters.contains("in_color_matrix=bt601:out_color_matrix=bt709"), "{}", p.filters);
+        let tagged = MediaInfo { color_space: Some("bt709".into()), ..info(1920, 1080, (24000, 1001)) };
+        assert!(plan(&tagged, &VideoOptions::default(), VideoFormat::P1080_23976).filters.contains("in_color_matrix=auto"));
     }
 
     #[test]
