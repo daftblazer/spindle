@@ -112,16 +112,12 @@ impl Tracker<'_> {
 
 /// How many titles are encoded at once. x264 already uses every core for
 /// one 1080p stream up to about eight; more cores are shared out.
-pub fn parallel_jobs(set: &EncodeSettings) -> usize {
+pub fn parallel_jobs() -> usize {
     if let Some(n) = std::env::var("SPINDLE_JOBS").ok().and_then(|n| n.parse::<usize>().ok()) {
         return n.clamp(1, 16);
     }
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-    if set.effective_encoder().is_hardware() {
-        2
-    } else {
-        (cores / 8).clamp(1, 3)
-    }
+    (cores / 8).clamp(1, 3)
 }
 
 /// A title or menu intro, encoded by one of the workers.
@@ -158,7 +154,7 @@ struct TitlePlan<'p> {
 /// Titles are encoded in two passes (Best quality with x264 at an average
 /// bitrate).
 fn two_pass(set: &EncodeSettings) -> bool {
-    set.quality == transcode::Quality::Best && !set.effective_encoder().is_hardware()
+    set.quality == transcode::Quality::Best
 }
 
 impl TitlePlan<'_> {
@@ -394,13 +390,6 @@ impl<'a> Builder<'a> {
         if !problems.is_empty() {
             bail!("{}", problems.join("\n"));
         }
-        let encoder = self.settings.effective_encoder();
-        if encoder.is_hardware() {
-            if !crate::media::hwenc::available().contains(&encoder) {
-                bail!("The {} video encoder is not available on this computer. Choose Software in Disc Settings.", encoder.label());
-            }
-            self.log(format!("Using {} video encoding: intended for test discs only, as quality is lower than with Software encoding", encoder.label()));
-        }
         let p = self.project;
 
         // The steps, with their share of the work.
@@ -494,7 +483,7 @@ impl<'a> Builder<'a> {
         let next = AtomicUsize::new(0);
         let results = Mutex::new(Vec::new());
         let error: Mutex<Option<anyhow::Error>> = Mutex::new(None);
-        let workers = parallel_jobs(&self.settings).min(jobs.len());
+        let workers = parallel_jobs().min(jobs.len());
         if workers > 1 {
             self.log(format!("Encoding {workers} titles at a time"));
         }
@@ -982,9 +971,7 @@ impl<'a> Builder<'a> {
             self.encode(key, first, duration, 0.0, "Analyzing · pass 1 of 2")?;
             work += duration;
         }
-        let detail = if plan.set.effective_encoder().is_hardware() {
-            "Encoding (hardware, for testing)"
-        } else if two_pass {
+        let detail = if two_pass {
             "Encoding · pass 2 of 2"
         } else {
             "Encoding"
@@ -1272,7 +1259,9 @@ impl<'a> Builder<'a> {
 
 /// Key of the encoding speeds remembered for `set`.
 fn speed_key(set: &EncodeSettings) -> String {
-    format!("{:?}/{:?}/{}", set.effective_encoder(), set.quality, set.video.size().1)
+    // "Software" from when there were hardware encoders too, so speeds
+    // measured then still count.
+    format!("Software/{:?}/{}", set.quality, set.video.size().1)
 }
 
 /// A guess at the encoding speed (seconds of video per second) before
@@ -1284,18 +1273,14 @@ fn default_speed(set: &EncodeSettings) -> f64 {
         let (w, h) = set.video.size();
         (w * h) as f64 / (1920.0 * 1080.0)
     };
-    let fps = if set.effective_encoder().is_hardware() {
-        250.0
-    } else {
-        let cores = std::thread::available_parallelism().map_or(4, |n| n.get()) as f64;
-        let per_core = match set.quality {
-            transcode::Quality::Fast => 6.0,
-            transcode::Quality::Balanced => 1.8,
-            // Slower preset, plus the first pass.
-            transcode::Quality::Best => 0.9 / 1.3,
-        };
-        cores.min(32.0) * per_core
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get()) as f64;
+    let per_core = match set.quality {
+        transcode::Quality::Fast => 6.0,
+        transcode::Quality::Balanced => 1.8,
+        // Slower preset, plus the first pass.
+        transcode::Quality::Best => 0.9 / 1.3,
     };
+    let fps = cores.min(32.0) * per_core;
     fps / pixels.max(0.1) / fps_rate
 }
 

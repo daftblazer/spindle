@@ -87,7 +87,6 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     g.add(&br);
     quality_row(doc, &g, d.quality);
     tune_row(doc, &g, d.tune);
-    encoder_rows(doc, &g, d.encoder);
     video_page.add(&g);
 
     let g = rows::group(&gettext("Audio"));
@@ -186,48 +185,6 @@ pub(super) fn tune_row(doc: &Rc<Document>, g: &adw::PreferencesGroup, current: c
     row.set_subtitle_lines(2);
     row.connect_selected_notify(move |r| r.set_subtitle(&explain(Tune::ALL[(r.selected() as usize).min(Tune::ALL.len() - 1)])));
     g.add(&row);
-}
-
-/// Video encoder choice, with the warning that hardware is for testing.
-fn encoder_rows(doc: &Rc<Document>, g: &adw::PreferencesGroup, current: crate::media::hwenc::VideoEncoder) {
-    use crate::media::hwenc::{self, VideoEncoder};
-    let labels: Vec<String> = VideoEncoder::ALL.iter().map(|e| e.label()).collect();
-    let sel = VideoEncoder::ALL.iter().position(|e| *e == current).unwrap_or(0);
-    let row = rows::combo(doc, &gettext("Encoder"), &labels, sel, Change::Content, |p, i| {
-        p.disc.encoder = VideoEncoder::ALL[i.min(VideoEncoder::ALL.len() - 1)];
-    });
-    row.set_subtitle(&gettext("Detecting hardware encoders…"));
-    g.add(&row);
-
-    let warning = adw::ActionRow::builder()
-        .title(gettext("For Testing Only"))
-        .subtitle(gettext(
-            "Hardware encoding is much faster, but at Blu-ray bitrates the picture is noticeably softer and blockier than with Software encoding. \
-             Use it to check menus and navigation quickly, and build the final disc with Software (x264).",
-        ))
-        .subtitle_lines(6)
-        .visible(current.is_hardware())
-        .css_classes(["warning-row"])
-        .build();
-    warning.add_prefix(&gtk::Image::builder().icon_name("dialog-warning-symbolic").css_classes(["warning"]).build());
-    g.add(&warning);
-    let w = warning.clone();
-    row.connect_selected_notify(move |r| {
-        w.set_visible(VideoEncoder::ALL.get(r.selected() as usize).is_some_and(|e| e.is_hardware()));
-    });
-
-    // Which hardware encoders work here (a quick test encode each).
-    let row = row.downgrade();
-    glib::spawn_future_local(async move {
-        let found = gtk::gio::spawn_blocking(|| hwenc::available().to_vec()).await.unwrap_or_default();
-        let Some(row) = row.upgrade() else { return };
-        let hardware: Vec<String> = found.iter().filter(|e| e.is_hardware()).map(|e| e.label()).collect();
-        row.set_subtitle(&if hardware.is_empty() {
-            gettext("No hardware encoder is available on this computer")
-        } else {
-            gettext("Supported: {}").replace("{}", &hardware.join(", "))
-        });
-    });
 }
 
 /// Language presets for a Setup menu.

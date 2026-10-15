@@ -166,9 +166,6 @@ exported as a single `.spindle-template` file to share. See
   picture and accurate sizes), with the build time estimated beforehand
 - Titles are encoded several at a time on computers with many cores, and
   the build shows each step with its progress, speed and time left
-- **Hardware encoding** (VA-API for AMD/Intel, NVENC for NVIDIA) for quick
-  test discs; it is faster but noticeably lower quality, so final discs
-  should use Software (x264)
 - Encodes are reused when rebuilding, so changing a menu doesn't encode the
   videos again
 - Autosave with crash recovery, and projects that keep finding their media
@@ -179,7 +176,7 @@ exported as a single `.spindle-template` file to share. See
 | Stage | What happens |
 | --- | --- |
 | Render | Menus are drawn with cairo/pango, the same code as the editor canvas |
-| Encode | `ffmpeg` produces Blu-ray compliant H.264 (High@4.1, x264 `bluray-compat`, or constrained VA-API/NVENC) and AC-3 or LPCM; `src/media/picture.rs` builds the deinterlacing, cropping, scaling and tone mapping filters |
+| Encode | `ffmpeg` produces Blu-ray compliant H.264 (High@4.1, x264 `bluray-compat`) and AC-3 or LPCM; `src/media/picture.rs` builds the deinterlacing, cropping, scaling and tone mapping filters |
 | Subtitles | `src/subtitles` renders or decodes every track into timed bitmaps and encodes PGS display sets |
 | Menus | `src/bluray/ig` encodes Interactive Graphics: pages, buttons, palettes, fade effects and HDMV button commands |
 | Mux | `src/bluray/ts` schedules the PES packets into a 192-byte-packet BDAV stream with PCR/PAT/PMT/SIT, menu and subtitle streams, and records the EP map; copied HD audio is split into core and extension packets as Blu-ray requires |
@@ -193,7 +190,7 @@ language setting and menu intros keep their state in further GPRs.
 
 ## Building Spindle
 
-Flatpak (recommended; bundles FFmpeg with x264, zimg, VA-API and NVENC,
+Flatpak (recommended; bundles FFmpeg with x264, zimg,
 libass and xorriso):
 
 ```sh
