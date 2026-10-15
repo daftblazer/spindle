@@ -145,6 +145,13 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     for page in [&disc_page, &video_page, &audio_page, &subtitle_page, &language_page] {
         dialog.add(page);
     }
+    #[cfg(debug_assertions)]
+    if let Ok(n) = std::env::var("SPINDLE_SCREENSHOT_SETTINGS_PAGE") {
+        let pages = [&disc_page, &video_page, &audio_page, &subtitle_page, &language_page];
+        if let Some(page) = n.parse::<usize>().ok().and_then(|n| pages.get(n)) {
+            dialog.set_visible_page(*page);
+        }
+    }
     dialog.present(Some(parent));
 }
 
