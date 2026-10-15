@@ -153,7 +153,7 @@ struct TitlePlan<'p> {
 
 /// Titles are encoded in two passes (Best quality with x264 at an average
 /// bitrate).
-fn two_pass(set: &EncodeSettings) -> bool {
+pub fn two_pass(set: &EncodeSettings) -> bool {
     set.quality == transcode::Quality::Best
 }
 

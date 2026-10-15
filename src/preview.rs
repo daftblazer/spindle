@@ -76,11 +76,23 @@ pub fn encode(project: &Project, req: &PreviewRequest, cancel: &AtomicBool, emit
                 format
             }
             None => {
-                emit(BuildEvent::Stage(format!("Encoding {} seconds of “{}”", duration.round(), t.name)));
                 let burn = t.burned_subtitle().map(|s| subtitles::burn_in(s, &asset.path, info, &project.disc.subtitle_style)).transpose()?;
                 let src = transcode::Source { path: &asset.path, info, picture: &t.video, burn: burn.as_ref() };
-                let args = transcode::title_args(&src, &settings, &[], &inputs, Some((start, duration)), &transcode::Pass::Only, &tmp);
-                ffmpeg::run(&args, cancel, |secs| progress(secs / duration * 0.8))?;
+                // Two passes on Best, as the build does.
+                let range = Some((start, duration));
+                let (pass, from) = if crate::build::two_pass(&settings) {
+                    emit(BuildEvent::Stage(format!("Analyzing {} seconds of “{}” (pass 1 of 2)", duration.round(), t.name)));
+                    let log = work.join("pass");
+                    let first = transcode::title_args(&src, &settings, &[], &inputs, range, &transcode::Pass::First(log.clone()), &work.join("null.ts"));
+                    ffmpeg::run(&first, cancel, |secs| progress(secs / duration * 0.35))?;
+                    emit(BuildEvent::Stage(format!("Encoding {} seconds of “{}” (pass 2 of 2)", duration.round(), t.name)));
+                    (transcode::Pass::Second(log), 0.35)
+                } else {
+                    emit(BuildEvent::Stage(format!("Encoding {} seconds of “{}”", duration.round(), t.name)));
+                    (transcode::Pass::Only, 0.0)
+                };
+                let args = transcode::title_args(&src, &settings, &[], &inputs, range, &pass, &tmp);
+                ffmpeg::run(&args, cancel, |secs| progress(from + secs / duration * (0.8 - from)))?;
                 settings.video
             }
         };
