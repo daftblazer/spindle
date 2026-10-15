@@ -99,7 +99,9 @@ impl Default for DiscSettings {
             default_language: None,
             popup_menu: None,
             top_menu: None,
-            quality: Default::default(),
+            // New projects encode in two passes; older files without the
+            // setting keep the single pass they were made with.
+            quality: crate::media::transcode::Quality::Best,
             tune: Default::default(),
             normalize_loudness: false,
         }
