@@ -230,9 +230,10 @@ pub fn plan_with(info: &MediaInfo, opts: &VideoOptions, disc: VideoFormat, burn:
     }
     let tone_mapped = info.is_hdr();
     // To linear light, BT.2020 → BT.709 primaries, tone map, then back to
-    // BT.709 video.
+    // BT.709 video, dithered down to 8 bits (zscale doesn't dither by
+    // default, which would leave hard bands in gradients).
     let tone_map = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,\
-                    zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
+                    zscale=t=bt709:m=bt709:r=tv:dither=error_diffusion,format=yuv420p";
     match burn {
         // Subtitles go on the standard range picture, before the crop so
         // they sit where their author placed them.
@@ -496,6 +497,7 @@ mod tests {
         let p = plan(&i, &VideoOptions::default(), VideoFormat::P1080_23976);
         assert!(p.tone_mapped);
         assert!(p.filters.contains("tonemap=tonemap=hable"));
+        assert!(p.filters.contains("dither=error_diffusion"));
         assert!(p.filters.ends_with("format=yuv420p"));
     }
 }
