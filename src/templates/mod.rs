@@ -998,6 +998,13 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
     for t in &mut p.titles {
         t.return_menu = out.return_to.iter().find(|(id, _)| *id == t.id).map(|(_, m)| *m);
     }
+    // A film goes back to the main menu when it ends (and each extra to
+    // its page) rather than playing on into the extras.
+    if opts.custom.is_none() && opts.style.category() == Category::Movie {
+        for t in &mut p.titles {
+            t.end_action = EndAction::ReturnToMenu;
+        }
+    }
     p.first_play = FirstPlay::FirstMenu;
     // Menus have the shape of the disc's, whichever the design was made for.
     p.sync_menu_shapes();
@@ -1360,6 +1367,18 @@ mod tests {
 
     fn actions(m: &Menu) -> Vec<Action> {
         m.buttons().map(|b| b.button().unwrap().action).collect()
+    }
+
+    #[test]
+    fn a_film_returns_to_the_main_menu() {
+        let mut p = project(3);
+        let main = apply(&mut p, &opts(Style::MovieClassic, 0));
+        assert!(p.titles.iter().all(|t| t.end_action == EndAction::ReturnToMenu));
+        assert_eq!(p.titles[0].return_menu, Some(main));
+        // Shows keep playing one episode after another.
+        let mut p = project(3);
+        apply(&mut p, &opts(Style::Classic, 0));
+        assert!(p.titles.iter().all(|t| t.end_action == EndAction::PlayNextTitle));
     }
 
     #[test]
