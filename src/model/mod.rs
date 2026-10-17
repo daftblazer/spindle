@@ -132,8 +132,10 @@ impl Asset {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum EndAction {
     /// Return to the menu the title is linked from (first menu by default).
-    #[default]
     ReturnToMenu,
+    /// The default, so episodes play one after another; the last title
+    /// returns to the menu.
+    #[default]
     PlayNextTitle,
     Loop,
 }
@@ -927,9 +929,11 @@ mod tests {
                 p.ensure_title_for(asset).unwrap()
             })
             .collect();
-        p.title_mut(ids[1]).unwrap().end_action = EndAction::PlayNextTitle;
-        assert_eq!(p.apply_end_action_to_all(ids[1]), 2);
+        // New titles play the next one.
         assert!(p.titles.iter().all(|t| t.end_action == EndAction::PlayNextTitle));
+        p.title_mut(ids[1]).unwrap().end_action = EndAction::ReturnToMenu;
+        assert_eq!(p.apply_end_action_to_all(ids[1]), 2);
+        assert!(p.titles.iter().all(|t| t.end_action == EndAction::ReturnToMenu));
         assert_eq!(p.apply_end_action_to_all(ids[1]), 0);
     }
 
