@@ -12,7 +12,8 @@ pub struct EncodeSettings {
     pub video: VideoFormat,
     pub video_bitrate: u32,
     pub audio: AudioCodec,
-    pub audio_bitrate: u32,
+    /// AC-3 bitrate in kbit/s; `None` suits each track's channels.
+    pub audio_bitrate: Option<u32>,
     pub quality: Quality,
     pub tune: Tune,
 }
@@ -230,12 +231,22 @@ fn video_args(set: &EncodeSettings, bitrate: u32, interlaced: Option<bool>) -> V
     a
 }
 
+/// AC-3 bitrate in kbit/s for a track with `channels` channels on the
+/// disc: the chosen one, or what suits the channels.
+pub fn ac3_bitrate(chosen: Option<u32>, channels: u8) -> u32 {
+    chosen.unwrap_or(match channels {
+        0 | 1 => 128,
+        2..=4 => 256,
+        _ => 640,
+    })
+}
+
 /// Encoder options for output audio stream `n` in the disc's format.
 fn encode_audio(set: &EncodeSettings, n: usize, channels: u8) -> Vec<String> {
     let mut a = match set.audio {
         AudioCodec::Lpcm => vec![format!("-c:a:{n}"), s("pcm_bluray"), format!("-sample_fmt:a:{n}"), s("s16")],
         AudioCodec::Lpcm24 => vec![format!("-c:a:{n}"), s("pcm_bluray"), format!("-sample_fmt:a:{n}"), s("s32")],
-        _ => vec![format!("-c:a:{n}"), s("ac3"), format!("-b:a:{n}"), format!("{}k", set.audio_bitrate)],
+        _ => vec![format!("-c:a:{n}"), s("ac3"), format!("-b:a:{n}"), format!("{}k", ac3_bitrate(set.audio_bitrate, channels))],
     };
     a.extend([format!("-ar:a:{n}"), s("48000"), format!("-ac:a:{n}"), s(channels)]);
     a
@@ -488,7 +499,7 @@ mod tests {
     use super::*;
 
     fn settings(video: VideoFormat) -> EncodeSettings {
-        EncodeSettings { video, video_bitrate: 18_000, audio: AudioCodec::Ac3, audio_bitrate: 448, quality: Quality::Balanced, tune: Tune::None }
+        EncodeSettings { video, video_bitrate: 18_000, audio: AudioCodec::Ac3, audio_bitrate: None, quality: Quality::Balanced, tune: Tune::None }
     }
 
     fn arg_after<'a>(a: &'a [String], key: &str) -> Option<&'a str> {
@@ -508,10 +519,31 @@ mod tests {
         assert_eq!(arg_after(&a, "-ac:a:0"), Some("6"));
         assert_eq!(arg_after(&a, "-filter:a:0"), Some("surround=chl_out=5.1,loudnorm=I=-23"));
         assert_eq!(arg_after(&a, "-c:a:1"), Some("copy"));
+        assert_eq!(arg_after(&a, "-b:a:2"), Some("640k"));
         // The TrueHD's AC-3 core comes last, from the same source stream.
         assert_eq!(arg_after(&a, "-c:a:2"), Some("ac3"));
         assert_eq!(arg_after(&a, "-ac:a:2"), Some("6"));
         assert_eq!(a.iter().filter(|x| *x == "0:a:1").count(), 2);
+    }
+
+    #[test]
+    fn automatic_ac3_bitrate() {
+        let info = MediaInfo { duration: 60.0, video_codec: Some("h264".into()), ..Default::default() };
+        let opts = VideoOptions::default();
+        let src = Source { path: Path::new("in.mkv"), info: &info, picture: &opts, burn: None };
+        let audio = [AudioInput::encode(None, 0, 0.0, 6), AudioInput::encode(None, 1, 0.0, 2), AudioInput::encode(None, 2, 0.0, 1)];
+        let a = title_args(&src, &settings(VideoFormat::P1080_23976), &[], &audio, None, &Pass::Only, Path::new("out.ts"));
+        assert_eq!(arg_after(&a, "-b:a:0"), Some("640k"));
+        assert_eq!(arg_after(&a, "-b:a:1"), Some("256k"));
+        assert_eq!(arg_after(&a, "-b:a:2"), Some("128k"));
+        // Stereo spread over 5.1 is encoded as 5.1.
+        let upmix = AudioInput { layout: Some(6), ..AudioInput::encode(None, 0, 0.0, 2) };
+        let a = title_args(&src, &settings(VideoFormat::P1080_23976), &[], &[upmix], None, &Pass::Only, Path::new("out.ts"));
+        assert_eq!(arg_after(&a, "-b:a:0"), Some("640k"));
+        // A chosen bitrate applies to every track.
+        let set = EncodeSettings { audio_bitrate: Some(448), ..settings(VideoFormat::P1080_23976) };
+        let a = title_args(&src, &set, &[], &audio, None, &Pass::Only, Path::new("out.ts"));
+        assert_eq!(arg_after(&a, "-b:a:2"), Some("448k"));
     }
 
     #[test]

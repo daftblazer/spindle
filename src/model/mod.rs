@@ -42,8 +42,8 @@ pub struct DiscSettings {
     pub audio: AudioCodec,
     /// Average video bitrate in kbit/s.
     pub video_bitrate: u32,
-    /// AC-3 bitrate in kbit/s.
-    pub audio_bitrate: u32,
+    /// AC-3 bitrate in kbit/s, or `None` to suit each track's channels.
+    pub audio_bitrate: Option<u32>,
     #[serde(default)]
     pub subtitle_style: SubtitleStyle,
     /// Choices for a Setup menu.
@@ -93,7 +93,7 @@ impl Default for DiscSettings {
             menu_video: None,
             audio: AudioCodec::default(),
             video_bitrate: 18_000,
-            audio_bitrate: 448,
+            audio_bitrate: None,
             subtitle_style: SubtitleStyle::default(),
             languages: Vec::new(),
             default_language: None,
@@ -917,6 +917,15 @@ mod tests {
         assert_eq!(audio.len(), 1);
         assert_eq!(audio[0].lang, "fra");
         assert_eq!(audio[0].source, AudioSource::Embedded { index: 0 });
+    }
+
+    #[test]
+    fn audio_bitrate_of_older_projects_is_kept() {
+        let mut json = serde_json::to_value(DiscSettings::default()).unwrap();
+        assert!(json["audio_bitrate"].is_null());
+        json["audio_bitrate"] = 448.into();
+        let d: DiscSettings = serde_json::from_value(json).unwrap();
+        assert_eq!(d.audio_bitrate, Some(448));
     }
 
     #[test]

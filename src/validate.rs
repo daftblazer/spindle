@@ -50,7 +50,7 @@ fn audio_kbps(p: &Project, channels: u8) -> f64 {
         // 48 kHz; 16-bit samples, stored in 24-bit words for more than two channels.
         AudioCodec::Lpcm => 48.0 * if ch > 2.0 { 24.0 } else { 16.0 } * ch,
         AudioCodec::Lpcm24 => 48.0 * 24.0 * ch,
-        _ => p.disc.audio_bitrate as f64,
+        _ => crate::media::transcode::ac3_bitrate(p.disc.audio_bitrate, channels) as f64,
     }
 }
 

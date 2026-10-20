@@ -99,12 +99,14 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         p.disc.audio = AudioCodec::ENCODE[i.min(AudioCodec::ENCODE.len() - 1)];
     });
     g.add(&codec_row);
-    let labels: Vec<String> = AUDIO_BITRATES.iter().map(|b| format!("{b} kbit/s")).collect();
-    let sel = AUDIO_BITRATES.iter().position(|b| *b == d.audio_bitrate).unwrap_or(3);
+    let mut labels = vec![gettext("Automatic")];
+    labels.extend(AUDIO_BITRATES.iter().map(|b| format!("{b} kbit/s")));
+    let sel = d.audio_bitrate.and_then(|b| AUDIO_BITRATES.iter().position(|x| *x == b)).map_or(0, |i| i + 1);
     let bitrate_row = rows::combo(doc, &gettext("AC-3 Bitrate"), &labels, sel, Change::Content, |p, i| {
-        p.disc.audio_bitrate = AUDIO_BITRATES[i.min(AUDIO_BITRATES.len() - 1)];
+        p.disc.audio_bitrate = i.checked_sub(1).and_then(|i| AUDIO_BITRATES.get(i)).copied();
     });
-    bitrate_row.set_subtitle(&gettext("448 or 640 kbit/s is recommended for 5.1 surround"));
+    bitrate_row.set_subtitle(&gettext("Automatic uses 640 kbit/s for 5.1, 256 kbit/s for stereo and 128 kbit/s for mono"));
+    bitrate_row.set_subtitle_lines(2);
     bitrate_row.set_visible(d.audio == AudioCodec::Ac3);
     codec_row.connect_selected_notify(glib::clone!(#[weak] bitrate_row, move |r| bitrate_row.set_visible(r.selected() == 0)));
     g.add(&bitrate_row);
