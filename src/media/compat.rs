@@ -65,6 +65,9 @@ struct Stream {
     width: Option<u32>,
     height: Option<u32>,
     pix_fmt: Option<String>,
+    color_space: Option<String>,
+    color_primaries: Option<String>,
+    color_transfer: Option<String>,
     field_order: Option<String>,
     display_aspect_ratio: Option<String>,
     r_frame_rate: Option<String>,
@@ -230,6 +233,16 @@ pub fn analyze(path: &Path) -> Result<Report> {
                 describe_rate(fps)
             ),
         ),
+    }
+
+    // Colour description: written into the copied stream when missing.
+    let known = |v: &Option<String>| v.clone().filter(|v| v != "unknown");
+    let tags = [&video.color_primaries, &video.color_transfer, &video.color_space].map(known);
+    let standard = if format.is_some_and(|f| f.is_sd()) { "BT.601" } else { "BT.709" };
+    match &tags {
+        [None, None, None] => add("Color", Level::Pass, format!("Not tagged, marked as {standard} on the disc")),
+        [.., Some(m)] => add("Color", Level::Pass, m.to_uppercase().replace("BT", "BT.")),
+        _ => add("Color", Level::Pass, format!("Partly tagged, the rest marked as {standard} on the disc")),
     }
 
     // Bitrate

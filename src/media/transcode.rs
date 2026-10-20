@@ -112,6 +112,69 @@ fn colour(v: VideoFormat) -> (&'static str, &'static str, &'static str) {
     }
 }
 
+/// H.264 VUI codes (tables E-3, E-4 and E-5) of ffmpeg's colour names.
+fn primaries_code(name: &str) -> Option<u8> {
+    Some(match name {
+        "bt709" => 1,
+        "bt470m" => 4,
+        "bt470bg" => 5,
+        "smpte170m" => 6,
+        "smpte240m" => 7,
+        "film" => 8,
+        "bt2020" => 9,
+        _ => return None,
+    })
+}
+
+fn transfer_code(name: &str) -> Option<u8> {
+    Some(match name {
+        "bt709" => 1,
+        "gamma22" => 4,
+        "gamma28" => 5,
+        "smpte170m" => 6,
+        "smpte240m" => 7,
+        "iec61966-2-1" => 13,
+        "bt2020-10" => 14,
+        "bt2020-12" => 15,
+        "smpte2084" => 16,
+        "arib-std-b67" => 18,
+        _ => return None,
+    })
+}
+
+fn matrix_code(name: &str) -> Option<u8> {
+    Some(match name {
+        "bt709" => 1,
+        "fcc" => 4,
+        "bt470bg" => 5,
+        "smpte170m" => 6,
+        "smpte240m" => 7,
+        "bt2020nc" => 9,
+        "bt2020c" => 10,
+        _ => return None,
+    })
+}
+
+/// `h264_metadata` options that write the colour description into a
+/// copied stream. Remuxes often don't carry one in the stream (MKV may
+/// keep it in the container, which the disc loses), and players then
+/// guess, some wrongly (UHD players with Dolby Vision or HDR conversion
+/// on show washed out or tinted colours). What the source says is kept;
+/// the rest is the disc format's standard.
+fn colour_metadata(info: &MediaInfo, v: VideoFormat) -> String {
+    let (prim, trc, matrix) = colour(v);
+    let pick = |src: &Option<String>, code: fn(&str) -> Option<u8>, default: &str| {
+        src.as_deref().and_then(code).or_else(|| code(default)).unwrap_or(2)
+    };
+    let range = if info.color_range.as_deref() == Some("pc") { 1 } else { 0 };
+    format!(
+        "colour_primaries={}:transfer_characteristics={}:matrix_coefficients={}:video_full_range_flag={range}",
+        pick(&info.color_primaries, primaries_code, prim),
+        pick(&info.color_transfer, transfer_code, trc),
+        pick(&info.color_space, matrix_code, matrix),
+    )
+}
+
 fn s(v: impl ToString) -> String {
     v.to_string()
 }
@@ -298,7 +361,10 @@ fn title_common(
                 Pass::Second(log) => a.extend([s("-pass"), s("2"), s("-passlogfile"), path(log)]),
             }
         }
-        VideoMode::Copy => a.extend([s("-c:v"), s("copy"), s("-bsf:v"), s("h264_metadata=aud=insert")]),
+        VideoMode::Copy => {
+            let bsf = format!("h264_metadata=aud=insert:{}", colour_metadata(info, set.video));
+            a.extend([s("-c:v"), s("copy"), s("-bsf:v"), bsf]);
+        }
     }
     for (n, (au, delay)) in audio.iter().zip(&delays).enumerate() {
         if au.copy.is_some() {
@@ -457,6 +523,27 @@ mod tests {
         assert_eq!(arg_after(&args, "-tune"), None);
         let args = title_args(&src, &EncodeSettings { tune: Tune::Animation, ..set }, &[], &[], None, &Pass::Only, Path::new("out.ts"));
         assert_eq!(arg_after(&args, "-tune"), Some("animation"));
+    }
+
+    #[test]
+    fn copied_video_gets_colour_tags() {
+        let opts = VideoOptions::default();
+        let copy = |info: &MediaInfo, v| {
+            let src = Source { path: Path::new("in.mkv"), info, picture: &opts, burn: None };
+            let a = passthrough_args(&src, &settings(v), &[], None, Path::new("out.ts"));
+            arg_after(&a, "-bsf:v").unwrap().to_string()
+        };
+        // Untagged HD gets BT.709, limited range.
+        let untagged = MediaInfo { video_codec: Some("h264".into()), ..Default::default() };
+        assert_eq!(
+            copy(&untagged, VideoFormat::P1080_23976),
+            "h264_metadata=aud=insert:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1:video_full_range_flag=0"
+        );
+        // Untagged SD gets its own standard.
+        assert!(copy(&untagged, VideoFormat::I576_25).contains("colour_primaries=5:transfer_characteristics=6:matrix_coefficients=5"));
+        // What the source says is kept.
+        let tagged = MediaInfo { color_primaries: Some("smpte170m".into()), color_space: Some("smpte170m".into()), ..untagged };
+        assert!(copy(&tagged, VideoFormat::P1080_23976).contains("colour_primaries=6:transfer_characteristics=1:matrix_coefficients=6"));
     }
 
     #[test]

@@ -40,14 +40,21 @@ pub struct MediaInfo {
     /// Transfer characteristics, e.g. "smpte2084" (HDR10) or "arib-std-b67" (HLG).
     #[serde(default)]
     pub color_transfer: Option<String>,
+    /// Matrix coefficients, e.g. "bt709".
     #[serde(default)]
     pub color_space: Option<String>,
+    /// Colour primaries, e.g. "bt709".
+    #[serde(default)]
+    pub color_primaries: Option<String>,
+    /// "tv" (limited) or "pc" (full).
+    #[serde(default)]
+    pub color_range: Option<String>,
     #[serde(default)]
     pub pix_fmt: Option<String>,
 }
 
 /// Current [`MediaInfo::probe_version`].
-pub const PROBE_VERSION: u32 = 3;
+pub const PROBE_VERSION: u32 = 4;
 
 /// An audio stream inside a media file.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -192,6 +199,8 @@ struct ProbeStream {
     field_order: Option<String>,
     color_transfer: Option<String>,
     color_space: Option<String>,
+    color_primaries: Option<String>,
+    color_range: Option<String>,
     pix_fmt: Option<String>,
     profile: Option<String>,
     #[serde(default)]
@@ -325,6 +334,8 @@ fn parse(json: &[u8]) -> Result<MediaInfo> {
                 info.field_order = known(&s.field_order);
                 info.color_transfer = known(&s.color_transfer);
                 info.color_space = known(&s.color_space);
+                info.color_primaries = known(&s.color_primaries);
+                info.color_range = known(&s.color_range);
                 info.pix_fmt = known(&s.pix_fmt);
             }
             Some("subtitle") => {
