@@ -40,3 +40,6 @@ gschemas.compiled
 # OS clutter
 .DS_Store
 Thumbs.db
+
+#TODO List
+TODO.md

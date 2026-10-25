@@ -199,7 +199,16 @@ flatpak-builder --user --install --force-clean build-dir io.github.daftblazer.Sp
 flatpak run io.github.daftblazer.Spindle
 ```
 
-GNOME Builder can build and run the same manifest.
+For development, `io.github.daftblazer.Spindle.Devel.json` builds an
+unoptimized version with debug logging. It installs beside the release one,
+with its own settings and data, and its header bars are striped:
+
+```sh
+flatpak-builder --user --install --force-clean build-dir io.github.daftblazer.Spindle.Devel.json
+flatpak run io.github.daftblazer.Spindle.Devel
+```
+
+GNOME Builder can build and run either manifest.
 
 Native (needs GTK ≥ 4.18, libadwaita ≥ 1.7, libass ≥ 0.15, `ffmpeg`/`ffprobe`
 with libx264 and zimg, and `xorriso` for burning):

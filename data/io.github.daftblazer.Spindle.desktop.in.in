@@ -2,7 +2,7 @@
 Name=Spindle
 Comment=Author Blu-ray discs with interactive menus
 Exec=spindle %F
-Icon=io.github.daftblazer.Spindle
+Icon=@app-id@
 Terminal=false
 Type=Application
 Categories=AudioVideo;Video;DiscBurning;GTK;GNOME;

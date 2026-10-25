@@ -7,6 +7,16 @@ project('spindle', 'rust',
 i18n = import('i18n')
 gnome = import('gnome')
 
+base_id = 'io.github.daftblazer.Spindle'
+profile = get_option('profile')
+if profile == 'development'
+  application_id = base_id + '.Devel'
+  gschema_path = '/io/github/daftblazer/Spindle/Devel/'
+else
+  application_id = base_id
+  gschema_path = '/io/github/daftblazer/Spindle/'
+endif
+
 
 
 

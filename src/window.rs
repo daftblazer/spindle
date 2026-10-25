@@ -178,7 +178,12 @@ pub fn grid_layout(n: usize, with_thumbnails: bool) -> Vec<Rect> {
 
 impl SpindleWindow {
     pub fn new<P: IsA<gtk::Application>>(application: &P) -> Self {
-        glib::Object::builder().property("application", application).build()
+        let window: Self = glib::Object::builder().property("application", application).build();
+        // Striped header bars mark development builds.
+        if crate::config::PROFILE == "development" {
+            window.add_css_class("devel");
+        }
+        window
     }
 
     pub fn state(&self) -> Rc<State> {

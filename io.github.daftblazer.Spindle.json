@@ -120,6 +120,9 @@
             "name": "spindle",
             "builddir": true,
             "buildsystem": "meson",
+            "config-opts": [
+                "--buildtype=release"
+            ],
             "sources": [
                 {
                     "type": "dir",

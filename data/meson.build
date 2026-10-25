@@ -1,6 +1,14 @@
+id_conf = configuration_data()
+id_conf.set('app-id', application_id)
+id_conf.set('gschema-path', gschema_path)
+
 desktop_file = i18n.merge_file(
-        input: 'io.github.daftblazer.Spindle.desktop.in',
-       output: 'io.github.daftblazer.Spindle.desktop',
+        input: configure_file(
+                 input: '@0@.desktop.in.in'.format(base_id),
+                output: '@0@.desktop.in'.format(application_id),
+         configuration: id_conf
+       ),
+       output: '@0@.desktop'.format(application_id),
          type: 'desktop',
        po_dir: '../po',
       install: true,
@@ -13,8 +21,12 @@ if desktop_utils.found()
 endif
 
 appstream_file = i18n.merge_file(
-        input: 'io.github.daftblazer.Spindle.metainfo.xml.in',
-       output: 'io.github.daftblazer.Spindle.metainfo.xml',
+        input: configure_file(
+                 input: '@0@.metainfo.xml.in.in'.format(base_id),
+                output: '@0@.metainfo.xml.in'.format(application_id),
+         configuration: id_conf
+       ),
+       output: '@0@.metainfo.xml'.format(application_id),
        po_dir: '../po',
       install: true,
   install_dir: get_option('datadir') / 'metainfo'
@@ -24,27 +36,34 @@ appstreamcli = find_program('appstreamcli', required: false, disabler: true)
 test('Validate appstream file', appstreamcli,
      args: ['validate', '--no-net', '--explain', appstream_file])
 
-install_data('io.github.daftblazer.Spindle.gschema.xml',
-  install_dir: get_option('datadir') / 'glib-2.0' / 'schemas'
+gschema_file = configure_file(
+          input: '@0@.gschema.xml.in'.format(base_id),
+         output: '@0@.gschema.xml'.format(application_id),
+  configuration: id_conf,
+    install_dir: get_option('datadir') / 'glib-2.0' / 'schemas'
 )
 
 compile_schemas = find_program('glib-compile-schemas', required: false, disabler: true)
 test('Validate schema file',
      compile_schemas,
-     args: ['--strict', '--dry-run', meson.current_source_dir()])
+     args: ['--strict', '--dry-run', meson.current_build_dir()])
 
 
 service_conf = configuration_data()
+service_conf.set('app-id', application_id)
 service_conf.set('bindir', get_option('prefix') / get_option('bindir'))
 configure_file(
-  input: 'io.github.daftblazer.Spindle.service.in',
-  output: 'io.github.daftblazer.Spindle.service',
+  input: '@0@.service.in'.format(base_id),
+  output: '@0@.service'.format(application_id),
   configuration: service_conf,
   install_dir: get_option('datadir') / 'dbus-1' / 'services'
 )
 
-install_data('io.github.daftblazer.Spindle.mime.xml',
-  install_dir: get_option('datadir') / 'mime' / 'packages'
+configure_file(
+          input: '@0@.mime.xml.in'.format(base_id),
+         output: '@0@.mime.xml'.format(application_id),
+  configuration: id_conf,
+    install_dir: get_option('datadir') / 'mime' / 'packages'
 )
 
 subdir('icons')

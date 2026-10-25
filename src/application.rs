@@ -125,7 +125,7 @@ impl SpindleApplication {
         let window = self.active_window().unwrap();
         let about = adw::AboutDialog::builder()
             .application_name("Spindle")
-            .application_icon("io.github.daftblazer.Spindle")
+            .application_icon(crate::config::APP_ID)
             .developer_name("daftblazer")
             .version(VERSION)
             .developers(vec!["daftblazer"])

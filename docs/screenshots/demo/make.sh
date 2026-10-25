@@ -20,7 +20,9 @@ SHOW="Far Meridian"
 build() {
   mkdir -p "$W/res" "$W/schemas"
   glib-compile-resources --sourcedir="$R/src" --target="$W/res/spindle.gresource" "$R/src/spindle.gresource.xml"
-  cp "$R"/data/*.gschema.xml "$W/schemas/" && glib-compile-schemas "$W/schemas"
+  sed -e 's|@app-id@|io.github.daftblazer.Spindle|' -e 's|@gschema-path@|/io/github/daftblazer/Spindle/|' \
+    "$R/data/io.github.daftblazer.Spindle.gschema.xml.in" >"$W/schemas/io.github.daftblazer.Spindle.gschema.xml"
+  glib-compile-schemas "$W/schemas"
   cp -p "$R/src/config.rs" "$W/config.rs.orig"
   trap 'cp -p "$W/config.rs.orig" "$R/src/config.rs"' EXIT
   sed -i "s|^pub static PKGDATADIR.*|pub static PKGDATADIR: \&str = \"$W/res\";|" "$R/src/config.rs"

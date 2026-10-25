@@ -4,6 +4,6 @@
     <comment>Spindle Blu-ray project</comment>
     <sub-class-of type="application/json"/>
     <glob pattern="*.spindle"/>
-    <icon name="io.github.daftblazer.Spindle"/>
+    <icon name="@app-id@"/>
   </mime-type>
 </mime-info>
