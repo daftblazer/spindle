@@ -42,9 +42,15 @@
   </branding>
 
   <releases>
-    <release version="0.1.0" date="2026-09-26">
+    <release version="0.1.0" date="2026-10-25">
       <description translate="no">
-        <p>First preview release.</p>
+        <p>The first release of Spindle.</p>
+        <ul>
+          <li>Design menus on a canvas, or start from TV show, movie and collection templates</li>
+          <li>Motion menus, menu music, pop-up menus and a Setup menu for audio and subtitle choices</li>
+          <li>Multiple audio and subtitle tracks per title, with HD audio copied as it is</li>
+          <li>Build an ISO image or BDMV folder, or burn and verify a BD-R or BD-RE</li>
+        </ul>
       </description>
     </release>
   </releases>
