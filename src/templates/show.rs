@@ -14,6 +14,30 @@ pub(super) type ListEntry = (String, Action, Id, f64, String);
 /// Rows per page of [`Ctx::artwork_list_pages`].
 const ARTWORK_LIST_ROWS: usize = 8;
 
+/// How [`Ctx::column_pages`] lays out its rows.
+pub(super) struct Columns {
+    /// Left edge of each column.
+    xs: &'static [f64],
+    width: f64,
+    rows: usize,
+    /// Row height, and the distance from one row to the next.
+    height: f64,
+    step: f64,
+    /// Label size; the note on the right is a little smaller.
+    size: u32,
+}
+
+impl Columns {
+    /// Two columns of seven, for scenes and extras.
+    pub(super) const TWO: Columns = Columns { xs: &[170.0, 990.0], width: 760.0, rows: 7, height: 76.0, step: 88.0, size: 32 };
+    /// One wide column of six, so long episode names can be read in full.
+    const WIDE: Columns = Columns { xs: &[260.0], width: 1400.0, rows: 6, height: 84.0, step: 110.0, size: 38 };
+
+    fn per_page(&self) -> usize {
+        self.xs.len() * self.rows
+    }
+}
+
 pub(super) fn build(style: Style, input: Input) -> Output {
     match style {
         Style::Classic => classic(input, false),
@@ -125,12 +149,11 @@ impl Ctx {
 
     /// Two columns of text rows (7 each) with a note on the right of each,
     /// on a plain background.
-    pub(super) fn column_pages(&self, heading: &str, edition: Option<&str>, entries: &[Row], home: Option<(Id, String)>, empty_hint: &str) -> Vec<Menu> {
-        const ROWS: usize = 7;
-        const PER_PAGE: usize = 2 * ROWS;
-        let n_pages = entries.len().div_ceil(PER_PAGE).max(1);
+    pub(super) fn column_pages(&self, heading: &str, edition: Option<&str>, entries: &[Row], home: Option<(Id, String)>, empty_hint: &str, layout: &Columns) -> Vec<Menu> {
+        let per_page = layout.per_page();
+        let n_pages = entries.len().div_ceil(per_page).max(1);
         let (mut pages, ids) = self.pages(heading, n_pages, |n| self.plain_menu(n, self.theme.bottom));
-        let (xs, w) = ([170.0, 990.0], 760.0);
+        let (xs, w, h) = (layout.xs, layout.width, layout.height);
         for (pi, page) in pages.iter_mut().enumerate() {
             page.items.push(self.styled(heading, Rect::new(160.0, 76.0, 1600.0, 90.0), format!("{} Light 56", self.heading), self.theme.text, Align::Center, false));
             let mut sub: Vec<String> = edition.map(str::to_string).into_iter().collect();
@@ -140,11 +163,11 @@ impl Ctx {
             if !sub.is_empty() {
                 page.items.push(self.caps(&sub.join("  ·  "), Rect::new(160.0, 170.0, 1600.0, 36.0), 20, self.theme.dim, Align::Center, 6.0));
             }
-            let slice = entries.iter().skip(pi * PER_PAGE).take(PER_PAGE);
+            let slice = entries.iter().skip(pi * per_page).take(per_page);
             for (k, (label, action, note)) in slice.enumerate() {
-                let (x, y) = (xs[k / ROWS], 240.0 + (k % ROWS) as f64 * 88.0);
-                page.items.push(self.text(note, Rect::new(x + w - 170.0, y, 160.0, 76.0), 26, "Regular", Align::Right, true));
-                let mut b = self.button_font(label, *action, Rect::new(x, y, w, 76.0), format!("{} Regular 32", self.body), Align::Left, Highlight::Arrow);
+                let (x, y) = (xs[k / layout.rows], 240.0 + (k % layout.rows) as f64 * layout.step);
+                page.items.push(self.text(note, Rect::new(x + w - 170.0, y, 160.0, h), layout.size - 6, "Regular", Align::Right, true));
+                let mut b = self.button_font(label, *action, Rect::new(x, y, w, h), format!("{} Regular {}", self.body, layout.size), Align::Left, Highlight::Arrow);
                 if let Some(b) = b.button_mut() {
                     b.text.shadow = false;
                 }
@@ -280,11 +303,11 @@ fn minimal(input: Input) -> Output {
     let rows: Vec<Row> = episodes
         .iter()
         .map(|e| {
-            let label = if e.name.is_empty() { gettext("Episode {}").replace("{}", &e.number.to_string()) } else { format!("{:02}   {}", e.number, short(&e.name, 30)) };
+            let label = if e.name.is_empty() { gettext("Episode {}").replace("{}", &e.number.to_string()) } else { format!("{:02}   {}", e.number, short(&e.name, 60)) };
             (label, e.action(), minutes(e.duration))
         })
         .collect();
-    let pages = cx.column_pages(&gettext("Episodes"), edition.as_deref(), &rows, home, &hint);
+    let pages = cx.column_pages(&gettext("Episodes"), edition.as_deref(), &rows, home, &hint, &Columns::WIDE);
 
     main.background = Background { color: cx.theme.bottom, ..Default::default() };
     let caps = match &edition {
@@ -310,7 +333,7 @@ fn minimal(input: Input) -> Output {
         }
         main.items.push(b);
     }
-    finish(main, pages, &episodes, 14, title_item)
+    finish(main, pages, &episodes, Columns::WIDE.per_page(), title_item)
 }
 
 fn streaming(input: Input) -> Output {

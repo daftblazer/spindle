@@ -2,7 +2,7 @@
 
 //! Movie styles: the first title is the film, the others are extras.
 
-use super::show::{Card, Row};
+use super::show::{Card, Columns, Row};
 use super::*;
 
 pub(super) fn build(style: Style, input: Input) -> Output {
@@ -158,9 +158,9 @@ fn minimal(input: Input) -> Output {
                 .collect()
         })
         .unwrap_or_default();
-    let scenes = if film.is_some() { cx.column_pages(&gettext("Scene Selection"), edition.as_deref(), &scene_rows, home.clone(), "") } else { vec![] };
+    let scenes = if film.is_some() { cx.column_pages(&gettext("Scene Selection"), edition.as_deref(), &scene_rows, home.clone(), "", &Columns::TWO) } else { vec![] };
     let rows: Vec<Row> = extras.iter().map(|e| (short(&e.name_or_title(), 30), e.action(), runtime(e.duration))).collect();
-    let extra_pages = if extras.is_empty() { vec![] } else { cx.column_pages(&gettext("Extras"), edition.as_deref(), &rows, home, "") };
+    let extra_pages = if extras.is_empty() { vec![] } else { cx.column_pages(&gettext("Extras"), edition.as_deref(), &rows, home, "", &Columns::TWO) };
     let parts = Parts { film, extras, scenes, extra_pages, per_page: 14 };
 
     main.background = Background { color: cx.theme.bottom, ..Default::default() };
