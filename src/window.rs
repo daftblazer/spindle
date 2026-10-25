@@ -65,6 +65,8 @@ mod imp {
         pub inspector_button: TemplateChild<gtk::ToggleButton>,
         #[template_child]
         pub missing_banner: TemplateChild<adw::Banner>,
+        #[template_child]
+        pub jobs_button: TemplateChild<gtk::MenuButton>,
 
         pub state: OnceCell<Rc<super::State>>,
     }
@@ -95,17 +97,13 @@ mod imp {
         fn close_request(&self) -> glib::Propagation {
             let obj = self.obj();
             obj.save_window_state();
-            let state = obj.state();
-            if state.doc.is_dirty() {
-                let win = obj.clone();
-                obj.confirm_discard(move || {
-                    crate::recovery::remove(win.state().session);
-                    win.destroy()
-                });
-                return glib::Propagation::Stop;
+            if !obj.doc().is_dirty() && !obj.closing_stops_jobs() {
+                crate::recovery::remove(obj.state().session);
+                return glib::Propagation::Proceed;
             }
-            crate::recovery::remove(state.session);
-            glib::Propagation::Proceed
+            let win = obj.clone();
+            obj.confirm_discard(move || win.close_stopping_jobs());
+            glib::Propagation::Stop
         }
     }
     impl ApplicationWindowImpl for SpindleWindow {}
@@ -197,6 +195,7 @@ impl SpindleWindow {
     fn setup(&self) {
         let imp = self.imp();
         let doc = Document::new();
+        ui::jobs::setup_button(&imp.jobs_button);
 
         let win = self.downgrade();
         let images = ImageCache::new_async(move || {
@@ -1106,6 +1105,32 @@ impl SpindleWindow {
             }
         });
         dialog.present(Some(self));
+    }
+
+    /// Whether this is the last window and there are jobs.
+    fn closing_stops_jobs(&self) -> bool {
+        let others = self.application().is_some_and(|a| a.windows().iter().any(|w| w != self.upcast_ref::<gtk::Window>() && w.is::<SpindleWindow>()));
+        !others && ui::jobs::active() > 0
+    }
+
+    /// Close the window. The last one cancels the jobs, after asking.
+    fn close_stopping_jobs(&self) {
+        let close = {
+            let win = self.clone();
+            move || {
+                crate::recovery::remove(win.state().session);
+                win.destroy();
+            }
+        };
+        if !self.closing_stops_jobs() {
+            close();
+            return;
+        }
+        ui::jobs::confirm_close(self, move || {
+            // Spindle keeps running until the jobs have stopped.
+            ui::jobs::cancel_all(|| {});
+            close();
+        });
     }
 
     /// Ask to save unsaved changes, then run `then`.

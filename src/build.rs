@@ -58,6 +58,9 @@ pub enum BuildEvent {
     Task { key: String, state: TaskState, detail: String, fraction: f64 },
     /// How the burned disc read back, after verifying it.
     Scan(crate::burn::ReadScan),
+    /// Burning is waiting to be allowed to erase the rewritable disc in
+    /// the drive, which has data on it.
+    EraseDisc,
     Finished(Result<PathBuf, String>),
 }
 

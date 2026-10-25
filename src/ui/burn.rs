@@ -13,7 +13,6 @@ use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 /// What to burn to.
 #[derive(Debug, Clone)]
@@ -39,6 +38,8 @@ pub struct BurnOptions {
     eject_row: adw::SwitchRow,
     drives: RefCell<Vec<Drive>>,
     state: RefCell<Option<DiscState>>,
+    /// The job that burns to the chosen drive first, when there is one.
+    queued_after: RefCell<Option<String>>,
     checking: Cell<bool>,
     on_change: RefCell<Option<Rc<dyn Fn()>>>,
 }
@@ -74,6 +75,7 @@ impl BurnOptions {
             eject_row,
             drives: RefCell::new(Vec::new()),
             state: RefCell::new(None),
+            queued_after: RefCell::new(None),
             checking: Cell::new(false),
             on_change: RefCell::new(None),
         });
@@ -170,6 +172,18 @@ impl BurnOptions {
             self.show();
             return;
         };
+        // A job is burning to the drive, or will: leave it alone. This burn
+        // waits its turn, and checks the disc when it starts.
+        let user = super::jobs::drive_user(&drive);
+        if *self.queued_after.borrow() != user {
+            *self.queued_after.borrow_mut() = user;
+            *self.state.borrow_mut() = None;
+            self.show();
+        }
+        if self.queued_after.borrow().is_some() {
+            self.checking.set(false);
+            return;
+        }
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let state = gio::spawn_blocking(move || burn::check(&drive)).await.ok();
@@ -186,6 +200,12 @@ impl BurnOptions {
     fn show(&self) {
         let (text, icon, class) = match (self.drive(), &*self.state.borrow()) {
             (None, _) => (gettext("No Blu-ray burner found"), "dialog-warning-symbolic", "warning"),
+            (Some(_), None) if self.queued_after.borrow().is_some() => (
+                gettext("A job burns “{}” to this drive first. This burn waits for it, then asks for a disc if it needs one")
+                    .replace("{}", self.queued_after.borrow().as_deref().unwrap_or_default()),
+                "content-loading-symbolic",
+                "",
+            ),
             (Some(_), None) => (gettext("Checking…"), "media-optical-symbolic", ""),
             (Some(_), Some(state)) => match describe(state) {
                 (text, true) => (text, "object-select-symbolic", "success"),
@@ -207,6 +227,10 @@ impl BurnOptions {
     pub fn problem(&self, bytes: f64) -> Option<String> {
         if self.drive().is_none() {
             return Some(gettext("Connect a Blu-ray burner"));
+        }
+        // The disc is checked when the burn starts.
+        if self.queued_after.borrow().is_some() {
+            return None;
         }
         match &*self.state.borrow() {
             None => Some(gettext("Checking the disc…")),
@@ -248,8 +272,6 @@ fn describe_disc(d: &Disc) -> (String, bool) {
     (gettext("This {kind} has already been written. Insert a blank disc").replace("{kind}", &d.kind), false)
 }
 
-/// Burn `image` to `target` (then verify and eject), reporting progress
-/// from `start` to 1.0. Runs on a worker thread.
 /// List the burning steps (before the build, so they show from the start).
 pub fn add_tasks(target: &Target, emit: &dyn Fn(BuildEvent)) {
     let name = if target.erases { gettext("Erase and Burn") } else { gettext("Burn") };
@@ -259,8 +281,58 @@ pub fn add_tasks(target: &Target, emit: &dyn Fn(BuildEvent)) {
     }
 }
 
-pub fn run(image: &Path, target: &Target, cancel: &AtomicBool, emit: &dyn Fn(BuildEvent), start: f64) -> anyhow::Result<()> {
+/// Wait until the drive has a disc that `image` can be burned to. A
+/// rewritable disc with data on it is only used once `erase_ok` is set,
+/// which is asked for with [`BuildEvent::EraseDisc`].
+fn wait_for_disc(image: &Path, target: &Target, cancel: &AtomicBool, erase_ok: &AtomicBool, emit: &dyn Fn(BuildEvent)) -> anyhow::Result<()> {
+    let size = std::fs::metadata(image).map_or(0, |m| m.len()) as f64;
+    let mut shown = String::new();
+    // The disc last asked about, so the question isn't repeated.
+    let mut asked: Option<DiscState> = None;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            anyhow::bail!("cancelled");
+        }
+        let state = burn::check(&target.drive);
+        let wait = match &state {
+            DiscState::Ready(d) if describe_disc(d).1 => {
+                if !d.blank && d.rewritable && !erase_ok.load(Ordering::Relaxed) {
+                    if asked.as_ref() != Some(&state) {
+                        emit(BuildEvent::EraseDisc);
+                        asked = Some(state.clone());
+                    }
+                    gettext("Waiting to be allowed to erase the disc")
+                } else if size > d.free as f64 && !d.rewritable {
+                    gettext("The disc has {free} GB free, but the image requires {need} GB. Insert a larger disc")
+                        .replace("{free}", &format!("{:.1}", d.free as f64 / 1e9))
+                        .replace("{need}", &format!("{:.1}", size / 1e9))
+                } else {
+                    return Ok(());
+                }
+            }
+            state => describe(state).0,
+        };
+        if wait != shown {
+            emit(BuildEvent::Stage(wait.clone()));
+            emit(BuildEvent::Log(format!("Waiting for a disc: {wait}")));
+            emit(BuildEvent::Task { key: "burn".into(), state: TaskState::Waiting, detail: wait.clone(), fraction: 0.0 });
+            shown = wait;
+        }
+        for _ in 0..30 {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+}
+
+/// Burn `image` to `target` (then verify and eject), reporting progress
+/// from `start` to 1.0, once a disc it fits on is in the drive. Runs on a
+/// worker thread.
+pub fn run(image: &Path, target: &Target, cancel: &AtomicBool, erase_ok: &AtomicBool, emit: &dyn Fn(BuildEvent), start: f64) -> anyhow::Result<()> {
     let task = |key: &str, state, detail: String, fraction| emit(BuildEvent::Task { key: key.into(), state, detail, fraction });
+    wait_for_disc(image, target, cancel, erase_ok, emit)?;
     let fail = |key: &str| {
         if !cancel.load(Ordering::Relaxed) {
             task(key, TaskState::Failed, gettext("Failed"), 0.0);
@@ -356,66 +428,18 @@ pub fn present_image(parent: &impl IsA<gtk::Widget>, image: PathBuf) {
     update();
     options.connect_changed(update);
 
-    let result = adw::StatusPage::new();
-    result.add_css_class("compact");
-    let close_btn = gtk::Button::builder().label(gettext("_Close")).use_underline(true).halign(gtk::Align::Center).css_classes(["pill"]).build();
-    let graph = adw::Bin::new();
-    let rcol = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(18).build();
-    rcol.append(&graph);
-    rcol.append(&close_btn);
-    result.set_child(Some(&rcol));
-    stack.add_named(&result, Some("result"));
-
-    let cancel = Arc::new(AtomicBool::new(false));
-    let c = cancel.clone();
-    dialog.connect_closed(move |_| c.store(true, Ordering::Relaxed));
-    let d = dialog.clone();
-    close_btn.connect_clicked(move |_| {
-        d.close();
-    });
     let d = dialog.clone();
     burn_btn.connect_clicked(move |_| {
         let Some(target) = options.target() else { return };
-        let (stack, result, graph, cancel, image) = (stack.clone(), result.clone(), graph.clone(), cancel.clone(), image.clone());
-        confirm_erase(&d, &target.clone(), move || {
+        let (d, image) = (d.clone(), image.clone());
+        confirm_erase(&d.clone(), &target.clone(), move || {
             let name = image.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let view = super::build_progress::ProgressView::new(&gettext("Burning “{}”").replace("{}", &name));
-            let c = cancel.clone();
-            view.cancel_button().connect_clicked(move |b| {
-                c.store(true, Ordering::Relaxed);
-                b.set_sensitive(false);
-            });
-            if let Some(old) = stack.child_by_name("progress") {
-                stack.remove(&old);
+            let job = super::jobs::add(super::jobs::Work::Burn { image: image.clone(), target: target.clone() }, name);
+            let parent = d.root();
+            d.close();
+            if let Some(parent) = parent {
+                super::jobs::present(&job, &parent);
             }
-            stack.add_named(view.widget(), Some("progress"));
-            stack.set_visible_child_name("progress");
-            let (tx, rx) = async_channel::unbounded::<BuildEvent>();
-            let (target, cancel, image) = (target.clone(), cancel.clone(), image.clone());
-            std::thread::spawn(move || {
-                let emit = |ev: BuildEvent| {
-                    let _ = tx.send_blocking(ev);
-                };
-                add_tasks(&target, &emit);
-                let res = run(&image, &target, &cancel, &emit, 0.0).map(|_| image.clone()).map_err(|e| format!("{e:#}"));
-                emit(BuildEvent::Finished(res));
-            });
-            let (stack, result, graph) = (stack.clone(), result.clone(), graph.clone());
-            glib::spawn_future_local(async move {
-                let mut scan = None;
-                while let Ok(ev) = rx.recv().await {
-                    if let BuildEvent::Scan(s) = &ev {
-                        scan = Some(s.clone());
-                    }
-                    if let BuildEvent::Finished(res) = ev {
-                        view.finish();
-                        show_result(&result, &graph, res.map(|_| ()), scan.as_ref());
-                        stack.set_visible_child_name("result");
-                        break;
-                    }
-                    view.handle(&ev);
-                }
-            });
         });
     });
     dialog.present(Some(parent));

@@ -10,6 +10,7 @@ src/shortcuts-dialog.ui
 src/ui/build_dialog.rs
 src/ui/canvas.rs
 src/ui/inspector.rs
+src/ui/jobs.rs
 src/ui/media_bin.rs
 src/ui/settings.rs
 src/ui/sidebar.rs

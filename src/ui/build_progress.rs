@@ -204,6 +204,7 @@ impl Drop for Awake {
 
 pub struct ProgressView {
     root: gtk::Box,
+    heading: gtk::Label,
     headline: gtk::Label,
     bar: gtk::ProgressBar,
     percent: gtk::Label,
@@ -215,6 +216,7 @@ pub struct ProgressView {
     cancel: gtk::Button,
     stage: RefCell<String>,
     fraction: RefCell<(f64, Rate)>,
+    /// When the work started (a queued job hasn't).
     started: RefCell<Option<Instant>>,
     /// Held while the work is under way.
     awake: RefCell<Option<Awake>>,
@@ -279,6 +281,7 @@ impl ProgressView {
 
         let view = Rc::new(ProgressView {
             root,
+            heading,
             headline,
             bar,
             percent,
@@ -291,7 +294,7 @@ impl ProgressView {
             stage: RefCell::default(),
             fraction: RefCell::new((0.0, Rate::default())),
             started: RefCell::default(),
-            awake: RefCell::new(Awake::new(title)),
+            awake: RefCell::default(),
         });
         // Times move on even without news from the build.
         let weak = Rc::downgrade(&view);
@@ -313,13 +316,36 @@ impl ProgressView {
         &self.cancel
     }
 
+    pub fn set_title(&self, title: &str) {
+        self.heading.set_label(title);
+    }
+
+    /// Say what a job that hasn't started is waiting for.
+    pub fn set_waiting(&self, text: &str) {
+        self.headline.set_label(text);
+    }
+
+    /// Overall progress, 0 to 1.
+    pub fn fraction(&self) -> f64 {
+        self.fraction.borrow().0
+    }
+
+    /// Seconds left, once it can be told.
+    pub fn remaining(&self) -> Option<f64> {
+        self.fraction.borrow().1.remaining()
+    }
+
     pub fn log_text(&self) -> String {
         let buf = self.log.buffer();
         buf.text(&buf.start_iter(), &buf.end_iter(), false).to_string()
     }
 
     pub fn handle(&self, ev: &BuildEvent) {
-        self.started.borrow_mut().get_or_insert_with(Instant::now);
+        // Steps are listed before the work starts.
+        if !matches!(ev, BuildEvent::AddTask { .. }) && self.started.borrow().is_none() {
+            *self.started.borrow_mut() = Some(Instant::now());
+            *self.awake.borrow_mut() = Awake::new(&self.heading.label());
+        }
         match ev {
             BuildEvent::Stage(s) => *self.stage.borrow_mut() = s.clone(),
             BuildEvent::Progress(p) => {
@@ -364,7 +390,7 @@ impl ProgressView {
                 }
                 t.show();
             }
-            BuildEvent::Scan(_) | BuildEvent::Finished(_) => {}
+            BuildEvent::Scan(_) | BuildEvent::EraseDisc | BuildEvent::Finished(_) => {}
         }
         self.show_headline();
     }

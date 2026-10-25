@@ -148,6 +148,11 @@
                             </property>
                           </object>
                         </child>
+                        <child type="end">
+                          <object class="GtkMenuButton" id="jobs_button">
+                            <property name="visible">False</property>
+                          </object>
+                        </child>
                       </object>
                     </child>
                     <child type="top">

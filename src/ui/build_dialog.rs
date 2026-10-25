@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! "Build Disc" dialog: choose an output folder, run the build pipeline on
-//! a worker thread and show progress.
+//! "Build Disc" dialog: choose an output and queue the build as a job.
 
-use crate::build::{self, BuildEvent};
+use crate::build;
 use crate::document::{Change, Document, Node};
 use crate::validate::{self, Severity, Target};
 use adw::prelude::*;
@@ -12,8 +11,6 @@ use gtk::{gio, glib};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 /// Last output path, if any.
 fn recent_output() -> Option<PathBuf> {
@@ -170,7 +167,7 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
     // Problems and size follow the project (Fit to Disc changes it).
     let issue_rows: Rc<RefCell<Vec<adw::ActionRow>>> = Rc::default();
     let refresh: Rc<dyn Fn()> = {
-        let doc = doc.clone();
+        let (doc, output) = (doc.clone(), output.clone());
         let (burning, options) = (burning.clone(), Rc::downgrade(&burn_options));
         let (dialog, parent) = (dialog.downgrade(), parent.as_ref().clone());
         let (size_row, time_row, fit_box, fit, build_btn, issues_group) =
@@ -191,6 +188,9 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
             let mut time = if secs < 60.0 { gettext("Under a minute") } else { gettext("About {}").replace("{}", &super::build_progress::duration_text(secs)) };
             if !measured && secs >= 60.0 {
                 time.push_str(&format!(" · {}", gettext("a rough estimate until a build has been timed on this computer")));
+            }
+            if let Some(note) = super::jobs::queue_note() {
+                time.push_str(&format!(" · {note}"));
             }
             time_row.set_subtitle(&time);
 
@@ -245,11 +245,21 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
                 issues_group.add(&row);
                 issue_rows.borrow_mut().push(row);
             }
-            // Burning also needs a disc that the build fits on.
-            let disc_problem = if burning.get() { options.upgrade().and_then(|o| o.problem(bytes)) } else { None };
-            build_btn.set_sensitive(errors == 0 && disc_problem.is_none());
-            build_btn.set_tooltip_text(disc_problem.as_deref());
-            build_btn.set_label(&if burning.get() { gettext("_Build and Burn") } else { gettext("_Build") });
+            // Burning also needs a disc that the build fits on, and two
+            // builds can't write to the same place.
+            let problem = if burning.get() {
+                options.upgrade().and_then(|o| o.problem(bytes))
+            } else {
+                super::jobs::writes_to(&output.borrow()).then(|| gettext("Another job is already building to this location"))
+            };
+            build_btn.set_sensitive(errors == 0 && problem.is_none());
+            build_btn.set_tooltip_text(problem.as_deref());
+            build_btn.set_label(&match (burning.get(), super::jobs::building()) {
+                (true, false) => gettext("_Build and Burn"),
+                (false, false) => gettext("_Build"),
+                (true, true) => gettext("Queue Build and _Burn"),
+                (false, true) => gettext("Add to _Queue"),
+            });
         })
     };
     refresh();
@@ -270,44 +280,18 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
             r();
         }
     });
+    let weak = Rc::downgrade(&refresh);
+    super::jobs::connect(move || match weak.upgrade() {
+        Some(r) => {
+            r();
+            true
+        }
+        None => false,
+    });
+    let again = Rc::downgrade(&refresh);
     dialog.connect_closed(move |_| {
         let _keep = &refresh;
     });
-
-    // --- progress page (rebuilt for every build)
-    let progress: Rc<RefCell<Option<Rc<super::build_progress::ProgressView>>>> = Rc::default();
-
-    // --- result page
-    let result = adw::StatusPage::new();
-    result.add_css_class("compact");
-    let rcol = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(12).margin_start(24).margin_end(24).build();
-    // On failure: the whole error and the build log.
-    let details_view = gtk::TextView::builder().editable(false).monospace(true).wrap_mode(gtk::WrapMode::WordChar).build();
-    let details = gtk::Expander::builder()
-        .label(gettext("Details"))
-        .child(&gtk::ScrolledWindow::builder().min_content_height(160).child(&details_view).build())
-        .visible(false)
-        .build();
-    // After burning with Verify: how the disc read back.
-    let graph = adw::Bin::new();
-    rcol.append(&graph);
-    rcol.append(&details);
-    let rbox = gtk::Box::builder().spacing(12).halign(gtk::Align::Center).build();
-    let open_btn = gtk::Button::builder().label(gettext("_Open Folder")).use_underline(true).css_classes(["pill", "suggested-action"]).build();
-    let copy_btn = gtk::Button::builder().label(gettext("Copy _Details")).use_underline(true).css_classes(["pill"]).visible(false).build();
-    let close_btn = gtk::Button::builder().label(gettext("_Close")).use_underline(true).css_classes(["pill"]).build();
-    rbox.append(&open_btn);
-    rbox.append(&copy_btn);
-    rbox.append(&close_btn);
-    rcol.append(&rbox);
-    result.set_child(Some(&rcol));
-    let dv = details_view.clone();
-    copy_btn.connect_clicked(move |b| {
-        let buf = dv.buffer();
-        b.clipboard().set_text(&buf.text(&buf.start_iter(), &buf.end_iter(), false));
-        b.set_label(&gettext("Copied"));
-    });
-    stack.add_named(&result, Some("result"));
 
     // --- behaviour
     let d = dialog.clone();
@@ -323,11 +307,14 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
             fd.set_initial_folder(Some(&gio::File::for_path(parent)));
         }
         let out = out.clone();
-        let describe = describe.clone();
+        let (describe, again) = (describe.clone(), again.clone());
         let done = move |res: Result<gio::File, glib::Error>| {
             if let Some(p) = res.ok().and_then(|f| f.path()) {
                 *out.borrow_mut() = with_image(&crate::media::portal::real_path(&p), image);
                 describe();
+                if let Some(r) = again.upgrade() {
+                    r();
+                }
             }
         };
         let root = d.root().and_downcast::<gtk::Window>();
@@ -339,160 +326,32 @@ pub fn present(doc: &Rc<Document>, parent: &impl IsA<gtk::Widget>) {
         }
     });
 
-    let cancel = Arc::new(AtomicBool::new(false));
-    let c = cancel.clone();
-    dialog.connect_closed(move |_| c.store(true, Ordering::Relaxed));
-    let d = dialog.clone();
-    close_btn.connect_clicked(move |_| {
-        d.close();
-    });
-    let out = output.clone();
-    let d = dialog.clone();
-    open_btn.connect_clicked(move |_| {
-        let path = out.borrow().clone();
-        let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(&path)));
-        let root = d.root().and_downcast::<gtk::Window>();
-        if build::is_image(&path) {
-            launcher.open_containing_folder(root.as_ref(), gio::Cancellable::NONE, |_| {});
-        } else {
-            launcher.launch(root.as_ref(), gio::Cancellable::NONE, |_| {});
-        }
-    });
-
     let doc = doc.clone();
     let d = dialog.clone();
     build_btn.connect_clicked(move |_| {
         let target = if burning.get() { burn_options.target() } else { None };
         let start = {
-            let (doc, output, cancel, stack, progress, result, open_btn) =
-                (doc.clone(), output.clone(), cancel.clone(), stack.clone(), progress.clone(), result.clone(), open_btn.clone());
-            let (details, details_view, copy_btn, graph) = (details.clone(), details_view.clone(), copy_btn.clone(), graph.clone());
+            let (doc, output, d) = (doc.clone(), output.clone(), d.clone());
             let target = target.clone();
             move || {
-        let target = target.clone();
-        let project = doc.project().clone();
-        let name = if project.disc.name.is_empty() { gettext("Disc") } else { project.disc.name.clone() };
-        let view = super::build_progress::ProgressView::new(&if target.is_some() {
-            gettext("Building and Burning “{}”").replace("{}", &name)
-        } else {
-            gettext("Building “{}”").replace("{}", &name)
-        });
-        {
-            let c = cancel.clone();
-            view.cancel_button().connect_clicked(move |b| {
-                c.store(true, Ordering::Relaxed);
-                b.set_sensitive(false);
-            });
-        }
-        if let Some(old) = stack.child_by_name("progress") {
-            stack.remove(&old);
-        }
-        stack.add_named(view.widget(), Some("progress"));
-        stack.set_visible_child_name("progress");
-        *progress.borrow_mut() = Some(view.clone());
-        let out = output.borrow().clone();
-        if target.is_none() {
-            if let Some(settings) = crate::app_settings() {
-                let _ = settings.set_string("recent-output", &out.to_string_lossy());
-            }
-        }
-        let cancel = cancel.clone();
-        let (tx, rx) = async_channel::unbounded::<BuildEvent>();
-        let burn_target = target.clone();
-        std::thread::spawn(move || {
-            let emit = |ev: BuildEvent| {
-                let _ = tx.send_blocking(ev);
-            };
-            let res = match &burn_target {
-                None => build::build(&project, &out, &cancel, &emit),
-                // Build an image in the cache, burn it, then remove it.
-                Some(t) => (|| {
-                    let dir = crate::media::cache_dir().join("burn");
-                    std::fs::create_dir_all(&dir)?;
-                    let image = dir.join("disc.iso");
-                    let scaled = |ev: BuildEvent| match ev {
-                        BuildEvent::Progress(p) => emit(BuildEvent::Progress(p * 0.6)),
-                        BuildEvent::Finished(_) => {}
-                        ev => emit(ev),
-                    };
-                    super::burn::add_tasks(t, &emit);
-                    let r = build::build(&project, &image, &cancel, &scaled).and_then(|_| super::burn::run(&image, t, &cancel, &emit, 0.6));
-                    let _ = std::fs::remove_file(&image);
-                    r.map(|_| t.drive.clone())
-                })(),
-            }
-            .map_err(|e| format!("{e:#}"));
-            emit(BuildEvent::Finished(res));
-        });
-        let (result, stack, open_btn, graph) = (result.clone(), stack.clone(), open_btn.clone(), graph.clone());
-        let (details, details_view, copy_btn) = (details.clone(), details_view.clone(), copy_btn.clone());
-        glib::spawn_future_local(async move {
-            let mut stage = String::new();
-            let mut scan = None;
-            // Full error and log for the Details section.
-            let explain = |e: &str, stage: &str| {
-                let log_text = view.log_text();
-                details_view.buffer().set_text(&format!(
-                    "Spindle {}\nFailed while: {stage}\n\n{e}\n\n--- Build log ---\n{log_text}",
-                    crate::config::VERSION
-                ));
-                details.set_visible(true);
-                copy_btn.set_visible(true);
-            };
-            while let Ok(ev) = rx.recv().await {
-                if !matches!(ev, BuildEvent::Finished(_)) {
-                    if let BuildEvent::Stage(s) = &ev {
-                        stage = s.clone();
-                    }
-                    if let BuildEvent::Scan(s) = &ev {
-                        scan = Some(s.clone());
-                    }
-                    view.handle(&ev);
-                    continue;
-                }
-                view.finish();
-                match ev {
-                    BuildEvent::Finished(res) if target.is_some() => {
-                        if let Err(e) = &res {
-                            if !e.contains("cancelled") {
-                                explain(e, &stage);
-                            }
+                let project = doc.project().clone();
+                let name = if project.disc.name.is_empty() { gettext("Disc") } else { project.disc.name.clone() };
+                let work = match target.clone() {
+                    Some(target) => super::jobs::Work::BuildAndBurn { project, target },
+                    None => {
+                        let out = output.borrow().clone();
+                        if let Some(settings) = crate::app_settings() {
+                            let _ = settings.set_string("recent-output", &out.to_string_lossy());
                         }
-                        super::burn::show_result(&result, &graph, res.map(|_| ()).map_err(|e| summary(&e, &stage)), scan.as_ref());
-                        open_btn.set_visible(false);
-                        stack.set_visible_child_name("result");
-                        break;
+                        super::jobs::Work::Build { project, out }
                     }
-                    BuildEvent::Finished(res) => {
-                        match res {
-                            Ok(path) => {
-                                result.set_icon_name(Some("object-select-symbolic"));
-                                result.set_title(&gettext("Disc Ready"));
-                                result.set_description(Some(&format!(
-                                    "{}\n<small>{}</small>",
-                                    if build::is_image(&path) { gettext("The disc image has been created.") } else { gettext("The Blu-ray folder has been created.") },
-                                    glib::markup_escape_text(&path.to_string_lossy())
-                                )));
-                                open_btn.set_visible(true);
-                            }
-                            Err(e) => {
-                                let cancelled = e.contains("cancelled");
-                                result.set_icon_name(Some(if cancelled { "process-stop-symbolic" } else { "dialog-error-symbolic" }));
-                                result.set_title(&if cancelled { gettext("Build Cancelled") } else { gettext("Build Failed") });
-                                if !cancelled {
-                                    explain(&e, &stage);
-                                }
-                                result.set_description(Some(&glib::markup_escape_text(&if cancelled { String::new() } else { summary(&e, &stage) })));
-                                open_btn.set_visible(false);
-                            }
-                        }
-                        stack.set_visible_child_name("result");
-                        break;
-                    }
-                    _ => {}
+                };
+                let job = super::jobs::add(work, name);
+                let parent = d.root();
+                d.close();
+                if let Some(parent) = parent {
+                    super::jobs::present(&job, &parent);
                 }
-            }
-        });
             }
         };
         match &target {

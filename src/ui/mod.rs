@@ -9,6 +9,7 @@ pub mod canvas;
 pub mod compat_dialog;
 pub mod frame_picker;
 pub mod inspector;
+pub mod jobs;
 pub mod media_bin;
 pub mod music_preview;
 pub mod player;

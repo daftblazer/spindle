@@ -168,6 +168,9 @@ exported as a single `.spindle-template` file to share. See
   the build shows each step with its progress, speed and time left
 - Encodes are reused when rebuilding, so changing a menu doesn't encode the
   videos again
+- **Background jobs**: builds and burns run while you carry on with the next
+  disc. Builds take turns, burning runs alongside a build, and a queued
+  burn waits for you to insert a disc
 - Autosave with crash recovery, and projects that keep finding their media
   when the project folder is moved
 

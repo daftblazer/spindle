@@ -113,12 +113,30 @@ impl SpindleApplication {
 
     fn setup_gactions(&self) {
         let quit_action = gio::ActionEntry::builder("quit")
-            .activate(move |app: &Self, _, _| app.quit())
+            .activate(move |app: &Self, _, _| app.quit_stopping_jobs())
             .build();
         let about_action = gio::ActionEntry::builder("about")
             .activate(move |app: &Self, _, _| app.show_about())
             .build();
         self.add_action_entries([quit_action, about_action]);
+    }
+
+    /// Quit, asking first when there are jobs, which are then cancelled and
+    /// left to stop (ending ffmpeg and removing their work files).
+    fn quit_stopping_jobs(&self) {
+        let window = self.active_window();
+        let (Some(window), true) = (window, crate::ui::jobs::active() > 0) else {
+            self.quit();
+            return;
+        };
+        let app = self.clone();
+        crate::ui::jobs::confirm_close(&window, move || {
+            for w in app.windows() {
+                w.set_visible(false);
+            }
+            let app = app.clone();
+            crate::ui::jobs::cancel_all(move || app.quit());
+        });
     }
 
     fn show_about(&self) {
