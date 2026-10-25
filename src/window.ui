@@ -457,6 +457,10 @@
         <attribute name="action">win.save-template</attribute>
       </item>
       <item>
+        <attribute name="label" translatable="yes">_Check Video Compatibility…</attribute>
+        <attribute name="action">win.check-all-videos</attribute>
+      </item>
+      <item>
         <attribute name="label" translatable="yes">_Disc Settings</attribute>
         <attribute name="action">win.disc-settings</attribute>
       </item>

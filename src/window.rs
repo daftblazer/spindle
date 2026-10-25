@@ -467,6 +467,7 @@ impl SpindleWindow {
         self.action_enabled("add-audio", matches!(doc.node(), Node::Title(_)));
         self.action_enabled("preview-title", matches!(doc.node(), Node::Title(_)));
         self.action_enabled("check-video", matches!(doc.node(), Node::Title(_)));
+        self.action_enabled("check-all-videos", !doc.project().titles.is_empty());
         self.action_enabled("delete-node", doc.node() != Node::None);
         self.action_enabled("duplicate-menu", matches!(doc.node(), Node::Menu(_)));
     }
@@ -595,6 +596,7 @@ impl SpindleWindow {
                 ui::compat_dialog::check(&w.doc(), t, w);
             }
         });
+        add("check-all-videos", |w| ui::compat_dialog::check_all(&w.doc(), w));
         add("add-button", |w| {
             w.add_item(|p| {
                 let action = p.titles.first().map_or(Action::None, |t| Action::PlayTitle { title: t.id, chapter: 0 });

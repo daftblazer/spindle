@@ -1114,6 +1114,9 @@ impl Inspector {
             .action_name("win.check-video")
             .build();
         g.add(&check);
+        if p.titles.len() > 1 {
+            g.add(&adw::ButtonRow::builder().title(gettext("Check All Titles…")).start_icon_name("view-list-symbolic").action_name("win.check-all-videos").build());
+        }
         page.add(&g);
         if let Some(a) = p.asset(t.asset) {
             self.picture_group(page, id, &a.info, a.path.clone(), t.video, t.keep_video, p.disc.video);
