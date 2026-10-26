@@ -697,6 +697,8 @@ struct PopupInput<'a> {
     languages: &'a [LanguagePreset],
     /// The first episode page.
     episodes: Option<Id>,
+    /// The first Extras page.
+    extras: Option<Id>,
     main: Id,
     setup: Option<Id>,
 }
@@ -712,6 +714,8 @@ struct Episode {
     /// Thumbnail frame.
     poster: f64,
     duration: f64,
+    /// An extra, numbered among the extras and listed without its number.
+    extra: bool,
 }
 
 impl Episode {
@@ -719,9 +723,11 @@ impl Episode {
         Action::PlayTitle { title: self.title, chapter: 0 }
     }
 
-    /// "3 · Name", or "Episode 3" without a name.
+    /// "3 · Name", or "Episode 3" without a name; an extra's name alone.
     fn label(&self, sep: &str, max: usize) -> String {
-        if self.name.is_empty() {
+        if self.extra {
+            short(&self.name_or_title(), max)
+        } else if self.name.is_empty() {
             gettext("Episode {}").replace("{}", &self.number.to_string())
         } else {
             format!("{}{sep}{}", self.number, short(&self.name, max))
@@ -738,6 +744,8 @@ struct Input<'a> {
     season: String,
     disc: String,
     episodes: Vec<Episode>,
+    /// Titles marked as extras.
+    extras: Vec<Episode>,
     main: Menu,
     setup: Option<Id>,
 }
@@ -773,6 +781,9 @@ struct Output {
     title_item: Option<Id>,
     /// Extra buttons for the pop-up menu (e.g. Episodes).
     popup_links: Vec<(String, Action)>,
+    /// How many of the last menus are Extras pages, which "Regenerate
+    /// Episode Menus" leaves alone.
+    extra_pages: usize,
 }
 
 /// The pop-up menu and the pages it opens (the pop-up itself first), from
@@ -935,8 +946,8 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
     let main_id = main.id;
     let setup_id = (p.disc.languages.len() >= 2).then(new_id);
 
-    let episodes = episodes(p);
-    let input = Input { p, cx, name: name.clone(), season: opts.season.clone(), disc: opts.disc.clone(), episodes, main, setup: setup_id };
+    let (episodes, extras) = (episodes(p, false), episodes(p, true));
+    let input = Input { p, cx, name: name.clone(), season: opts.season.clone(), disc: opts.disc.clone(), episodes, extras, main, setup: setup_id };
     // The custom template's own Setup and pop-up designs.
     let extras = opts.custom.as_deref().map(|t| custom::Extras::new(t, &input, &images));
     let out = build(opts, input, &images);
@@ -950,7 +961,8 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
         m.id = id;
         m
     });
-    let page_ids: Vec<Id> = out.menus.iter().skip(1).map(|m| m.id).collect();
+    let page_ids: Vec<Id> = out.menus[1..out.menus.len() - out.extra_pages].iter().map(|m| m.id).collect();
+    let extra_ids: Vec<Id> = out.menus[out.menus.len() - out.extra_pages..].iter().map(|m| m.id).collect();
     let mut menus = out.menus;
 
     // Use the logo in place of the name on the main menu.
@@ -979,6 +991,7 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
             max_chapters: p.titles.iter().map(|t| t.chapters.len() + 1).max().unwrap_or(0),
             languages: &p.disc.languages,
             episodes: page_ids.first().copied().filter(|_| !p.titles.is_empty()),
+            extras: extra_ids.first().copied(),
             main: main_id,
             setup: setup_id,
         };
@@ -1005,6 +1018,12 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
             t.end_action = EndAction::ReturnToMenu;
         }
     }
+    // A show's extras go back to the Extras page.
+    if out.extra_pages > 0 {
+        for t in p.titles.iter_mut().filter(|t| t.extra) {
+            t.end_action = EndAction::ReturnToMenu;
+        }
+    }
     p.first_play = FirstPlay::FirstMenu;
     // Menus have the shape of the disc's, whichever the design was made for.
     p.sync_menu_shapes();
@@ -1020,9 +1039,11 @@ pub fn apply(p: &mut Project, opts: &Options) -> Id {
     main_id
 }
 
-fn episodes(p: &Project) -> Vec<Episode> {
+/// The episodes, or with `extra` the extras, numbered from 1.
+fn episodes(p: &Project, extra: bool) -> Vec<Episode> {
     p.titles
         .iter()
+        .filter(|t| t.extra == extra)
         .enumerate()
         .map(|(i, t)| Episode {
             title: t.id,
@@ -1031,6 +1052,7 @@ fn episodes(p: &Project) -> Vec<Episode> {
             name: episode_name(&t.name),
             poster: p.title_poster(t.id),
             duration: p.asset(t.asset).map_or(0.0, |a| a.info.duration),
+            extra,
         })
         .collect()
 }
@@ -1085,10 +1107,12 @@ pub fn regenerate_pages(p: &mut Project, opts: &Options, old: &[Id]) -> Vec<Id> 
     let temp_main = cx.menu(&gettext("Main Menu"));
     let temp_id = temp_main.id;
     let name = if opts.title.trim().is_empty() { p.disc.name.clone() } else { opts.title.clone() };
-    let input = Input { p, cx, name, season: opts.season.clone(), disc: opts.disc.clone(), episodes: episodes(p), main: temp_main, setup: None };
+    let input = Input { p, cx, name, season: opts.season.clone(), disc: opts.disc.clone(), episodes: episodes(p, false), extras: episodes(p, true), main: temp_main, setup: None };
     let out = build(opts, input, &images);
-    // The main menu comes first; the rest are the pages.
-    let mut pages: Vec<Menu> = out.menus.into_iter().skip(1).collect();
+    // The main menu comes first, then the episode pages; the Extras pages
+    // are left as they are.
+    let n = out.menus.len() - out.extra_pages;
+    let mut pages: Vec<Menu> = out.menus.into_iter().take(n).skip(1).collect();
     let home = |id: Id| (id == temp_id).then_some(main).flatten();
     for m in &mut pages {
         m.relink(&home);
@@ -1110,7 +1134,8 @@ pub fn regenerate_pages(p: &mut Project, opts: &Options, old: &[Id]) -> Vec<Id> 
     for t in &mut p.titles {
         let from_template = t.return_menu.is_none_or(|m| old.contains(&m));
         if from_template {
-            t.return_menu = out.return_to.iter().find(|(id, _)| *id == t.id).map(|(_, m)| *m).or(t.return_menu.and_then(map));
+            let page = out.return_to.iter().find(|(id, m)| *id == t.id && new_ids.contains(m)).map(|(_, m)| *m);
+            t.return_menu = page.or(t.return_menu.and_then(map));
         }
     }
     let info = p.template.get_or_insert(TemplateInfo {
@@ -1132,10 +1157,14 @@ pub fn regenerate_pages(p: &mut Project, opts: &Options, old: &[Id]) -> Vec<Id> 
 
 /// A simple list of every title; its first page is the main menu.
 fn collection(input: Input) -> Output {
-    let Input { cx, name, mut main, episodes, setup, .. } = input;
+    let Input { p, cx, name, mut main, episodes, extras, setup, .. } = input;
     let main_id = main.id;
+    // Extras keep their place among the titles.
+    let mut episodes = episodes;
+    episodes.extend(extras);
+    episodes.sort_by_key(|e| p.titles.iter().position(|t| t.id == e.title));
     let mut entries: Vec<(String, Action)> = Vec::new();
-    if episodes.len() > 1 {
+    if p.play_all_titles().len() > 1 {
         entries.push((gettext("Play All"), Action::PlayAll));
     }
     entries.extend(episodes.iter().map(|e| (short(&e.name_or_title(), 36), e.action())));
@@ -1158,7 +1187,7 @@ fn collection(input: Input) -> Output {
             }
         }
     }
-    let offset = usize::from(episodes.len() > 1);
+    let offset = usize::from(p.play_all_titles().len() > 1);
     let return_to = episodes
         .iter()
         .enumerate()
@@ -1169,13 +1198,15 @@ fn collection(input: Input) -> Output {
         .collect();
     let mut menus = vec![main];
     menus.extend(pages);
-    Output { menus, return_to, title_item, popup_links: vec![] }
+    Output { menus, return_to, title_item, popup_links: vec![], extra_pages: 0 }
 }
 
 impl Episode {
     /// The name, or the full title name when it had only a number.
     fn name_or_title(&self) -> String {
-        if self.name.is_empty() {
+        if self.name.is_empty() && self.extra {
+            gettext("Extra {}").replace("{}", &self.number.to_string())
+        } else if self.name.is_empty() {
             gettext("Title {}").replace("{}", &self.number.to_string())
         } else {
             self.name.clone()
@@ -1296,6 +1327,93 @@ mod tests {
             regenerate_pages(&mut big, &with(&t), &old);
             check(&big);
         }
+    }
+
+    /// 14 titles; the 7th and the last are extras.
+    fn project_with_extras() -> Project {
+        let mut p = project(14);
+        for i in [6, 13] {
+            p.titles[i].extra = true;
+        }
+        p
+    }
+
+    /// The menus that play `title`.
+    fn menus_playing(p: &Project, title: Id) -> Vec<Id> {
+        p.disc_menus().filter(|m| m.buttons().any(|b| matches!(b.button().unwrap().action, Action::PlayTitle { title: t, .. } if t == title))).map(|m| m.id).collect()
+    }
+
+    /// The menu the main menu's Extras button opens.
+    fn extras_page(p: &Project, main: Id) -> Option<Id> {
+        p.menu(main)?.buttons().find_map(|b| match b.button()?.action {
+            Action::ShowMenu(m) if b.button()?.label.to_lowercase() == "extras" => Some(m),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn extras_get_their_own_page() {
+        let saved = {
+            let mut src = project(8);
+            apply(&mut src, &opts(Style::Minimal, 0));
+            custom::from_project(&src, "Mine", "", "").unwrap()
+        };
+        let mut all: Vec<Options> = Category::TvShow.styles().into_iter().map(|s| opts(s, s.default_theme())).collect();
+        all.push(Options { custom: Some(std::sync::Arc::new(saved)), ..opts(Style::Minimal, 0) });
+        for o in all {
+            let name = o.custom.as_ref().map_or_else(|| format!("{:?}", o.style), |c| c.name.clone());
+            let mut p = project_with_extras();
+            let main = apply(&mut p, &o);
+            check(&p);
+            let extras = extras_page(&p, main).unwrap_or_else(|| panic!("{name}: no Extras button"));
+            let episodes = episode_pages(&p);
+            assert!(!episodes.contains(&extras), "{name}");
+            for t in &p.titles {
+                let on = menus_playing(&p, t.id);
+                if t.extra {
+                    assert_eq!(on, vec![extras], "{name}: {} is listed on the Extras page only", t.name);
+                    assert_eq!((t.return_menu, t.end_action), (Some(extras), EndAction::ReturnToMenu), "{name}");
+                } else {
+                    assert!(on.iter().all(|m| episodes.contains(m) || *m == main), "{name}: {} is an episode", t.name);
+                }
+            }
+            let texts: Vec<String> = p.menu(main).unwrap().items.iter().filter_map(|i| match &i.kind {
+                ItemKind::Text(t) => Some(t.text.clone()),
+                _ => None,
+            }).collect();
+            assert!(texts.iter().any(|t| t.to_lowercase().contains("12 episodes")), "{name}: {texts:?}");
+            assert_eq!(p.play_all_titles().len(), 12);
+            // The added button doesn't cover another.
+            let m = p.menu(main).unwrap();
+            let rects: Vec<Rect> = m.buttons().map(|b| b.rect).collect();
+            for (i, a) in rects.iter().enumerate() {
+                for b in &rects[i + 1..] {
+                    let overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+                    assert!(!overlap, "{name}: buttons overlap: {a:?} {b:?}");
+                }
+            }
+
+            // Making the episode pages again leaves the Extras page.
+            let old = episode_pages(&p);
+            regenerate_pages(&mut p, &o, &old);
+            check(&p);
+            assert_eq!(extras_page(&p, main), Some(extras), "{name}");
+            assert!(p.menu(extras).is_some(), "{name}");
+            assert!(p.titles.iter().filter(|t| t.extra).all(|t| t.return_menu == Some(extras)), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_film_can_follow_its_extras() {
+        let mut p = project(3);
+        p.titles[0].extra = true;
+        let main = apply(&mut p, &opts(Style::MovieClassic, 0));
+        let film = p.titles[1].id;
+        let play = p.menu(main).unwrap().buttons().find(|b| b.button().unwrap().label == "Play Movie").unwrap();
+        assert_eq!(play.button().unwrap().action, Action::PlayTitle { title: film, chapter: 0 });
+        let extras = extras_page(&p, main).unwrap();
+        assert_eq!(menus_playing(&p, p.titles[0].id), vec![extras]);
+        assert_eq!(menus_playing(&p, p.titles[2].id), vec![extras]);
     }
 
     #[test]

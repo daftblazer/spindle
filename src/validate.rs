@@ -176,7 +176,7 @@ fn reachable(p: &Project) -> (HashSet<Id>, HashSet<Id>) {
                 match action {
                     Action::ShowMenu(m) => todo_m.push(*m),
                     Action::PlayTitle { title, .. } => todo_t.push(*title),
-                    Action::PlayAll => todo_t.extend(p.titles.iter().map(|t| t.id)),
+                    Action::PlayAll => todo_t.extend(p.play_all_titles().into_iter().map(|i| p.titles[i].id)),
                     Action::SetLanguage { menu, .. } => todo_m.extend(*menu),
                     Action::PlayChapter(_) | Action::None => {}
                 }
@@ -189,7 +189,7 @@ fn reachable(p: &Project) -> (HashSet<Id>, HashSet<Id>) {
             let t = &p.titles[i];
             // Its pop-up menu opens during playback.
             todo_m.extend(p.title_popup(t).map(|m| m.id));
-            let next = p.titles.get(i + 1).map(|t| t.id);
+            let next = p.next_title(i).map(|n| p.titles[n].id);
             match t.end_action {
                 EndAction::PlayNextTitle if next.is_some() => todo_t.extend(next),
                 EndAction::Loop => {}

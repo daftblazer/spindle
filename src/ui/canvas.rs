@@ -303,10 +303,10 @@ impl MenuCanvas {
                     Some(gettext("Language set to “{}”").replace("{}", &name))
                 }
                 Some(Action::PlayChapter(c)) => Some(gettext("Would go to chapter {} of the playing title").replace("{}", &(c + 1).to_string())),
-                Some(Action::PlayAll) => Some(
-                    ngettext("Would play all {} title", "Would play all {} titles", p.titles.len() as u32)
-                        .replace("{}", &p.titles.len().to_string()),
-                ),
+                Some(Action::PlayAll) => {
+                    let n = p.play_all_titles().len();
+                    Some(ngettext("Would play all {} title", "Would play all {} titles", n as u32).replace("{}", &n.to_string()))
+                }
                 _ => Some(gettext("This button has no action")),
             }
         };

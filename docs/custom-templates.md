@@ -64,7 +64,8 @@ Items are Spindle menu items as in a `.spindle` project (text, button,
 image, shape), on a 1920 × 1080 canvas, with two optional fields:
 
 * `"link"` on a button: what it does. `play_all`, `episodes` (the first
-  episode page), `setup` (left out when the disc has no Setup menu),
+  episode page), `extras` (the first Extras page; left out when no title is
+  marked as an extra), `setup` (left out when the disc has no Setup menu),
   `main_menu`, `first_episode`, and on episode pages `episode` (the slot's
   episode), `previous` and `next` (left out on the first / last page). The
   Setup and pop-up menus have a few more, described below.
@@ -81,6 +82,12 @@ episode (its button, a still, its running time…). The slot is repeated
 `columns × rows` times per page, `step` apart (`[across, down]`), filling
 rows first (`"order": "rows"`) or columns first (`"columns"`). A layout
 without Previous / Next buttons gets them when a show needs several pages.
+
+Titles marked as extras (OVAs, specials…) get Extras pages made from the
+same layout, with a heading that reads "Episodes" changed to "Extras". In
+an extra's slot, `{number}` counts the extras and `{name}` is its name. A
+main menu without an `extras` button gets a copy of its Episodes button,
+just after it.
 
 ### Setup menu
 

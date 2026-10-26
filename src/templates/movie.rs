@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Movie styles: the first title is the film, the others are extras.
+//! Movie styles: the first title not marked as an extra is the film, the
+//! others are extras.
 
 use super::show::{Card, Columns, Row};
 use super::*;
@@ -60,19 +61,23 @@ impl Parts {
         let mut menus = vec![main];
         menus.extend(self.scenes);
         menus.extend(self.extra_pages);
-        Output { menus, return_to, title_item, popup_links }
+        Output { menus, return_to, title_item, popup_links, extra_pages: 0 }
     }
 }
 
-fn split_titles(episodes: Vec<Episode>) -> (Option<Episode>, Vec<Episode>) {
+/// The film, and the extras in title order.
+fn split_titles(p: &Project, episodes: Vec<Episode>, extras: Vec<Episode>) -> (Option<Episode>, Vec<Episode>) {
     let mut it = episodes.into_iter();
-    (it.next(), it.collect())
+    let film = it.next();
+    let mut rest: Vec<Episode> = it.chain(extras).collect();
+    rest.sort_by_key(|e| p.titles.iter().position(|t| t.id == e.title));
+    (film, rest)
 }
 
 fn classic(input: Input) -> Output {
     let (edition, home, setup, p) = (input.edition(), input.home(), input.setup, input.p);
-    let Input { cx, name, mut main, episodes, .. } = input;
-    let (film, extras) = split_titles(episodes);
+    let Input { cx, name, mut main, episodes, extras, .. } = input;
+    let (film, extras) = split_titles(p, episodes, extras);
     let scenes = film.as_ref().map(|f| cx.grid_pages(&gettext("Scene Selection"), &scene_entries(p, f.title), home.clone(), "")).unwrap_or_default();
     let extra_list: Vec<(String, Action)> = extras.iter().map(|e| (short(&e.name_or_title(), 36), e.action())).collect();
     let extra_pages = if extras.is_empty() { vec![] } else { cx.list_pages(&gettext("Extras"), &gettext("Extras"), &extra_list, home) };
@@ -106,9 +111,9 @@ fn classic(input: Input) -> Output {
 
 fn showcase(input: Input) -> Output {
     let (edition, home, setup, p) = (input.edition(), input.home(), input.setup, input.p);
-    let Input { cx, name, mut main, episodes, .. } = input;
+    let Input { cx, name, mut main, episodes, extras, .. } = input;
     let bg = cx.theme.bottom;
-    let (film, extras) = split_titles(episodes);
+    let (film, extras) = split_titles(p, episodes, extras);
     let scenes = film
         .as_ref()
         .map(|f| cx.card_pages(&gettext("Scene Selection"), edition.as_deref(), &scene_entries(p, f.title), home.clone(), ""))
@@ -145,8 +150,8 @@ fn showcase(input: Input) -> Output {
 
 fn minimal(input: Input) -> Output {
     let (edition, home, setup, p) = (input.edition(), input.home(), input.setup, input.p);
-    let Input { cx, name, mut main, episodes, .. } = input;
-    let (film, extras) = split_titles(episodes);
+    let Input { cx, name, mut main, episodes, extras, .. } = input;
+    let (film, extras) = split_titles(p, episodes, extras);
     let scene_rows: Vec<Row> = film
         .as_ref()
         .map(|f| {

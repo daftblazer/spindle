@@ -1635,6 +1635,13 @@ impl Inspector {
             row.add_prefix(&gtk::Image::from_icon_name("video-x-generic-symbolic"));
             g.add(&row);
         }
+        let extra = rows::switch(doc, &gettext("Extra"), t.extra, Change::Structure, move |p, v| {
+            if let Some(t) = p.title_mut(id) {
+                t.extra = v;
+            }
+        });
+        extra.set_subtitle(&gettext("An OVA, special or other bonus video: left out of Play All and listed on an Extras page instead of with the episodes"));
+        g.add(&extra);
         page.add(&g);
 
         if let Some(a) = p.asset(t.asset) {

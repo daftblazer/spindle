@@ -200,17 +200,32 @@ impl Ctx {
     }
 }
 
+/// The pages listing `list` under `heading`, made by a style's `make`, or
+/// none for an empty list of extras.
+fn extra_pages(extras: &[Episode], make: impl Fn(&str, &[Episode]) -> Vec<Menu>) -> Vec<Menu> {
+    if extras.is_empty() {
+        vec![]
+    } else {
+        make(&gettext("Extras"), extras)
+    }
+}
+
 fn classic(input: Input, list: bool) -> Output {
     let (edition, count, home, hint) = (input.edition(), input.count(), input.home(), input.hint());
     let setup = input.setup;
-    let Input { cx, name, mut main, episodes, .. } = input;
-    let (pages, per_page) = if list {
-        let entries: Vec<(String, Action, f64)> = episodes.iter().map(|e| (e.label(".   ", 44), e.action(), e.duration)).collect();
-        (cx.episode_list_pages(&gettext("Episodes"), &entries, home, &hint), EPISODE_ROWS)
-    } else {
-        let entries: Vec<Card> = episodes.iter().map(|e| (e.label(" · ", 28), e.action(), e.asset, e.poster)).collect();
-        (cx.grid_pages(&gettext("Episodes"), &entries, home, &hint), GRID_PAGE)
+    let Input { cx, name, mut main, episodes, extras, .. } = input;
+    let per_page = if list { EPISODE_ROWS } else { GRID_PAGE };
+    let make = |heading: &str, list_of: &[Episode], hint: &str| {
+        if list {
+            let entries: Vec<(String, Action, f64)> = list_of.iter().map(|e| (e.label(".   ", 44), e.action(), e.duration)).collect();
+            cx.episode_list_pages(heading, &entries, home.clone(), hint)
+        } else {
+            let entries: Vec<Card> = list_of.iter().map(|e| (e.label(" · ", 28), e.action(), e.asset, e.poster)).collect();
+            cx.grid_pages(heading, &entries, home.clone(), hint)
+        }
     };
+    let pages = make(&gettext("Episodes"), &episodes, &hint);
+    let xpages = extra_pages(&extras, |h, l| make(h, l, ""));
     main.items.push(cx.panel(Rect::new(96.0, 96.0, 700.0, 888.0), 36.0));
     if let Some(e) = &edition {
         main.items.push(cx.caps(e, Rect::new(150.0, 128.0, 600.0, 40.0), 22, cx.theme.selected, Align::Left, 4.0));
@@ -220,9 +235,13 @@ fn classic(input: Input, list: bool) -> Output {
     main.items.push(title);
     main.items.push(MenuItem::new_shape(cx.theme.selected, 3.0, Rect::new(150.0, 455.0, 90.0, 6.0)));
     main.items.push(cx.text(&count, Rect::new(150.0, 475.0, 600.0, 60.0), 32, "", Align::Left, true));
-    // Two or three buttons down the panel.
-    let buttons = show_buttons(&pages, &episodes, setup);
-    let (y, step) = if buttons.len() > 2 { (566.0, 128.0) } else { (590.0, 146.0) };
+    // Two to four buttons down the panel.
+    let buttons = show_buttons(&pages, &episodes, &xpages, setup);
+    let (y, step) = match buttons.len() {
+        4.. => (550.0, 108.0),
+        3 => (566.0, 128.0),
+        _ => (590.0, 146.0),
+    };
     for (i, (label, action)) in buttons.iter().enumerate() {
         let b = cx.button(label, *action, Rect::new(130.0, y + i as f64 * step, 560.0, 96.0), 50, Align::Left, Highlight::Frame);
         if i == 0 {
@@ -234,33 +253,44 @@ fn classic(input: Input, list: bool) -> Output {
         main.items.push(cx.panel(Rect::new(862.0, 262.0, 976.0, 556.0), 24.0));
         main.items.push(cx.still(e.asset, e.poster, Rect::new(870.0, 270.0, 960.0, 540.0)));
     }
-    finish(main, pages, &episodes, per_page, title_item)
+    finish(main, (pages, &episodes), (xpages, &extras), per_page, title_item)
 }
 
-/// Main menu, episode pages and the links between them.
-fn finish(main: Menu, pages: Vec<Menu>, episodes: &[Episode], per_page: usize, title_item: Option<Id>) -> Output {
-    let return_to = returns(episodes, &pages, per_page);
-    let popup_links = match (pages.first(), episodes.is_empty()) {
+/// Main menu, episode and extras pages and the links between them.
+fn finish(main: Menu, (pages, episodes): (Vec<Menu>, &[Episode]), (xpages, extras): (Vec<Menu>, &[Episode]), per_page: usize, title_item: Option<Id>) -> Output {
+    let mut return_to = returns(episodes, &pages, per_page);
+    if !xpages.is_empty() {
+        return_to.extend(returns(extras, &xpages, per_page));
+    }
+    let mut popup_links = match (pages.first(), episodes.is_empty()) {
         (Some(first), false) => vec![(gettext("Episodes"), Action::ShowMenu(first.id))],
         _ => vec![],
     };
+    popup_links.extend(xpages.first().map(|x| (gettext("Extras"), Action::ShowMenu(x.id))));
+    let extra_pages = xpages.len();
     let mut menus = vec![main];
     menus.extend(pages);
-    Output { menus, return_to, title_item, popup_links }
+    menus.extend(xpages);
+    Output { menus, return_to, title_item, popup_links, extra_pages }
 }
 
 fn showcase(input: Input, list: bool) -> Output {
     let (edition, count, home, hint) = (input.edition(), input.count(), input.home(), input.hint());
     let setup = input.setup;
-    let Input { cx, name, mut main, episodes, .. } = input;
+    let Input { cx, name, mut main, episodes, extras, .. } = input;
     let bg = cx.theme.bottom;
-    let (pages, per_page) = if list {
-        let rows: Vec<ListEntry> = episodes.iter().map(|e| (e.label(".   ", 40), e.action(), e.asset, e.poster, clock(e.duration))).collect();
-        (cx.artwork_list_pages(&gettext("Episodes"), edition.as_deref(), &rows, home, &hint), ARTWORK_LIST_ROWS)
-    } else {
-        let cards: Vec<Card> = episodes.iter().map(|e| (e.label(".  ", 24), e.action(), e.asset, e.poster)).collect();
-        (cx.card_pages(&gettext("Episodes"), edition.as_deref(), &cards, home, &hint), 8)
+    let per_page = if list { ARTWORK_LIST_ROWS } else { 8 };
+    let make = |heading: &str, list_of: &[Episode], hint: &str| {
+        if list {
+            let rows: Vec<ListEntry> = list_of.iter().map(|e| (e.label(".   ", 40), e.action(), e.asset, e.poster, clock(e.duration))).collect();
+            cx.artwork_list_pages(heading, edition.as_deref(), &rows, home.clone(), hint)
+        } else {
+            let cards: Vec<Card> = list_of.iter().map(|e| (e.label(".  ", 24), e.action(), e.asset, e.poster)).collect();
+            cx.card_pages(heading, edition.as_deref(), &cards, home.clone(), hint)
+        }
     };
+    let pages = make(&gettext("Episodes"), &episodes, &hint);
+    let xpages = extra_pages(&extras, |h, l| make(h, l, ""));
 
     main.background = Background { color: bg, ..Default::default() };
     if let Some(e) = episodes.first() {
@@ -278,17 +308,22 @@ fn showcase(input: Input, list: bool) -> Output {
     let title_item = Some(title.id);
     main.items.push(title);
     main.items.push(cx.text(&count, Rect::new(140.0, 705.0, 800.0, 44.0), 28, "Medium", Align::Left, true));
-    let buttons = show_buttons(&pages, &episodes, setup);
-    let ids = cx.pill_row(&mut main, &buttons, 140.0, 800.0, 32);
+    let buttons = show_buttons(&pages, &episodes, &xpages, setup);
+    // Four pills fit one row at a smaller size.
+    let size = if buttons.len() > 3 { 28 } else { 32 };
+    let ids = cx.pill_row(&mut main, &buttons, 140.0, 800.0, size);
     main.default_button = ids.first().copied();
-    finish(main, pages, &episodes, per_page, title_item)
+    finish(main, (pages, &episodes), (xpages, &extras), per_page, title_item)
 }
 
-/// Play All, Episodes and Setup.
-fn show_buttons(pages: &[Menu], episodes: &[Episode], setup: Option<Id>) -> Vec<(String, Action)> {
+/// Play All, Episodes, Extras and Setup.
+fn show_buttons(pages: &[Menu], episodes: &[Episode], extra_pages: &[Menu], setup: Option<Id>) -> Vec<(String, Action)> {
     let mut v = vec![(gettext("Play All"), Action::PlayAll)];
     if let (Some(first), false) = (pages.first(), episodes.is_empty()) {
         v.push((gettext("Episodes"), Action::ShowMenu(first.id)));
+    }
+    if let Some(x) = extra_pages.first() {
+        v.push((gettext("Extras"), Action::ShowMenu(x.id)));
     }
     if let Some(s) = setup {
         v.push((gettext("Setup"), Action::ShowMenu(s)));
@@ -299,15 +334,25 @@ fn show_buttons(pages: &[Menu], episodes: &[Episode], setup: Option<Id>) -> Vec<
 fn minimal(input: Input) -> Output {
     let (edition, count, home, hint) = (input.edition(), input.count(), input.home(), input.hint());
     let setup = input.setup;
-    let Input { cx, name, mut main, episodes, .. } = input;
-    let rows: Vec<Row> = episodes
-        .iter()
-        .map(|e| {
-            let label = if e.name.is_empty() { gettext("Episode {}").replace("{}", &e.number.to_string()) } else { format!("{:02}   {}", e.number, short(&e.name, 60)) };
-            (label, e.action(), minutes(e.duration))
-        })
-        .collect();
-    let pages = cx.column_pages(&gettext("Episodes"), edition.as_deref(), &rows, home, &hint, &Columns::WIDE);
+    let Input { cx, name, mut main, episodes, extras, .. } = input;
+    let make = |heading: &str, list_of: &[Episode], hint: &str| {
+        let rows: Vec<Row> = list_of
+            .iter()
+            .map(|e| {
+                let label = if e.extra {
+                    short(&e.name_or_title(), 60)
+                } else if e.name.is_empty() {
+                    gettext("Episode {}").replace("{}", &e.number.to_string())
+                } else {
+                    format!("{:02}   {}", e.number, short(&e.name, 60))
+                };
+                (label, e.action(), minutes(e.duration))
+            })
+            .collect();
+        cx.column_pages(heading, edition.as_deref(), &rows, home.clone(), hint, &Columns::WIDE)
+    };
+    let pages = make(&gettext("Episodes"), &episodes, &hint);
+    let xpages = extra_pages(&extras, |h, l| make(h, l, ""));
 
     main.background = Background { color: cx.theme.bottom, ..Default::default() };
     let caps = match &edition {
@@ -323,8 +368,10 @@ fn minimal(input: Input) -> Output {
     let title_item = Some(title.id);
     main.items.push(title);
     main.items.push(MenuItem::new_shape(cx.theme.selected, 0.0, Rect::new(910.0, 575.0, 100.0, 3.0)));
-    for (i, (label, action)) in show_buttons(&pages, &episodes, setup).iter().enumerate() {
-        let mut b = cx.button_font(label, *action, Rect::new(710.0, 630.0 + i as f64 * 92.0, 500.0, 76.0), format!("{} Medium 34", cx.body), Align::Center, Highlight::Underline);
+    let buttons = show_buttons(&pages, &episodes, &xpages, setup);
+    let step = if buttons.len() > 3 { 86.0 } else { 92.0 };
+    for (i, (label, action)) in buttons.iter().enumerate() {
+        let mut b = cx.button_font(label, *action, Rect::new(710.0, 620.0 + i as f64 * step, 500.0, 76.0), format!("{} Medium 34", cx.body), Align::Center, Highlight::Underline);
         if let Some(b) = b.button_mut() {
             b.text.shadow = false;
         }
@@ -333,45 +380,50 @@ fn minimal(input: Input) -> Output {
         }
         main.items.push(b);
     }
-    finish(main, pages, &episodes, Columns::WIDE.per_page(), title_item)
+    finish(main, (pages, &episodes), (xpages, &extras), Columns::WIDE.per_page(), title_item)
 }
 
 fn streaming(input: Input) -> Output {
     let (edition, count, home, hint) = (input.edition(), input.count(), input.home(), input.hint());
     let setup = input.setup;
-    let Input { cx, name, mut main, episodes, .. } = input;
+    let Input { cx, name, mut main, episodes, extras, .. } = input;
     let bg = cx.theme.bottom;
     const PER_PAGE: usize = 4;
 
     // Episode rows: a still, then the name and running time.
-    let n_pages = episodes.len().div_ceil(PER_PAGE).max(1);
-    let (mut pages, ids) = cx.pages(&gettext("Episodes"), n_pages, |n| cx.plain_menu(n, bg));
-    for (pi, page) in pages.iter_mut().enumerate() {
-        page.items.push(cx.head(&gettext("Episodes"), Rect::new(140.0, 70.0, 900.0, 80.0), 56, "Black", Align::Left));
-        let mut right: Vec<String> = edition.iter().cloned().collect();
-        if n_pages > 1 {
-            right.push(cx.page_label(pi, n_pages));
-        }
-        if !right.is_empty() {
-            page.items.push(cx.caps(&right.join("  ·  "), Rect::new(1000.0, 92.0, 780.0, 40.0), 22, cx.theme.selected, Align::Right, 4.0));
-        }
-        for (k, e) in episodes.iter().skip(pi * PER_PAGE).take(PER_PAGE).enumerate() {
-            let y = 190.0 + k as f64 * 180.0;
-            page.items.push(cx.still(e.asset, e.poster, Rect::new(140.0, y, 288.0, 162.0)));
-            page.items.push(cx.text(&minutes(e.duration), Rect::new(1480.0, y, 280.0, 162.0), 28, "Regular", Align::Right, true));
-            // A frame, not a fill, so the running time stays readable.
-            let mut b = cx.button_font(&e.label("   ", 40), e.action(), Rect::new(452.0, y, 1328.0, 162.0), format!("{} Bold 34", cx.body), Align::Left, Highlight::Frame);
-            if let Some(b) = b.button_mut() {
-                b.fill = Some(alpha(cx.theme.text, 0.06));
+    let make = |heading: &str, list_of: &[Episode], hint: &str| {
+        let n_pages = list_of.len().div_ceil(PER_PAGE).max(1);
+        let (mut pages, ids) = cx.pages(heading, n_pages, |n| cx.plain_menu(n, bg));
+        for (pi, page) in pages.iter_mut().enumerate() {
+            page.items.push(cx.head(heading, Rect::new(140.0, 70.0, 900.0, 80.0), 56, "Black", Align::Left));
+            let mut right: Vec<String> = edition.iter().cloned().collect();
+            if n_pages > 1 {
+                right.push(cx.page_label(pi, n_pages));
             }
-            page.items.push(b);
+            if !right.is_empty() {
+                page.items.push(cx.caps(&right.join("  ·  "), Rect::new(1000.0, 92.0, 780.0, 40.0), 22, cx.theme.selected, Align::Right, 4.0));
+            }
+            for (k, e) in list_of.iter().skip(pi * PER_PAGE).take(PER_PAGE).enumerate() {
+                let y = 190.0 + k as f64 * 180.0;
+                page.items.push(cx.still(e.asset, e.poster, Rect::new(140.0, y, 288.0, 162.0)));
+                page.items.push(cx.text(&minutes(e.duration), Rect::new(1480.0, y, 280.0, 162.0), 28, "Regular", Align::Right, true));
+                // A frame, not a fill, so the running time stays readable.
+                let mut b = cx.button_font(&e.label("   ", 40), e.action(), Rect::new(452.0, y, 1328.0, 162.0), format!("{} Bold 34", cx.body), Align::Left, Highlight::Frame);
+                if let Some(b) = b.button_mut() {
+                    b.fill = Some(alpha(cx.theme.text, 0.06));
+                }
+                page.items.push(b);
+            }
+            if list_of.is_empty() {
+                page.items.push(cx.text(hint, Rect::new(260.0, 420.0, 1400.0, 200.0), 36, "", Align::Center, true));
+            }
+            let prev = pi.checked_sub(1).map(|i| ids[i]);
+            cx.nav_bar(page, prev, home.clone(), ids.get(pi + 1).copied());
         }
-        if episodes.is_empty() {
-            page.items.push(cx.text(&hint, Rect::new(260.0, 420.0, 1400.0, 200.0), 36, "", Align::Center, true));
-        }
-        let prev = pi.checked_sub(1).map(|i| ids[i]);
-        cx.nav_bar(page, prev, home.clone(), ids.get(pi + 1).copied());
-    }
+        pages
+    };
+    let pages = make(&gettext("Episodes"), &episodes, &hint);
+    let xpages = extra_pages(&extras, |h, l| make(h, l, ""));
 
     main.background = Background { color: bg, ..Default::default() };
     if let Some(e) = episodes.first() {
@@ -386,10 +438,11 @@ fn streaming(input: Input) -> Output {
     let title_item = Some(title.id);
     main.items.push(title);
     main.items.push(cx.text(&count, Rect::new(140.0, 540.0, 800.0, 40.0), 28, "Regular", Align::Left, true));
-    let mut buttons = show_buttons(&pages, &episodes, setup);
+    let mut buttons = show_buttons(&pages, &episodes, &xpages, setup);
     buttons[0].0 = format!("▶  {}", buttons[0].0);
+    let step = if buttons.len() > 3 { 92.0 } else { 100.0 };
     for (i, (label, action)) in buttons.iter().enumerate() {
-        let mut b = cx.button_font(label, *action, Rect::new(120.0, 620.0 + i as f64 * 100.0, 440.0, 84.0), format!("{} Bold 32", cx.body), Align::Left, Highlight::Fill);
+        let mut b = cx.button_font(label, *action, Rect::new(120.0, 620.0 + i as f64 * step, 440.0, 84.0), format!("{} Bold 32", cx.body), Align::Left, Highlight::Fill);
         if let Some(b) = b.button_mut() {
             b.fill = Some(alpha(cx.theme.text, 0.12));
         }
@@ -398,7 +451,7 @@ fn streaming(input: Input) -> Output {
         }
         main.items.push(b);
     }
-    finish(main, pages, &episodes, PER_PAGE, title_item)
+    finish(main, (pages, &episodes), (xpages, &extras), PER_PAGE, title_item)
 }
 
 /// Stills of `episodes` filling the right of the screen: a 2 × 2 mosaic
@@ -421,37 +474,42 @@ fn mosaic(cx: &Ctx, m: &mut Menu, episodes: &[&Episode]) {
 fn split(input: Input) -> Output {
     let (edition, count, home, hint) = (input.edition(), input.count(), input.home(), input.hint());
     let (season, disc, setup) = (input.season.trim().to_string(), input.disc.trim().to_string(), input.setup);
-    let Input { cx, name, mut main, episodes, .. } = input;
+    let Input { cx, name, mut main, episodes, extras, .. } = input;
     const PER_PAGE: usize = 7;
     let panel = |m: &mut Menu| {
         m.background = Background { color: cx.theme.bottom, ..Default::default() };
         m.items.push(cx.gradient(Rect::new(0.0, 0.0, 760.0, DESIGN_HEIGHT), cx.theme.top, cx.theme.bottom, false));
     };
 
-    let n_pages = episodes.len().div_ceil(PER_PAGE).max(1);
-    let (mut pages, ids) = cx.pages(&gettext("Episodes"), n_pages, |n| cx.plain_menu(n, cx.theme.bottom));
-    for (pi, page) in pages.iter_mut().enumerate() {
-        let slice: Vec<&Episode> = episodes.iter().skip(pi * PER_PAGE).take(PER_PAGE).collect();
-        panel(page);
-        mosaic(&cx, page, &slice);
-        page.items.push(cx.head(&gettext("Episodes"), Rect::new(130.0, 90.0, 580.0, 80.0), 56, "Bold", Align::Left));
-        let mut sub: Vec<String> = edition.iter().cloned().collect();
-        if n_pages > 1 {
-            sub.push(cx.page_label(pi, n_pages));
+    let make = |heading: &str, list_of: &[Episode], hint: &str| {
+        let n_pages = list_of.len().div_ceil(PER_PAGE).max(1);
+        let (mut pages, ids) = cx.pages(heading, n_pages, |n| cx.plain_menu(n, cx.theme.bottom));
+        for (pi, page) in pages.iter_mut().enumerate() {
+            let slice: Vec<&Episode> = list_of.iter().skip(pi * PER_PAGE).take(PER_PAGE).collect();
+            panel(page);
+            mosaic(&cx, page, &slice);
+            page.items.push(cx.head(heading, Rect::new(130.0, 90.0, 580.0, 80.0), 56, "Bold", Align::Left));
+            let mut sub: Vec<String> = edition.iter().cloned().collect();
+            if n_pages > 1 {
+                sub.push(cx.page_label(pi, n_pages));
+            }
+            if !sub.is_empty() {
+                page.items.push(cx.caps(&sub.join("  ·  "), Rect::new(130.0, 172.0, 600.0, 36.0), 20, cx.theme.dim, Align::Left, 3.0));
+            }
+            for (k, e) in slice.iter().enumerate() {
+                let b = cx.button_font(&e.label(".  ", 24), e.action(), Rect::new(110.0, 240.0 + k as f64 * 86.0, 600.0, 74.0), format!("{} SemiBold 28", cx.body), Align::Left, Highlight::Arrow);
+                page.items.push(b);
+            }
+            if list_of.is_empty() {
+                page.items.push(cx.text(hint, Rect::new(130.0, 400.0, 580.0, 200.0), 30, "", Align::Left, true));
+            }
+            let prev = pi.checked_sub(1).map(|i| ids[i]);
+            cx.nav_row(page, prev, home.clone(), ids.get(pi + 1).copied(), (110.0, 944.0, 200.0, 205.0), 28);
         }
-        if !sub.is_empty() {
-            page.items.push(cx.caps(&sub.join("  ·  "), Rect::new(130.0, 172.0, 600.0, 36.0), 20, cx.theme.dim, Align::Left, 3.0));
-        }
-        for (k, e) in slice.iter().enumerate() {
-            let b = cx.button_font(&e.label(".  ", 24), e.action(), Rect::new(110.0, 240.0 + k as f64 * 86.0, 600.0, 74.0), format!("{} SemiBold 28", cx.body), Align::Left, Highlight::Arrow);
-            page.items.push(b);
-        }
-        if episodes.is_empty() {
-            page.items.push(cx.text(&hint, Rect::new(130.0, 400.0, 580.0, 200.0), 30, "", Align::Left, true));
-        }
-        let prev = pi.checked_sub(1).map(|i| ids[i]);
-        cx.nav_row(page, prev, home.clone(), ids.get(pi + 1).copied(), (110.0, 944.0, 200.0, 205.0), 28);
-    }
+        pages
+    };
+    let pages = make(&gettext("Episodes"), &episodes, &hint);
+    let xpages = extra_pages(&extras, |h, l| make(h, l, ""));
 
     panel(&mut main);
     let all: Vec<&Episode> = episodes.iter().collect();
@@ -474,20 +532,22 @@ fn split(input: Input) -> Output {
     let title_item = Some(title.id);
     main.items.push(title);
     main.items.push(cx.text(&count, Rect::new(130.0, 620.0, 580.0, 40.0), 28, "Medium", Align::Left, true));
-    for (i, (label, action)) in show_buttons(&pages, &episodes, setup).iter().enumerate() {
-        let b = cx.button_font(label, *action, Rect::new(110.0, 690.0 + i as f64 * 96.0, 580.0, 80.0), format!("{} SemiBold 36", cx.body), Align::Left, Highlight::Arrow);
+    let buttons = show_buttons(&pages, &episodes, &xpages, setup);
+    let (y, step, h) = if buttons.len() > 3 { (680.0, 84.0, 74.0) } else { (690.0, 96.0, 80.0) };
+    for (i, (label, action)) in buttons.iter().enumerate() {
+        let b = cx.button_font(label, *action, Rect::new(110.0, y + i as f64 * step, 580.0, h), format!("{} SemiBold 36", cx.body), Align::Left, Highlight::Arrow);
         if i == 0 {
             main.default_button = Some(b.id);
         }
         main.items.push(b);
     }
-    finish(main, pages, &episodes, PER_PAGE, title_item)
+    finish(main, (pages, &episodes), (xpages, &extras), PER_PAGE, title_item)
 }
 
 fn broadcast(input: Input) -> Output {
     let (edition, count, home, hint) = (input.edition(), input.count(), input.home(), input.hint());
     let setup = input.setup;
-    let Input { cx, name, mut main, episodes, .. } = input;
+    let Input { cx, name, mut main, episodes, extras, .. } = input;
     const PER_PAGE: usize = 6;
     let ink = cx.theme.on_accent();
     let block = alpha(cx.theme.text, 0.08);
@@ -507,31 +567,37 @@ fn broadcast(input: Input) -> Output {
         id
     };
 
-    let n_pages = episodes.len().div_ceil(PER_PAGE).max(1);
-    let (mut pages, ids) = cx.pages(&gettext("Episodes"), n_pages, |n| cx.plain_menu(n, cx.theme.bottom));
-    for (pi, page) in pages.iter_mut().enumerate() {
-        let mut right: Vec<String> = edition.iter().cloned().collect();
-        if n_pages > 1 {
-            right.push(cx.page_label(pi, n_pages));
-        }
-        frame(page, &gettext("Episode Guide"), (!right.is_empty()).then(|| right.join("  ·  ")));
-        for (k, e) in episodes.iter().skip(pi * PER_PAGE).take(PER_PAGE).enumerate() {
-            let y = 300.0 + k as f64 * 104.0;
-            page.items.push(MenuItem::new_shape(cx.theme.selected, 0.0, Rect::new(140.0, y, 190.0, 90.0)));
-            page.items.push(cx.caps(&minutes(e.duration), Rect::new(140.0, y, 190.0, 90.0), 30, ink, Align::Center, 2.0));
-            let label = e.label("   ", 40).to_uppercase();
-            let mut b = cx.button_font(&label, e.action(), Rect::new(346.0, y, 1434.0, 90.0), format!("{} Bold 40", cx.body), Align::Left, Highlight::Fill);
-            if let Some(b) = b.button_mut() {
-                b.fill = Some(block);
+    // `banner` heads each page; `heading` names the pages in the menu list.
+    let make = |heading: &str, banner: &str, list_of: &[Episode], hint: &str| {
+        let n_pages = list_of.len().div_ceil(PER_PAGE).max(1);
+        let (mut pages, ids) = cx.pages(heading, n_pages, |n| cx.plain_menu(n, cx.theme.bottom));
+        for (pi, page) in pages.iter_mut().enumerate() {
+            let mut right: Vec<String> = edition.iter().cloned().collect();
+            if n_pages > 1 {
+                right.push(cx.page_label(pi, n_pages));
             }
-            page.items.push(b);
+            frame(page, banner, (!right.is_empty()).then(|| right.join("  ·  ")));
+            for (k, e) in list_of.iter().skip(pi * PER_PAGE).take(PER_PAGE).enumerate() {
+                let y = 300.0 + k as f64 * 104.0;
+                page.items.push(MenuItem::new_shape(cx.theme.selected, 0.0, Rect::new(140.0, y, 190.0, 90.0)));
+                page.items.push(cx.caps(&minutes(e.duration), Rect::new(140.0, y, 190.0, 90.0), 30, ink, Align::Center, 2.0));
+                let label = e.label("   ", 40).to_uppercase();
+                let mut b = cx.button_font(&label, e.action(), Rect::new(346.0, y, 1434.0, 90.0), format!("{} Bold 40", cx.body), Align::Left, Highlight::Fill);
+                if let Some(b) = b.button_mut() {
+                    b.fill = Some(block);
+                }
+                page.items.push(b);
+            }
+            if list_of.is_empty() {
+                page.items.push(cx.text(hint, Rect::new(260.0, 480.0, 1400.0, 120.0), 36, "", Align::Center, true));
+            }
+            let prev = pi.checked_sub(1).map(|i| ids[i]);
+            cx.nav_bar(page, prev, home.clone(), ids.get(pi + 1).copied());
         }
-        if episodes.is_empty() {
-            page.items.push(cx.text(&hint, Rect::new(260.0, 480.0, 1400.0, 120.0), 36, "", Align::Center, true));
-        }
-        let prev = pi.checked_sub(1).map(|i| ids[i]);
-        cx.nav_bar(page, prev, home.clone(), ids.get(pi + 1).copied());
-    }
+        pages
+    };
+    let pages = make(&gettext("Episodes"), &gettext("Episode Guide"), &episodes, &hint);
+    let xpages = extra_pages(&extras, |h, l| make(h, h, l, ""));
 
     let title_item = Some(frame(&mut main, &name, edition.clone()));
     main.items.push(cx.caps(&count, Rect::new(140.0, 316.0, 800.0, 44.0), 30, cx.theme.dim, Align::Left, 4.0));
@@ -549,8 +615,11 @@ fn broadcast(input: Input) -> Output {
         main.items.push(cx.caps(&gettext("On This Disc"), Rect::new(140.0, 894.0, 330.0, 86.0), 26, cx.theme.selected, Align::Left, 4.0));
         main.items.push(cx.caps(&ticker, Rect::new(470.0, 894.0, 1310.0, 86.0), 26, cx.theme.dim, Align::Left, 2.0));
     }
-    for (i, (label, action)) in show_buttons(&pages, &episodes, setup).iter().enumerate() {
-        let mut b = cx.button_font(&label.to_uppercase(), *action, Rect::new(140.0, 400.0 + i as f64 * 132.0, 820.0, 108.0), format!("{} Bold 52", cx.body), Align::Left, Highlight::Fill);
+    let buttons = show_buttons(&pages, &episodes, &xpages, setup);
+    // Four buttons sit closer, clear of the ticker.
+    let (step, h, size) = if buttons.len() > 3 { (118.0, 100.0, 48) } else { (132.0, 108.0, 52) };
+    for (i, (label, action)) in buttons.iter().enumerate() {
+        let mut b = cx.button_font(&label.to_uppercase(), *action, Rect::new(140.0, 400.0 + i as f64 * step, 820.0, h), format!("{} Bold {size}", cx.body), Align::Left, Highlight::Fill);
         if let Some(b) = b.button_mut() {
             b.fill = Some(block);
         }
@@ -559,5 +628,5 @@ fn broadcast(input: Input) -> Output {
         }
         main.items.push(b);
     }
-    finish(main, pages, &episodes, PER_PAGE, title_item)
+    finish(main, (pages, &episodes), (xpages, &extras), PER_PAGE, title_item)
 }

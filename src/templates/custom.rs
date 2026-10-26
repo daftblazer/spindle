@@ -188,6 +188,8 @@ pub enum Link {
     PlayAll,
     /// The first episode page.
     Episodes,
+    /// The first Extras page.
+    Extras,
     Setup,
     MainMenu,
     /// Play the first episode.
@@ -665,12 +667,13 @@ impl<'a> Extras<'a> {
     }
 
     fn popup_link(input: &PopupInput, chapters: Option<Id>, audio: Option<Id>, back: Option<Id>) -> impl Fn(Link) -> Option<Action> {
-        let (episodes, main, setup) = (input.episodes, input.main, input.setup);
+        let (episodes, extras, main, setup) = (input.episodes, input.extras, input.main, input.setup);
         move |l: Link| {
             match l {
                 Link::Chapters => chapters,
                 Link::Audio => audio,
                 Link::Episodes => episodes,
+                Link::Extras => extras,
                 Link::MainMenu => Some(main),
                 Link::Setup => setup,
                 Link::Back => back,
@@ -718,14 +721,16 @@ impl<'a> Extras<'a> {
     }
 }
 
-/// Menus from custom template `t`: the main menu, then the episode pages.
+/// Menus from custom template `t`: the main menu, the episode pages, then
+/// the Extras pages, which are episode pages listing the extras.
 pub(super) fn build(t: &CustomTemplate, input: Input, images: &HashMap<Id, Id>) -> Output {
     let common = common_vars(&input);
     let (shape, main_t, lay) = (t.shape, &t.main, &t.episodes);
-    let Input { episodes, main: base, setup, .. } = input;
+    let Input { episodes, extras, main: base, setup, .. } = input;
     let per_page = lay.per_page();
     let n_pages = episodes.len().div_ceil(per_page).max(1);
     let page_ids: Vec<Id> = (0..n_pages).map(|_| new_id()).collect();
+    let extra_ids: Vec<Id> = (0..extras.len().div_ceil(per_page)).map(|_| new_id()).collect();
     let first = episodes.first();
 
     // Main menu
@@ -733,6 +738,7 @@ pub(super) fn build(t: &CustomTemplate, input: Input, images: &HashMap<Id, Id>) 
     let link = |l: Link| match l {
         Link::PlayAll => Some(Action::PlayAll),
         Link::Episodes => first.map(|_| Action::ShowMenu(page_ids[0])),
+        Link::Extras => extra_ids.first().map(|id| Action::ShowMenu(*id)),
         Link::Setup => setup.map(Action::ShowMenu),
         Link::MainMenu => Some(Action::ShowMenu(main_id)),
         Link::FirstEpisode => first.map(|e| e.action()),
@@ -746,6 +752,9 @@ pub(super) fn build(t: &CustomTemplate, input: Input, images: &HashMap<Id, Id>) 
     let (mut main, ids) = make_menu(main_t, &base.name, &f);
     main.id = main_id;
     main.shape = shape;
+    if let Some(x) = extra_ids.first().filter(|_| !main_t.items.iter().any(|i| i.link == Some(Link::Extras))) {
+        add_extras_button(main_t, &mut main, &ids, Action::ShowMenu(*x));
+    }
     if main.default_button.is_none() {
         let first_button = main.buttons().next().map(|b| b.id);
         main.default_button = first_button;
@@ -783,70 +792,132 @@ pub(super) fn build(t: &CustomTemplate, input: Input, images: &HashMap<Id, Id>) 
     }
     let lay = EpisodeLayout { page: chrome, ..lay.clone() };
     let lay = &lay;
-    let mut pages = Vec::new();
-    for (pi, id) in page_ids.iter().enumerate() {
-        let slice: Vec<&Episode> = episodes.iter().skip(pi * per_page).take(per_page).collect();
-        let page_first = slice.first().copied();
-        let mut vars = common.clone();
-        vars.push(("page", (pi + 1).to_string()));
-        vars.push(("pages", n_pages.to_string()));
-        let label = if n_pages > 1 { gettext("Page {} of {}").replacen("{}", &(pi + 1).to_string(), 1).replacen("{}", &n_pages.to_string(), 1) } else { String::new() };
-        vars.push(("page_label", label));
-        let nav = |l: Link| match l {
-            Link::Previous => pi.checked_sub(1).map(|i| Action::ShowMenu(page_ids[i])),
-            Link::Next => page_ids.get(pi + 1).map(|i| Action::ShowMenu(*i)),
-            other => link(other),
-        };
-        let page_still = |s: Still| match s {
-            Still::First => first.map(|e| (e.asset, e.poster)),
-            Still::Nth(n) => slice.get(n as usize).map(|e| (e.asset, e.poster)),
-            _ => page_first.map(|e| (e.asset, e.poster)),
-        };
-        let heading = if n_pages > 1 { format!("{} {}", gettext("Episodes"), pi + 1) } else { gettext("Episodes") };
-        let f = Fill { vars: vars.clone(), link: &nav, still: &page_still, images };
-        let (mut page, _) = make_menu(&lay.page, &heading, &f);
-        page.id = *id;
-        page.shape = shape;
-        let chrome_default = page.default_button;
-        for (k, e) in slice.iter().enumerate() {
-            let mut v = vars.clone();
-            v.extend([
-                ("number", e.number.to_string()),
-                ("number2", format!("{:02}", e.number)),
-                ("name", if e.name.is_empty() { gettext("Episode {}").replace("{}", &e.number.to_string()) } else { e.name.clone() }),
-                ("title_name", e.name_or_title()),
-                ("duration", clock(e.duration)),
-                ("minutes", gettext("{} min").replace("{}", &((e.duration / 60.0).round().max(1.0) as u32).to_string())),
-            ]);
-            let slot_link = |l: Link| match l {
-                Link::Episode => Some(e.action()),
-                other => nav(other),
+    // The pages `page_ids` listing `episodes`, under `title` ("Episodes").
+    let make_pages = |page_ids: &[Id], episodes: &[Episode], title: &str| -> Vec<Menu> {
+        let n_pages = page_ids.len();
+        let first = episodes.first();
+        let mut pages = Vec::new();
+        for (pi, id) in page_ids.iter().enumerate() {
+            let slice: Vec<&Episode> = episodes.iter().skip(pi * per_page).take(per_page).collect();
+            let page_first = slice.first().copied();
+            let mut vars = common.clone();
+            vars.push(("page", (pi + 1).to_string()));
+            vars.push(("pages", n_pages.to_string()));
+            let label = if n_pages > 1 { gettext("Page {} of {}").replacen("{}", &(pi + 1).to_string(), 1).replacen("{}", &n_pages.to_string(), 1) } else { String::new() };
+            vars.push(("page_label", label));
+            let nav = |l: Link| match l {
+                Link::Previous => pi.checked_sub(1).map(|i| Action::ShowMenu(page_ids[i])),
+                Link::Next => page_ids.get(pi + 1).map(|i| Action::ShowMenu(*i)),
+                other => link(other),
             };
-            let slot_still = |s: Still| match s {
-                Still::Episode => Some((e.asset, e.poster)),
-                other => page_still(other),
+            let page_still = |s: Still| match s {
+                Still::First => first.map(|e| (e.asset, e.poster)),
+                Still::Nth(n) => slice.get(n as usize).map(|e| (e.asset, e.poster)),
+                _ => page_first.map(|e| (e.asset, e.poster)),
             };
-            let f = Fill { vars: v, link: &slot_link, still: &slot_still, images };
-            let mut ids = HashMap::new();
-            let items = make_items(&lay.slot, lay.offset(k), &f, &mut ids);
-            if k == 0 && chrome_default.is_none() {
-                page.default_button = items.iter().find(|i| i.button().is_some()).map(|i| i.id);
+            let heading = if n_pages > 1 { format!("{title} {}", pi + 1) } else { title.to_string() };
+            let f = Fill { vars: vars.clone(), link: &nav, still: &page_still, images };
+            let (mut page, _) = make_menu(&lay.page, &heading, &f);
+            page.id = *id;
+            page.shape = shape;
+            if title != gettext("Episodes") {
+                retitle(&mut page, title);
             }
-            page.items.extend(items);
+            let chrome_default = page.default_button;
+            for (k, e) in slice.iter().enumerate() {
+                let mut v = vars.clone();
+                v.extend([
+                    ("number", e.number.to_string()),
+                    ("number2", format!("{:02}", e.number)),
+                    ("name", if e.extra { e.name_or_title() } else if e.name.is_empty() { gettext("Episode {}").replace("{}", &e.number.to_string()) } else { e.name.clone() }),
+                    ("title_name", e.name_or_title()),
+                    ("duration", clock(e.duration)),
+                    ("minutes", gettext("{} min").replace("{}", &((e.duration / 60.0).round().max(1.0) as u32).to_string())),
+                ]);
+                let slot_link = |l: Link| match l {
+                    Link::Episode => Some(e.action()),
+                    other => nav(other),
+                };
+                let slot_still = |s: Still| match s {
+                    Still::Episode => Some((e.asset, e.poster)),
+                    other => page_still(other),
+                };
+                let f = Fill { vars: v, link: &slot_link, still: &slot_still, images };
+                let mut ids = HashMap::new();
+                let items = make_items(&lay.slot, lay.offset(k), &f, &mut ids);
+                if k == 0 && chrome_default.is_none() {
+                    page.default_button = items.iter().find(|i| i.button().is_some()).map(|i| i.id);
+                }
+                page.items.extend(items);
+            }
+            if episodes.is_empty() {
+                page.items.push(MenuItem::new_text(&gettext("Import your episodes, then apply the template again"), Rect::new(260.0, 480.0, 1400.0, 120.0)));
+            }
+            pages.push(page);
         }
-        if episodes.is_empty() {
-            page.items.push(MenuItem::new_text(&gettext("Import your episodes, then apply the template again"), Rect::new(260.0, 480.0, 1400.0, 120.0)));
-        }
-        pages.push(page);
-    }
-    let return_to = episodes.iter().enumerate().map(|(i, e)| (e.title, page_ids[(i / per_page).min(n_pages - 1)])).collect();
-    let popup_links = match (first, page_ids.first()) {
+        pages
+    };
+    let pages = make_pages(&page_ids, &episodes, &gettext("Episodes"));
+    let extra_pages = make_pages(&extra_ids, &extras, &gettext("Extras"));
+    let mut return_to: Vec<(Id, Id)> = episodes.iter().enumerate().map(|(i, e)| (e.title, page_ids[(i / per_page).min(n_pages - 1)])).collect();
+    return_to.extend(extras.iter().enumerate().map(|(i, e)| (e.title, extra_ids[i / per_page])));
+    let mut popup_links = match (first, page_ids.first()) {
         (Some(_), Some(p)) => vec![(gettext("Episodes"), Action::ShowMenu(*p))],
         _ => vec![],
     };
+    popup_links.extend(extra_ids.first().map(|x| (gettext("Extras"), Action::ShowMenu(*x))));
+    let n_extra = extra_pages.len();
     let mut menus = vec![main];
     menus.extend(pages);
-    Output { menus, return_to, title_item, popup_links }
+    menus.extend(extra_pages);
+    Output { menus, return_to, title_item, popup_links, extra_pages: n_extra }
+}
+
+/// On an Extras page made from the episode page design, its "Episodes"
+/// heading says `title` instead (in capitals when it was).
+fn retitle(page: &mut Menu, title: &str) {
+    let episodes = gettext("Episodes");
+    for it in &mut page.items {
+        if let ItemKind::Text(t) = &mut it.kind {
+            if t.text.trim().to_lowercase() == episodes.to_lowercase() {
+                t.text = if t.text.trim() == episodes.to_uppercase() { title.to_uppercase() } else { title.to_string() };
+            }
+        }
+    }
+}
+
+/// Give a main menu designed without an Extras button one: a copy of its
+/// Episodes button (or Play All) placed just after it in its column or
+/// row, moving the buttons after it along.
+fn add_extras_button(tm: &TemplateMenu, m: &mut Menu, ids: &HashMap<Id, Id>, action: Action) {
+    let linked: Vec<(Link, Id)> = tm.items.iter().filter(|i| i.item.button().is_some()).filter_map(|i| Some((i.link?, *ids.get(&i.item.id)?))).filter(|(_, id)| m.item(*id).is_some()).collect();
+    let Some(&(_, after)) = linked.iter().find(|(l, _)| *l == Link::Episodes).or_else(|| linked.iter().find(|(l, _)| *l == Link::PlayAll)) else { return };
+    let Some(at) = m.items.iter().position(|i| i.id == after) else { return };
+    let r = m.items[at].rect;
+    let peers: Vec<Rect> = linked.iter().filter(|(_, id)| *id != after).filter_map(|(_, id)| m.item(*id)).map(|i| i.rect).collect();
+    let column: Vec<&Rect> = peers.iter().filter(|p| (p.x - r.x).abs() < 1.0).collect();
+    let row: Vec<&Rect> = peers.iter().filter(|p| (p.y - r.y).abs() < 1.0).collect();
+    let horizontal = row.len() > column.len();
+    // One button's length plus the gap between buttons.
+    let step = if horizontal {
+        let gap = row.iter().map(|p| if p.x > r.x { p.x - (r.x + r.w) } else { r.x - (p.x + p.w) }).filter(|g| *g >= 0.0).fold(f64::MAX, f64::min);
+        r.w + if gap == f64::MAX { 24.0 } else { gap }
+    } else {
+        column.iter().map(|p| (p.y - r.y).abs()).fold(f64::MAX, f64::min).min(r.h * 2.0).max(r.h)
+    };
+    let moved: Vec<Id> = linked.iter().filter_map(|(_, id)| m.item(*id)).filter(|i| if horizontal { (i.rect.y - r.y).abs() < 1.0 && i.rect.x > r.x } else { (i.rect.x - r.x).abs() < 1.0 && i.rect.y > r.y }).map(|i| i.id).collect();
+    for it in m.items.iter_mut().filter(|i| moved.contains(&i.id)) {
+        it.rect = if horizontal { Rect::new(it.rect.x + step, it.rect.y, it.rect.w, it.rect.h) } else { Rect::new(it.rect.x, it.rect.y + step, it.rect.w, it.rect.h) };
+    }
+    let mut b = m.items[at].clone();
+    b.id = new_id();
+    b.rect = if horizontal { Rect::new(r.x + step, r.y, r.w, r.h) } else { Rect::new(r.x, r.y + step, r.w, r.h) };
+    if let Some(bt) = b.button_mut() {
+        let extras = gettext("Extras");
+        bt.label = if bt.label.chars().any(char::is_lowercase) { extras } else { extras.to_uppercase() };
+        bt.action = action;
+    }
+    m.items.insert(at + 1, b);
 }
 
 // --- saving a project's menus as a template --------------------------------
@@ -984,7 +1055,7 @@ pub fn from_project(p: &Project, name: &str, description: &str, author: &str) ->
     let popup_audio = p.popup_menus().find(|m| has(m, &is_language));
     let own_page = |m: &&Menu| !has(m, &is_chapter) && !has(m, &is_language);
     let popup_main = p.disc.popup_menu.and_then(|id| p.menu(id)).filter(|m| m.popup).filter(own_page).or_else(|| p.popup_menus().find(own_page));
-    let eps = episodes(p);
+    let eps = episodes(p, false);
 
     // Text that came from the template's inputs goes back to placeholders.
     let title = info.as_ref().map(|t| t.title.clone()).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| p.disc.name.clone());
@@ -1000,9 +1071,11 @@ pub fn from_project(p: &Project, name: &str, description: &str, author: &str) ->
     let mut images = BTreeMap::new();
 
     // Main menu
+    let plays_extra = |m: &Id| p.menu(*m).is_some_and(|m| m.buttons().any(|b| matches!(b.button().map(|b| b.action), Some(Action::PlayTitle { title, .. }) if p.title(title).is_some_and(|t| t.extra))));
     let main_link = |a: &Action| match a {
         Action::PlayAll => Some(Link::PlayAll),
         Action::ShowMenu(m) if pages.contains(m) => Some(Link::Episodes),
+        Action::ShowMenu(m) if plays_extra(m) => Some(Link::Extras),
         Action::ShowMenu(m) if Some(*m) == setup => Some(Link::Setup),
         Action::PlayTitle { title, .. } if Some(*title) == first_title => Some(Link::FirstEpisode),
         _ => None,

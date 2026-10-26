@@ -182,6 +182,11 @@ pub struct Title {
     /// Deinterlacing, cropping and fitting of the picture.
     #[serde(default)]
     pub video: crate::media::picture::VideoOptions,
+    /// An extra (an OVA, special, creditless opening…) rather than an
+    /// episode: left out of Play All and the episode list, and listed on
+    /// an Extras page instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub extra: bool,
 }
 
 impl Title {
@@ -547,6 +552,24 @@ impl Project {
         self.titles.iter_mut().find(|t| t.id == id)
     }
 
+    /// The title after title `i` of the same kind (episode or extra), for
+    /// Play All and "Play Next Title": episodes skip the extras.
+    pub fn next_title(&self, i: usize) -> Option<usize> {
+        let extra = self.titles.get(i)?.extra;
+        (i + 1..self.titles.len()).find(|&j| self.titles[j].extra == extra)
+    }
+
+    /// Where Play All starts: the first episode, or the first title when
+    /// every title is an extra.
+    pub fn play_all_start(&self) -> Option<usize> {
+        self.titles.iter().position(|t| !t.extra).or((!self.titles.is_empty()).then_some(0))
+    }
+
+    /// The titles Play All plays, in order.
+    pub fn play_all_titles(&self) -> Vec<usize> {
+        std::iter::successors(self.play_all_start(), |&i| self.next_title(i)).collect()
+    }
+
     /// Menus that are screens of their own (not pop-ups), in disc order.
     pub fn disc_menus(&self) -> impl Iterator<Item = &Menu> {
         self.menus.iter().filter(|m| !m.popup)
@@ -634,7 +657,7 @@ impl Project {
         let name = a.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let t = Title {
             id: new_id(),
-            name,
+            name: name.clone(),
             asset,
             chapters: auto_chapters(a.info.duration, 300.0),
             end_action: EndAction::default(),
@@ -653,6 +676,7 @@ impl Project {
             keep_video: false,
             video_check: None,
             video: Default::default(),
+            extra: looks_like_extra(&name),
         };
         let id = t.id;
         self.titles.push(t);
@@ -783,6 +807,20 @@ impl Project {
     }
 }
 
+/// Whether a video's file name marks it as an extra rather than an
+/// episode: OVA, OAD, ONA, SP, NCOP, NCED, PV, CM (alone or numbered, as in
+/// "OVA2"), "Creditless", "Trailer", or season 0 ("S00E01").
+pub fn looks_like_extra(name: &str) -> bool {
+    const TAGS: [&str; 8] = ["ova", "oad", "ona", "sp", "ncop", "nced", "pv", "cm"];
+    name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).any(|w| {
+        let w = w.to_lowercase();
+        let tag = w.trim_end_matches(|c: char| c.is_ascii_digit());
+        TAGS.contains(&tag)
+            || ["creditless", "trailer"].contains(&w.as_str())
+            || w.strip_prefix("s00e").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    })
+}
+
 /// Evenly spaced chapter points (excluding 0) every `interval` seconds.
 pub fn auto_chapters(duration: f64, interval: f64) -> Vec<f64> {
     let mut v = Vec::new();
@@ -797,6 +835,33 @@ pub fn auto_chapters(duration: f64, interval: f64) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extras_are_recognised_by_name() {
+        for name in ["Show - OVA", "Show OVA2", "[Group] Show - SP01 [1080p]", "Show - NCOP1", "Show.S00E02.Special", "Show - Creditless Ending"] {
+            assert!(looks_like_extra(name), "{name}");
+        }
+        for name in ["Show - 01 - The Special Day", "Show - 03 - Spring", "S01E04", "Show - Episode 5 - Over"] {
+            assert!(!looks_like_extra(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn play_all_skips_extras() {
+        let mut p = Project::default();
+        for (i, extra) in [false, true, false, true].into_iter().enumerate() {
+            let id = new_id();
+            p.assets.push(Asset { id, path: format!("/tmp/{i}.mkv").into(), kind: AssetKind::Video, info: Default::default() });
+            let t = p.ensure_title_for(id).unwrap();
+            p.title_mut(t).unwrap().extra = extra;
+        }
+        assert_eq!(p.play_all_titles(), vec![0, 2]);
+        assert_eq!((p.next_title(1), p.next_title(2)), (Some(3), None));
+        for t in &mut p.titles {
+            t.extra = true;
+        }
+        assert_eq!(p.play_all_titles(), vec![0, 1, 2, 3]);
+    }
 
     #[test]
     fn project_roundtrip() {

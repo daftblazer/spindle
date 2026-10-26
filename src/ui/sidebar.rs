@@ -370,11 +370,18 @@ impl Sidebar {
             if r.subtitle.label() != sl {
                 r.subtitle.set_label(&sl);
             }
+            let extra = matches!(r.node, Node::Title(t) if p.title(t).is_some_and(|t| t.extra));
             if Some(r.node) == all_titles {
                 r.badge.set_label(&gettext("All Titles"));
                 r.badge.set_tooltip_text(Some(&gettext("The pop-up menu for titles that do not set their own")));
+            } else if Some(r.node) == start {
+                r.badge.set_label(&gettext("Start"));
+                r.badge.set_tooltip_text(Some(&gettext("Starts when the disc is inserted")));
+            } else if extra {
+                r.badge.set_label(&gettext("Extra"));
+                r.badge.set_tooltip_text(Some(&gettext("Left out of Play All and listed on an Extras page")));
             }
-            r.badge.set_visible(Some(r.node) == start || Some(r.node) == all_titles);
+            r.badge.set_visible(Some(r.node) == start || Some(r.node) == all_titles || extra);
         }
     }
 

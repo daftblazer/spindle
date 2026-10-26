@@ -631,14 +631,16 @@ impl<'a> Builder<'a> {
                     commands.push(c);
                 }
             }
-            let end = match t.end_action {
+            // Episodes play on into the next episode, extras into the next extra.
+            let next = p.next_title(i);
+            let end = match (t.end_action, next) {
                 // Loop past the stream selection so a viewer's choice sticks.
-                EndAction::Loop => Command::Goto(commands.len() as u32),
-                EndAction::PlayNextTitle if i + 1 < p.titles.len() => Command::JumpTitle(i as u32 + 2),
-                _ => match menu_obj {
-                    Some(o) => Command::JumpObject(o),
-                    None if i + 1 < p.titles.len() => Command::JumpTitle(i as u32 + 2),
-                    None => Command::Break,
+                (EndAction::Loop, _) => Command::Goto(commands.len() as u32),
+                (EndAction::PlayNextTitle, Some(n)) => Command::JumpTitle(n as u32 + 1),
+                (_, next) => match (menu_obj, next) {
+                    (Some(o), _) => Command::JumpObject(o),
+                    (None, Some(n)) => Command::JumpTitle(n as u32 + 1),
+                    (None, None) => Command::Break,
                 },
             };
             commands.extend([
@@ -655,8 +657,8 @@ impl<'a> Builder<'a> {
             commands.push(Command::Compare(Cmp::Eq, Operand::Gpr(GPR_PLAY_ALL), Operand::Imm(1)));
             commands.push(Command::Goto(play_all_at));
             commands.push(end);
-            if i + 1 < p.titles.len() {
-                commands.push(Command::JumpTitle(i as u32 + 2));
+            if let Some(n) = next {
+                commands.push(Command::JumpTitle(n as u32 + 1));
             } else {
                 commands.push(Command::Move(GPR_PLAY_ALL, Operand::Imm(0)));
                 for m in 0..m_count {
@@ -802,13 +804,15 @@ impl<'a> Builder<'a> {
                 ],
                 None => vec![],
             },
-            Action::PlayAll if !p.titles.is_empty() => vec![
-                Command::Move(GPR_PLAY_ALL, Operand::Imm(1)),
-                Command::Move(GPR_PLAY_ALL_MENU, Operand::Imm(menu_index as u32)),
-                Command::Move(GPR_CHAPTER, Operand::Imm(0)),
-                Command::JumpTitle(1),
-            ],
-            Action::PlayAll => vec![],
+            Action::PlayAll => match p.play_all_start() {
+                Some(i) => vec![
+                    Command::Move(GPR_PLAY_ALL, Operand::Imm(1)),
+                    Command::Move(GPR_PLAY_ALL_MENU, Operand::Imm(menu_index as u32)),
+                    Command::Move(GPR_CHAPTER, Operand::Imm(0)),
+                    Command::JumpTitle(i as u32 + 1),
+                ],
+                None => vec![],
+            },
             // Only meaningful in pop-up menus.
             Action::PlayChapter(_) => vec![],
             Action::ShowMenu(menu) => match self.menu_index(menu) {
