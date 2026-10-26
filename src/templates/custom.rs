@@ -752,6 +752,8 @@ pub(super) fn build(t: &CustomTemplate, input: Input, images: &HashMap<Id, Id>) 
     let (mut main, ids) = make_menu(main_t, &base.name, &f);
     main.id = main_id;
     main.shape = shape;
+    // No gap where Extras or Setup was left out.
+    close_gaps(main_t, &mut main, &ids);
     if let Some(x) = extra_ids.first().filter(|_| !main_t.items.iter().any(|i| i.link == Some(Link::Extras))) {
         add_extras_button(main_t, &mut main, &ids, Action::ShowMenu(*x));
     }

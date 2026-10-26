@@ -1404,6 +1404,45 @@ mod tests {
     }
 
     #[test]
+    fn a_designed_extras_button_leaves_no_gap() {
+        let mut src = project(8);
+        apply(&mut src, &opts(Style::Minimal, 0));
+        let mut t = custom::from_project(&src, "Mine", "", "").unwrap();
+        // Play All, Episodes, then an Extras button where a Setup button would go.
+        let episodes = t.main.items.iter().find(|i| i.link == Some(custom::Link::Episodes)).unwrap().clone();
+        let mut extras = episodes.clone();
+        extras.item.id = new_id();
+        extras.item.rect.y += 92.0;
+        extras.link = Some(custom::Link::Extras);
+        if let Some(b) = extras.item.button_mut() {
+            b.label = "Extras".into();
+        }
+        let mut setup = extras.clone();
+        setup.item.id = new_id();
+        setup.item.rect.y += 92.0;
+        setup.link = Some(custom::Link::Setup);
+        t.main.items.extend([extras, setup]);
+        let o = Options { custom: Some(std::sync::Arc::new(t)), ..opts(Style::Minimal, 0) };
+        let ys = |p: &Project, main: Id| -> Vec<f64> { p.menu(main).unwrap().buttons().map(|b| b.rect.y).collect() };
+
+        let mut with = project_with_extras();
+        let main = apply(&mut with, &o);
+        assert_eq!(extras_page(&with, main).map(|x| episode_pages(&with).contains(&x)), Some(false));
+        let y = ys(&with, main);
+        assert_eq!(y.len(), 3, "the template's own Extras button, no copy");
+        // Without extras the Setup button moves up into Extras' place.
+        let mut without = project(8);
+        let main2 = apply(&mut without, &o);
+        let mut lang = project(8);
+        for t in &mut lang.titles {
+            t.audio = ["eng", "jpn"].iter().map(|l| AudioTrack { id: new_id(), source: AudioSource::Embedded { index: 0 }, lang: l.to_string(), name: l.to_string(), enabled: true, layout: Default::default(), reencode: false }).collect();
+        }
+        let main3 = apply(&mut lang, &o);
+        assert_eq!(ys(&without, main2), y[..2].to_vec());
+        assert_eq!(ys(&lang, main3), y, "Setup sits where Extras would");
+    }
+
+    #[test]
     fn a_film_can_follow_its_extras() {
         let mut p = project(3);
         p.titles[0].extra = true;
